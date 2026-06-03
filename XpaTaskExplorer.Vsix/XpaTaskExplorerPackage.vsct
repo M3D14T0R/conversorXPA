@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CommandTable xmlns="http://schemas.microsoft.com/VisualStudio/2005-10-18/CommandTable" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <Extern href="stdidcmd.h" />
+  <Extern href="vsshlids.h" />
+
+  <Commands package="guidXpaTaskExplorerPackage">
+    <Buttons>
+      <Button guid="guidXpaTaskExplorerCommandSet" id="cmdidShowXpaTaskExplorer" priority="0x0100" type="Button">
+        <Parent guid="guidSHLMainMenu" id="IDG_VS_WNDO_OTRWNDWS1" />
+        <Strings>
+          <ButtonText>XPA Task Explorer</ButtonText>
+        </Strings>
+      </Button>
+    </Buttons>
+  </Commands>
+
+  <Symbols>
+    <GuidSymbol name="guidXpaTaskExplorerPackage" value="{3f9a7ac1-f0d4-4c3b-bb4e-f74c528c461e}" />
+    <GuidSymbol name="guidXpaTaskExplorerCommandSet" value="{b22bc144-0da6-44f7-9a50-4d7c286b8a07}">
+      <IDSymbol name="cmdidShowXpaTaskExplorer" value="0x0100" />
+    </GuidSymbol>
+  </Symbols>
+</CommandTable>
