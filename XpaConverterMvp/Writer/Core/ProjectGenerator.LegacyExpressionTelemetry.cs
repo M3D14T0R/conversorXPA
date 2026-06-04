@@ -21,17 +21,50 @@ internal static partial class ProjectGenerator
     private static readonly ConcurrentDictionary<string, long> _newLegacyCleanupTreatmentCountByMethod = new(StringComparer.Ordinal);
     private static readonly ConcurrentQueue<string> _newLegacyCleanupDetails = new();
     private static long _newLegacyCleanupDetailCount;
+    private static long _criticalGeneratedStringReaderCount;
+    private static readonly ConcurrentDictionary<string, long> _criticalGeneratedStringReaderCountByMethod = new(StringComparer.Ordinal);
+    private static readonly ConcurrentQueue<string> _criticalGeneratedStringReaderDetails = new();
+    private static long _criticalGeneratedStringReaderDetailCount;
+    private static long _criticalExternalCoercionCount;
+    private static readonly ConcurrentDictionary<string, long> _criticalExternalCoercionCountByMethod = new(StringComparer.Ordinal);
+    private static readonly ConcurrentQueue<string> _criticalExternalCoercionDetails = new();
+    private static long _criticalExternalCoercionDetailCount;
     private const int NewLegacyExpressionDetailLimit = 500;
     private const int NewLegacyCleanupDetailLimit = 500;
+    private const int CriticalGeneratedStringReaderDetailLimit = 500;
+    private const int CriticalExternalCoercionDetailLimit = 500;
 
     private static void TrackLegacyExpressionTreatment(string area, string method)
     {
-        return;
+        TrackLegacyExpressionTreatment(area, method, "");
     }
 
     private static void TrackLegacyExpressionTreatment(string area, string method, string detail)
     {
-        return;
+        if (string.IsNullOrWhiteSpace(area) || string.IsNullOrWhiteSpace(method))
+            return;
+
+        var key = $"{area}.{method}";
+        var isLegacyTypingTreatment = IsLegacyExpressionTypingTreatment(key);
+        if (isLegacyTypingTreatment)
+        {
+            TrackCriticalGeneratedStringReader(area, method, "legacy-typing-reader", detail);
+            if (IsExternalCoercionTreatment(area, method))
+                TrackCriticalExternalCoercion(area, method, "legacy-coercion", detail);
+        }
+
+        if (!isLegacyTypingTreatment)
+            return;
+
+        Interlocked.Increment(ref _legacyExpressionTreatmentCount);
+        _legacyExpressionTreatmentCountByMethod.AddOrUpdate(key, 1, (_, value) => value + 1);
+
+        if (string.IsNullOrWhiteSpace(detail))
+            return;
+
+        var detailIndex = Interlocked.Increment(ref _legacyExpressionTypingDetailCount);
+        if (detailIndex <= CriticalGeneratedStringReaderDetailLimit)
+            _legacyExpressionTypingDetails.Enqueue($"{area}.{method} {NormalizeLegacyExpressionTelemetryDetail(detail)}");
     }
 
     private static string TrackLegacyExpressionTreatmentIfChanged(
@@ -64,6 +97,11 @@ internal static partial class ProjectGenerator
     {
         if (string.IsNullOrWhiteSpace(area) || string.IsNullOrWhiteSpace(method))
             return;
+
+        if (IsExternalCoercionTreatment(area, method))
+            TrackCriticalExternalCoercion(area, method, "new-legacy-expression", detail);
+
+        TrackCriticalGeneratedStringReader(area, method, "new-legacy-expression", detail);
 
         var key = $"{area}.{method}";
         Interlocked.Increment(ref _newLegacyExpressionTreatmentCount);
@@ -109,6 +147,13 @@ internal static partial class ProjectGenerator
             !AreTelemetryEquivalentExpressionForms(original, rewritten) &&
             HasNewLegacyExpressionBridgeSignal(original, rewritten))
         {
+            TrackCriticalExternalCoercion(
+                area,
+                method,
+                "new-legacy-bridge",
+                string.IsNullOrWhiteSpace(detail)
+                    ? string.Create(CultureInfo.InvariantCulture, $"from={original} to={rewritten}")
+                    : detail);
             TrackNewLegacyExpressionTreatment(
                 area,
                 method,
@@ -151,9 +196,9 @@ internal static partial class ProjectGenerator
         if (string.IsNullOrWhiteSpace(area) || string.IsNullOrWhiteSpace(method))
             return;
 
-        if (string.Equals(area, "GeneratedCleanup", StringComparison.Ordinal) &&
-            !IsGeneratedCleanupTypingTreatment(method))
-            return;
+        if (IsExternalCoercionTreatment(area, method))
+            TrackCriticalExternalCoercion(area, method, "new-legacy-cleanup", detail);
+        TrackCriticalGeneratedStringReader(area, method, "new-legacy-cleanup", detail);
 
         var key = $"{area}.{method}";
         Interlocked.Increment(ref _newLegacyCleanupTreatmentCount);
@@ -210,6 +255,127 @@ internal static partial class ProjectGenerator
 
         return count;
     }
+
+    private static void TrackCriticalGeneratedStringReader(string area, string method, string reason, string detail)
+    {
+        var key = $"{area}.{method}";
+        Interlocked.Increment(ref _criticalGeneratedStringReaderCount);
+        _criticalGeneratedStringReaderCountByMethod.AddOrUpdate(key, 1, (_, value) => value + 1);
+
+        if (string.IsNullOrWhiteSpace(detail))
+            return;
+
+        var detailIndex = Interlocked.Increment(ref _criticalGeneratedStringReaderDetailCount);
+        if (detailIndex <= CriticalGeneratedStringReaderDetailLimit)
+        {
+            _criticalGeneratedStringReaderDetails.Enqueue(
+                string.Create(
+                CultureInfo.InvariantCulture,
+                $"{area}.{method} severity=critical reason={reason} {NormalizeLegacyExpressionTelemetryDetail(detail)}"));
+        }
+    }
+
+    private static void TrackCriticalExternalCoercion(string area, string method, string reason, string detail)
+    {
+        if (string.IsNullOrWhiteSpace(area) || string.IsNullOrWhiteSpace(method))
+            return;
+        if (string.Equals(area, "EmittedExpression", StringComparison.Ordinal))
+            return;
+
+        var key = $"{area}.{method}";
+        Interlocked.Increment(ref _criticalExternalCoercionCount);
+        _criticalExternalCoercionCountByMethod.AddOrUpdate(key, 1, (_, value) => value + 1);
+
+        if (string.IsNullOrWhiteSpace(detail))
+            return;
+
+        var detailIndex = Interlocked.Increment(ref _criticalExternalCoercionDetailCount);
+        if (detailIndex <= CriticalExternalCoercionDetailLimit)
+        {
+            _criticalExternalCoercionDetails.Enqueue(
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{area}.{method} severity=critical reason={reason} {NormalizeLegacyExpressionTelemetryDetail(detail)}"));
+        }
+    }
+
+    private static string TrackCriticalExternalCoercionIfBridgeChanged(
+        string area,
+        string method,
+        string original,
+        string rewritten,
+        string? detail = null)
+    {
+        if (!string.Equals(original, rewritten, StringComparison.Ordinal) &&
+            HasExternalCoercionBridgeSignal(original, rewritten))
+        {
+            TrackCriticalExternalCoercion(
+                area,
+                method,
+                "external-coercion-bridge",
+                string.IsNullOrWhiteSpace(detail)
+                    ? string.Create(CultureInfo.InvariantCulture, $"from={original} to={rewritten}")
+                    : detail);
+        }
+
+        return rewritten;
+    }
+
+    private static bool HasExternalCoercionBridgeSignal(string original, string rewritten)
+    {
+        if (string.IsNullOrWhiteSpace(rewritten))
+            return false;
+
+        foreach (var marker in ExternalCoercionMarkers)
+        {
+            if (CountOrdinalOccurrences(original, marker) != CountOrdinalOccurrences(rewritten, marker))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsExternalCoercionTreatment(string area, string method)
+    {
+        if (string.Equals(area, "NormalizeType", StringComparison.Ordinal) ||
+            string.Equals(area, "Context", StringComparison.Ordinal))
+            return true;
+
+        if (string.Equals(area, "GeneratedCleanup", StringComparison.Ordinal) &&
+            IsGeneratedCleanupTypingTreatment(method))
+            return true;
+
+        return method.Contains("Coerce", StringComparison.Ordinal) ||
+               method.Contains("Bridge", StringComparison.Ordinal) ||
+               method.Contains("Cast", StringComparison.Ordinal);
+    }
+
+    private static readonly string[] ExternalCoercionMarkers =
+    {
+        "u.CastToText(",
+        "u.CastToNumber(",
+        "u.CastToDate(",
+        "u.CastToTime(",
+        "u.CastToBool(",
+        "u.CastToByteArray(",
+        "u.CastToTextArray(",
+        "u.CastToNumberArray(",
+        "u.CastToDateArray(",
+        "u.CastToTimeArray(",
+        "u.CastToBoolArray(",
+        "u.ByteArrayToText(",
+        "u.ToNumber(",
+        "u.ToTime(",
+        "UserMethods.ToTime(",
+        "UserMethods.ToDate(",
+        "ByteArrayToText(",
+        "ToByteArray(",
+        "new System.IntPtr",
+        "new IntPtr",
+        "(string[])(",
+        "(object)",
+        "XPARuntimeCore.Box.Date.Empty"
+    };
 
     private static bool AreTelemetryEquivalentExpressionForms(string original, string rewritten)
     {
@@ -315,14 +481,134 @@ internal static partial class ProjectGenerator
         while (_newLegacyCleanupDetails.TryDequeue(out _))
         {
         }
+
+        Interlocked.Exchange(ref _criticalGeneratedStringReaderCount, 0);
+        _criticalGeneratedStringReaderCountByMethod.Clear();
+        Interlocked.Exchange(ref _criticalGeneratedStringReaderDetailCount, 0);
+        while (_criticalGeneratedStringReaderDetails.TryDequeue(out _))
+        {
+        }
+
+        Interlocked.Exchange(ref _criticalExternalCoercionCount, 0);
+        _criticalExternalCoercionCountByMethod.Clear();
+        Interlocked.Exchange(ref _criticalExternalCoercionDetailCount, 0);
+        while (_criticalExternalCoercionDetails.TryDequeue(out _))
+        {
+        }
     }
 
     private static void LogLegacyExpressionTelemetrySummary()
     {
-        ConversionTelemetry.Log("LEGACY_EXPR_TYPING", "summary calls=0 methods=0");
-        ConversionTelemetry.Log("LEGACY_EXPR_TYPING_LIST", "summary calls=0");
+        LogCriticalGeneratedStringReaderTelemetrySummary();
+        LogCriticalExternalCoercionTelemetrySummary();
+
+        var legacyTypingSnapshot = _legacyExpressionTreatmentCountByMethod.ToArray();
+        if (legacyTypingSnapshot.Length == 0)
+        {
+            ConversionTelemetry.Log("LEGACY_EXPR_TYPING", "summary calls=0 methods=0");
+            ConversionTelemetry.Log("LEGACY_EXPR_TYPING_LIST", "summary calls=0");
+        }
+        else
+        {
+            LogLegacyExpressionTelemetryCounts("LEGACY_EXPR_TYPING", legacyTypingSnapshot);
+            LogLegacyExpressionTypingExpandedList(legacyTypingSnapshot);
+            LogLegacyExpressionTypingDetails();
+        }
+
         LogNewLegacyExpressionTelemetrySummary();
         LogNewLegacyCleanupTelemetrySummary();
+    }
+
+    private static void LogCriticalGeneratedStringReaderTelemetrySummary()
+    {
+        var snapshot = _criticalGeneratedStringReaderCountByMethod.ToArray();
+        var total = Interlocked.Read(ref _criticalGeneratedStringReaderCount);
+        ConversionTelemetry.Log(
+            "CRITICAL_STRING_READER",
+            string.Create(CultureInfo.InvariantCulture, $"summary calls={total} methods={snapshot.Length} severity=critical"));
+
+        if (total == 0)
+        {
+            ConversionTelemetry.Log("CRITICAL_STRING_READER_LIST", "summary calls=0");
+            ConversionTelemetry.Log("QUALITY_GATE", "build-zero-errors-eligible=true criticalStringReader=0");
+            return;
+        }
+
+        ConversionTelemetry.Log("QUALITY_GATE", string.Create(CultureInfo.InvariantCulture, $"build-zero-errors-eligible=false criticalStringReader={total}"));
+        ConversionTelemetry.Log(
+            "CRITICAL_STRING_READER_LIST",
+            string.Create(CultureInfo.InvariantCulture, $"summary calls={total}"));
+
+        foreach (var item in snapshot
+                     .OrderByDescending(kv => kv.Value)
+                     .ThenBy(kv => kv.Key, StringComparer.Ordinal))
+        {
+            ConversionTelemetry.Log(
+                "CRITICAL_STRING_READER_LIST",
+                string.Create(CultureInfo.InvariantCulture, $"{item.Key}:{item.Value}"));
+        }
+
+        if (_criticalGeneratedStringReaderDetails.IsEmpty)
+            return;
+
+        ConversionTelemetry.Log(
+            "CRITICAL_STRING_READER_DETAIL",
+            string.Create(CultureInfo.InvariantCulture, $"summary sampled={_criticalGeneratedStringReaderDetails.Count} total={_criticalGeneratedStringReaderDetailCount}"));
+
+        var index = 1;
+        foreach (var detail in _criticalGeneratedStringReaderDetails)
+        {
+            ConversionTelemetry.Log(
+                "CRITICAL_STRING_READER_DETAIL",
+                string.Create(CultureInfo.InvariantCulture, $"{index:000000} {detail}"));
+            index++;
+        }
+    }
+
+    private static void LogCriticalExternalCoercionTelemetrySummary()
+    {
+        var snapshot = _criticalExternalCoercionCountByMethod.ToArray();
+        var total = Interlocked.Read(ref _criticalExternalCoercionCount);
+        ConversionTelemetry.Log(
+            "CRITICAL_EXTERNAL_COERCION",
+            string.Create(CultureInfo.InvariantCulture, $"summary calls={total} methods={snapshot.Length} severity=critical"));
+
+        if (total == 0)
+        {
+            ConversionTelemetry.Log("CRITICAL_EXTERNAL_COERCION_LIST", "summary calls=0");
+            ConversionTelemetry.Log("QUALITY_GATE", "coercion-centralized-eligible=true criticalExternalCoercion=0");
+            return;
+        }
+
+        ConversionTelemetry.Log("QUALITY_GATE", string.Create(CultureInfo.InvariantCulture, $"coercion-centralized-eligible=false criticalExternalCoercion={total}"));
+        ConversionTelemetry.Log(
+            "CRITICAL_EXTERNAL_COERCION_LIST",
+            string.Create(CultureInfo.InvariantCulture, $"summary calls={total}"));
+
+        foreach (var item in snapshot
+                     .OrderByDescending(kv => kv.Value)
+                     .ThenBy(kv => kv.Key, StringComparer.Ordinal))
+        {
+            ConversionTelemetry.Log(
+                "CRITICAL_EXTERNAL_COERCION_LIST",
+                string.Create(CultureInfo.InvariantCulture, $"{item.Key}:{item.Value}"));
+        }
+
+        if (_criticalExternalCoercionDetails.IsEmpty)
+            return;
+
+        ConversionTelemetry.Log(
+            "CRITICAL_EXTERNAL_COERCION_DETAIL",
+            string.Create(CultureInfo.InvariantCulture, $"summary sampled={_criticalExternalCoercionDetails.Count} total={_criticalExternalCoercionDetailCount}"));
+
+        var index = 1;
+        foreach (var detail in _criticalExternalCoercionDetails)
+        {
+            ConversionTelemetry.Log(
+                "CRITICAL_EXTERNAL_COERCION_DETAIL",
+                string.Create(CultureInfo.InvariantCulture, $"{index:000000} {detail}"));
+            index++;
+        }
     }
 
     private static void LogNewLegacyExpressionTelemetrySummary()

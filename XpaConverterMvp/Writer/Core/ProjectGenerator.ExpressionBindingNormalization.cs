@@ -225,17 +225,7 @@ internal static partial class ProjectGenerator
 
     private static string NormalizeExpressionByAttribute(TaskSemantic task, string? attr, string translated)
     {
-        var normalized = NormalizeExpressionByAttributeCentral(task, attr, translated);
-        var expectedReturnType = ResolveSimpleReturnTypeForExpressionAttribute(attr);
-        if (!string.IsNullOrWhiteSpace(expectedReturnType) &&
-            IsKnownExpressionReturnTypeCompatible(normalized, expectedReturnType, task))
-            return normalized;
-
-        return TrackLegacyExpressionTreatmentIfChanged(
-            "NormalizeType",
-            nameof(NormalizeExpressionByAttribute),
-            translated,
-            normalized);
+        return NormalizeExpressionByAttributeCentral(task, attr, translated);
     }
 
     private static string RewriteTextSinkCalls(string expression)

@@ -49,6 +49,7 @@ internal static partial class ProjectGenerator
         ["HVal"] = "u.HVal",
         ["Ins"] = "u.Ins",
         ["InStr"] = "u.InStr",
+        ["Index"] = "u.IndexOf",
         ["Left"] = "u.Left",
         ["Len"] = "u.Len",
         ["Logical"] = "u.Logical",

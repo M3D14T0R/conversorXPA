@@ -233,7 +233,8 @@ internal static partial class ProjectGenerator
         bool normalizeAttribute,
         bool inferSourceReturnType = true,
         bool translateKnownSourceFunctions = true,
-        string? contextualExpectedReturnType = null)
+        string? contextualExpectedReturnType = null,
+        bool preferApplicationDatabaseBinding = false)
     {
         var sourceReturnType = inferSourceReturnType
             ? ResolveSourceReturnTypeForExpressionEntry(expr, task, dataObjects)
@@ -305,7 +306,8 @@ internal static partial class ProjectGenerator
                 task,
                 dataObjects,
                 out var sourceFunctionTranslated,
-                sourceFunctionExpectedReturnType))
+                sourceFunctionExpectedReturnType,
+                preferApplicationDatabaseBinding: preferApplicationDatabaseBinding))
         {
             translated = sourceFunctionTranslated.Code;
             if (normalizeAttribute && !SourceReturnTypeMatchesExpressionAttribute(sourceFunctionTranslated.SourceReturnType, expr.Attribute))
@@ -324,7 +326,8 @@ internal static partial class ProjectGenerator
                 dataObjects,
                 0,
                 out var sourceArithmeticTranslated,
-                sourceArithmeticExpectedReturnType))
+                sourceArithmeticExpectedReturnType,
+                preferApplicationDatabaseBinding))
         {
             translated = sourceArithmeticTranslated.Code;
             if (normalizeAttribute && !SourceReturnTypeMatchesExpressionAttribute(sourceArithmeticTranslated.SourceReturnType, expr.Attribute))
@@ -638,7 +641,8 @@ internal static partial class ProjectGenerator
             expr,
             task,
             dataObjects,
-            normalizeAttribute: !ShouldPreferContextualRawResolution(expr, context));
+            normalizeAttribute: !ShouldPreferContextualRawResolution(expr, context),
+            preferApplicationDatabaseBinding: context.SinkKind == ExpressionSinkKind.SqlExpression);
         if (!translated.HasSourceReturnType &&
             TryResolveTranslatedSourceBindingReturnType(translated.Code, task, out var translatedSourceReturnType) &&
             !string.IsNullOrWhiteSpace(translatedSourceReturnType))
@@ -691,7 +695,8 @@ internal static partial class ProjectGenerator
         IReadOnlyList<DataObjectDef> dataObjects,
         out SourceTranslatedExpression translated,
         string? contextualExpectedReturnType = null,
-        int depth = 0)
+        int depth = 0,
+        bool preferApplicationDatabaseBinding = false)
     {
         translated = new("", "");
         if (string.IsNullOrWhiteSpace(syntax) || depth > 16)
@@ -800,7 +805,8 @@ internal static partial class ProjectGenerator
                     dataObjects,
                     out var numericSourceFunction,
                     expectedArgType,
-                    depth + 1) &&
+                    depth + 1,
+                    preferApplicationDatabaseBinding) &&
                 SourceReturnTypeMatchesExpected(numericSourceFunction.SourceReturnType, expectedArgType))
             {
                 rewrittenArg = numericSourceFunction.Code;
@@ -812,7 +818,8 @@ internal static partial class ProjectGenerator
                     expectedArgType,
                     task,
                     dataObjects,
-                    depth + 1);
+                    depth + 1,
+                    preferApplicationDatabaseBinding);
             }
 
             if (string.Equals(normalizedFunction, "IF", StringComparison.Ordinal) &&
@@ -1189,13 +1196,28 @@ internal static partial class ProjectGenerator
         string expectedReturnType,
         TaskSemantic task,
         IReadOnlyList<DataObjectDef> dataObjects,
-        int depth)
+        int depth,
+        bool preferApplicationDatabaseBinding = false)
     {
         if (string.IsNullOrWhiteSpace(argSyntax))
             return "";
 
         var trimmed = StripRedundantOuterParentheses(CompleteSourceGrouping(argSyntax.Trim()));
         var normalizedExpectedReturnType = NormalizeReturnTypeToken(expectedReturnType);
+        if (TryTranslateSourceVarIndexLiteral(trimmed, task, dataObjects, out var varIndexCode))
+        {
+            if (string.IsNullOrWhiteSpace(normalizedExpectedReturnType) ||
+                string.Equals(normalizedExpectedReturnType, "Number", StringComparison.Ordinal) ||
+                IsClrObjectReturnTypeForTypedExpression(normalizedExpectedReturnType))
+                return varIndexCode;
+
+            return EmitFromReliableTypeEvidence(
+                varIndexCode,
+                "Number",
+                normalizedExpectedReturnType,
+                "source-var-index-argument").Trim();
+        }
+
         if (IsColumnBaseReturnContract(normalizedExpectedReturnType) &&
             TryTranslateSourceColumnContractArgument(trimmed, task, dataObjects, out var columnArgument))
             return columnArgument;
@@ -1203,7 +1225,7 @@ internal static partial class ProjectGenerator
         if (!string.IsNullOrWhiteSpace(normalizedExpectedReturnType) &&
             !string.Equals(normalizedExpectedReturnType, "Bool", StringComparison.Ordinal) &&
             !IsClrObjectReturnTypeForTypedExpression(normalizedExpectedReturnType) &&
-            TryTranslateWholeKnownSourceFunctionCall(trimmed, task, dataObjects, out var directSourceFunction, normalizedExpectedReturnType, depth + 1) &&
+            TryTranslateWholeKnownSourceFunctionCall(trimmed, task, dataObjects, out var directSourceFunction, normalizedExpectedReturnType, depth + 1, preferApplicationDatabaseBinding) &&
             SourceReturnTypeMatchesExpected(directSourceFunction.SourceReturnType, normalizedExpectedReturnType))
         {
             return directSourceFunction.Code.Trim();
@@ -1214,12 +1236,12 @@ internal static partial class ProjectGenerator
             TryParseWholeXpaSingleQuotedLiteral(WebUtility.HtmlDecode(trimmed), out var sourceLiteralText))
             return ToCSharpLiteral(sourceLiteralText);
 
-        if (string.Equals(expectedReturnType, "Bool", StringComparison.Ordinal))
+        if (string.Equals(normalizedExpectedReturnType, "Bool", StringComparison.Ordinal))
         {
-            if (TryTranslateSourceBooleanExpression(trimmed, task, dataObjects, out var booleanCode, trimmed))
+            if (TryTranslateSourceBooleanExpression(trimmed, task, dataObjects, out var booleanCode, trimmed, preferApplicationDatabaseBinding))
                 return NormalizeStatementBooleanConditionSyntax(booleanCode);
 
-            if (TryTranslateWholeKnownSourceFunctionCall(trimmed, task, dataObjects, out var sourceFunctionTranslated, "Bool", depth + 1))
+            if (TryTranslateWholeKnownSourceFunctionCall(trimmed, task, dataObjects, out var sourceFunctionTranslated, "Bool", depth + 1, preferApplicationDatabaseBinding))
             {
                 var sourceFunctionCode = sourceFunctionTranslated.Code.Trim();
                 if (!string.IsNullOrWhiteSpace(sourceFunctionTranslated.SourceReturnType) &&
@@ -1248,6 +1270,15 @@ internal static partial class ProjectGenerator
         if (TryTranslateSourceLiteralForExpectedReturnType(trimmed, expectedReturnType, out var literalCode))
             return literalCode;
 
+        if (preferApplicationDatabaseBinding &&
+            TryResolveApplicationDatabaseConfigSourceBinding(
+                trimmed,
+                task,
+                normalizedExpectedReturnType,
+                out var applicationDatabaseBinding,
+                out _))
+            return applicationDatabaseBinding;
+
         if (TryReadRegisteredExpressionCallOrdinal(trimmed, out var registeredExpressionOrdinal) &&
             task.ExpressionsSemantic.EntriesByOrdinal.TryGetValue(registeredExpressionOrdinal, out var registeredExpression) &&
             registeredExpression is not null)
@@ -1268,7 +1299,7 @@ internal static partial class ProjectGenerator
         }
 
         if (normalizedExpectedReturnType is "Number" or "Date" or "Time" &&
-            TryTranslateSourceArithmeticExpression(trimmed, task, dataObjects, depth + 1, out var expectedArithmetic, normalizedExpectedReturnType) &&
+            TryTranslateSourceArithmeticExpression(trimmed, task, dataObjects, depth + 1, out var expectedArithmetic, normalizedExpectedReturnType, preferApplicationDatabaseBinding) &&
             SourceReturnTypeMatchesExpected(expectedArithmetic.SourceReturnType, normalizedExpectedReturnType))
             return expectedArithmetic.Code.Trim();
 
@@ -1284,13 +1315,13 @@ internal static partial class ProjectGenerator
         string code;
         string sourceReturnType;
         var usedTypedSourceFunction = false;
-        if (TryTranslateWholeKnownSourceFunctionCall(trimmed, task, dataObjects, out var nested, expectedReturnType, depth + 1))
+        if (TryTranslateWholeKnownSourceFunctionCall(trimmed, task, dataObjects, out var nested, expectedReturnType, depth + 1, preferApplicationDatabaseBinding))
         {
             code = nested.Code;
             sourceReturnType = nested.SourceReturnType;
             usedTypedSourceFunction = true;
         }
-        else if (TryTranslateSourceArithmeticExpression(trimmed, task, dataObjects, depth + 1, out var arithmeticTranslated, expectedReturnType))
+        else if (TryTranslateSourceArithmeticExpression(trimmed, task, dataObjects, depth + 1, out var arithmeticTranslated, expectedReturnType, preferApplicationDatabaseBinding))
         {
             code = arithmeticTranslated.Code;
             sourceReturnType = arithmeticTranslated.SourceReturnType;
@@ -1635,6 +1666,15 @@ internal static partial class ProjectGenerator
                  StringComparison.Ordinal)))
             return parentBinding;
 
+        if (TryResolveSingleLetterApplicationBindingForExpectedSourceType(
+                normalizedToken,
+                task,
+                dataObjects,
+                sourceReturnType,
+                out var applicationBinding,
+                out _))
+            return applicationBinding;
+
         if (TryResolveTranslatedSourceBindingForToken(normalizedToken, task, dataObjects, out var translatedBinding, out var translatedReturnType) &&
             string.Equals(
                 NormalizeReturnTypeToken(translatedReturnType),
@@ -1692,6 +1732,193 @@ internal static partial class ProjectGenerator
         return "";
     }
 
+    private static bool TryResolveSingleLetterApplicationBindingForExpectedSourceType(
+        string token,
+        TaskSemantic task,
+        IReadOnlyList<DataObjectDef> dataObjects,
+        string expectedReturnType,
+        out string binding,
+        out string returnType)
+    {
+        binding = "";
+        returnType = "";
+
+        var normalizedToken = (token ?? "").Trim().ToUpperInvariant();
+        var normalizedExpectedReturnType = NormalizeReturnTypeToken(expectedReturnType);
+        if (normalizedToken.Length != 1 ||
+            string.IsNullOrWhiteSpace(normalizedExpectedReturnType) ||
+            !IsAlphabeticBindingToken(normalizedToken))
+            return false;
+
+        var allTasks = _allTasks ?? Array.Empty<TaskSemantic>();
+        var slot = ToAlphabeticSlot(normalizedToken);
+        var applicationBinding = ResolveApplicationOrdinalBinding(slot, allTasks);
+        if (string.IsNullOrWhiteSpace(applicationBinding) ||
+            !TryResolveBindingReturnTypeForExpectedSourceBinding(applicationBinding, task, out var applicationReturnType) ||
+            !SourceReturnTypeMatchesExpected(applicationReturnType, normalizedExpectedReturnType))
+            return false;
+
+        if (TryResolveLocalOrParentBindingReturnTypeForSingleLetterToken(
+                normalizedToken,
+                task,
+                dataObjects,
+                out var localReturnType) &&
+            SourceReturnTypeMatchesExpected(localReturnType, normalizedExpectedReturnType))
+            return false;
+
+        binding = applicationBinding.Trim();
+        returnType = NormalizeReturnTypeToken(applicationReturnType);
+        return true;
+    }
+
+    private static string ResolveApplicationDatabaseConfigComparisonExpectedReturnType(
+        string ownSyntax,
+        TaskSemantic task,
+        string counterpartReturnType)
+    {
+        if (!SourceReturnTypeMatchesExpected(counterpartReturnType, "Text"))
+            return "";
+
+        return TryResolveApplicationDatabaseConfigSourceBinding(
+            ownSyntax,
+            task,
+            "Text",
+            out _,
+            out _)
+            ? "Text"
+            : "";
+    }
+
+    private static bool TryResolveApplicationDatabaseConfigSourceBinding(
+        string syntax,
+        TaskSemantic task,
+        string expectedReturnType,
+        out string binding,
+        out string returnType)
+    {
+        binding = "";
+        returnType = "";
+
+        var normalizedExpectedReturnType = NormalizeReturnTypeToken(expectedReturnType);
+        if (!string.IsNullOrWhiteSpace(normalizedExpectedReturnType) &&
+            !SourceReturnTypeMatchesExpected(normalizedExpectedReturnType, "Text"))
+            return false;
+
+        var normalizedToken = StripRedundantOuterParentheses(WebUtility.HtmlDecode(syntax ?? "").Trim()).ToUpperInvariant();
+        if (normalizedToken.Length != 1 ||
+            !IsAlphabeticBindingToken(normalizedToken))
+            return false;
+
+        var allTasks = _allTasks ?? Array.Empty<TaskSemantic>();
+        var appTask = allTasks.FirstOrDefault(t => t.MainProgram) ?? allTasks.FirstOrDefault(t => t.ParentOrdinal is null);
+        if (appTask is null)
+            return false;
+
+        var slot = ToAlphabeticSlot(normalizedToken);
+        if (slot <= 0 || slot > appTask.ResourcesSemantic.Ordered.Count)
+            return false;
+
+        var resource = appTask.ResourcesSemantic.Ordered[slot - 1];
+        var memberName = ResolveTaskResourceMemberName(appTask, resource);
+        if (!IsApplicationDatabaseConfigResource(resource, memberName))
+            return false;
+
+        var applicationBinding = $"Application.Instance.{memberName}";
+        if (!TryResolveBindingReturnTypeForExpectedSourceBinding(applicationBinding, task, out var applicationReturnType) ||
+            !SourceReturnTypeMatchesExpected(applicationReturnType, "Text"))
+            return false;
+
+        binding = applicationBinding;
+        returnType = NormalizeReturnTypeToken(applicationReturnType);
+        return true;
+    }
+
+    private static bool IsApplicationDatabaseConfigResource(TaskResourceColumnDef resource, string memberName)
+    {
+        var name = (resource.Name ?? "").Trim();
+        var member = (memberName ?? "").Trim();
+        return LooksLikeDatabaseConfig549Name(name) || LooksLikeDatabaseConfig549Name(member);
+    }
+
+    private static bool LooksLikeDatabaseConfig549Name(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return false;
+
+        var normalized = name.Replace("_", "", StringComparison.Ordinal).ToUpperInvariant();
+        return normalized.Contains("549", StringComparison.Ordinal) &&
+               (normalized.Contains("BANCO", StringComparison.Ordinal) ||
+                normalized.Contains("DATABASE", StringComparison.Ordinal) ||
+                normalized.Contains("DB", StringComparison.Ordinal));
+    }
+
+    private static bool TryResolveBindingReturnTypeForExpectedSourceBinding(
+        string binding,
+        TaskSemantic task,
+        out string returnType)
+    {
+        returnType = "";
+        var normalizedBinding = (binding ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(normalizedBinding))
+            return false;
+
+        if (TryResolveTranslatedSourceBindingReturnType(normalizedBinding, task, out returnType) &&
+            !string.IsNullOrWhiteSpace(returnType))
+            return true;
+
+        return TryResolveSimpleSourceReturnTypeFromResourcePath(task, normalizedBinding, out returnType) &&
+               !string.IsNullOrWhiteSpace(returnType);
+    }
+
+    private static bool TryResolveLocalOrParentBindingReturnTypeForSingleLetterToken(
+        string normalizedToken,
+        TaskSemantic task,
+        IReadOnlyList<DataObjectDef> dataObjects,
+        out string returnType)
+    {
+        returnType = "";
+        if (string.IsNullOrWhiteSpace(normalizedToken) ||
+            normalizedToken.Length != 1 ||
+            !IsAlphabeticBindingToken(normalizedToken))
+            return false;
+
+        if (task.SelectsSemantic.ItemsByName.TryGetValue(normalizedToken, out var directSelect) &&
+            directSelect is not null &&
+            TryResolveSourceSelectReturnType(directSelect, task, dataObjects, out returnType) &&
+            !string.IsNullOrWhiteSpace(returnType))
+            return true;
+
+        var slot = ToAlphabeticSlot(normalizedToken);
+        var columnIndex = slot - 2;
+        if (columnIndex > 0 &&
+            columnIndex <= task.ResourcesSemantic.Ordered.Count &&
+            TryMapSourceResourceReturnType(task.ResourcesSemantic.Ordered[columnIndex - 1], task, out returnType) &&
+            !string.IsNullOrWhiteSpace(returnType))
+            return true;
+
+        if (TryResolveParentSourceResourceBinding(normalizedToken, task, out _, out returnType) &&
+            !string.IsNullOrWhiteSpace(returnType))
+            return true;
+
+        if (task.ResourcesSemantic.ByName.TryGetValue(normalizedToken, out var namedResource) &&
+            namedResource is not null &&
+            TryMapSourceResourceReturnType(namedResource, task, out returnType) &&
+            !string.IsNullOrWhiteSpace(returnType))
+            return true;
+
+        if (task.ResourcesSemantic.ByLegacyName.TryGetValue(normalizedToken, out var legacyResource) &&
+            legacyResource is not null &&
+            TryMapSourceResourceReturnType(legacyResource, task, out returnType) &&
+            !string.IsNullOrWhiteSpace(returnType))
+            return true;
+
+        var ordinalBinding = ResolveExpressionOrdinalBinding(normalizedToken, task, _allTasks ?? Array.Empty<TaskSemantic>(), dataObjects);
+        return !string.IsNullOrWhiteSpace(ordinalBinding) &&
+               !ordinalBinding.StartsWith("Application.Instance.", StringComparison.Ordinal) &&
+               TryResolveBindingReturnTypeForExpectedSourceBinding(ordinalBinding, task, out returnType) &&
+               !string.IsNullOrWhiteSpace(returnType);
+    }
+
     private static bool TryResolveDirectSourceSelectResourceBinding(
         TaskLogicSelectDef select,
         TaskSemantic task,
@@ -1721,7 +1948,8 @@ internal static partial class ProjectGenerator
         IReadOnlyList<DataObjectDef> dataObjects,
         int depth,
         out SourceTranslatedExpression translated,
-        string expectedReturnType = "")
+        string expectedReturnType = "",
+        bool preferApplicationDatabaseBinding = false)
     {
         translated = new("", "");
         if (string.IsNullOrWhiteSpace(syntax) || depth > 24)
@@ -1833,8 +2061,8 @@ internal static partial class ProjectGenerator
         }
         if (ShouldPreferDateDifferenceRightOperand(arithmetic.Value.Operator, arithmetic.Value.Right, leftSourceType, rightSourceType, normalizedExpectedReturnType))
             rightSourceType = "Date";
-        var leftCode = TranslateSourceFunctionArgument(arithmetic.Value.Left, leftSourceType, task, dataObjects, depth + 1);
-        var rightCode = TranslateSourceFunctionArgument(arithmetic.Value.Right, rightSourceType, task, dataObjects, depth + 1);
+        var leftCode = TranslateSourceFunctionArgument(arithmetic.Value.Left, leftSourceType, task, dataObjects, depth + 1, preferApplicationDatabaseBinding);
+        var rightCode = TranslateSourceFunctionArgument(arithmetic.Value.Right, rightSourceType, task, dataObjects, depth + 1, preferApplicationDatabaseBinding);
         if (string.IsNullOrWhiteSpace(leftCode) || string.IsNullOrWhiteSpace(rightCode))
             return false;
 
@@ -2081,7 +2309,8 @@ internal static partial class ProjectGenerator
         TaskSemantic task,
         IReadOnlyList<DataObjectDef> dataObjects,
         out string code,
-        string? groupingSyntax = null)
+        string? groupingSyntax = null,
+        bool preferApplicationDatabaseBinding = false)
     {
         code = "";
         if (string.IsNullOrWhiteSpace(syntax))
@@ -2093,13 +2322,13 @@ internal static partial class ProjectGenerator
         var preferAndSplit = HasParenthesizedOrBeforeTopLevelAnd(WebUtility.HtmlDecode(groupingSyntax ?? syntax));
         if (!TrySplitTopLevelXpaBooleanBinaryExpression(decoded, out var left, out var op, out var right, preferAndSplit))
         {
-            if (TryTranslateSourceLeadingNotExpression(decoded, task, dataObjects, out code))
+            if (TryTranslateSourceLeadingNotExpression(decoded, task, dataObjects, out code, preferApplicationDatabaseBinding))
                 return true;
 
-            if (TryTranslateSourceComparisonExpression(decoded, task, dataObjects, out code))
+            if (TryTranslateSourceComparisonExpression(decoded, task, dataObjects, out code, preferApplicationDatabaseBinding))
                 return true;
 
-            if (TryTranslateWholeKnownSourceFunctionCall(decoded, task, dataObjects, out var sourceFunctionTranslated, "Bool") &&
+            if (TryTranslateWholeKnownSourceFunctionCall(decoded, task, dataObjects, out var sourceFunctionTranslated, "Bool", preferApplicationDatabaseBinding: preferApplicationDatabaseBinding) &&
                 string.Equals(NormalizeReturnTypeToken(sourceFunctionTranslated.SourceReturnType), "Bool", StringComparison.Ordinal))
             {
                 code = NormalizeStatementBooleanConditionSyntax(sourceFunctionTranslated.Code);
@@ -2109,8 +2338,8 @@ internal static partial class ProjectGenerator
             return false;
         }
 
-        var leftCode = TranslateSourceBooleanOperand(left, task, dataObjects);
-        var rightCode = TranslateSourceBooleanOperand(right, task, dataObjects);
+        var leftCode = TranslateSourceBooleanOperand(left, task, dataObjects, preferApplicationDatabaseBinding);
+        var rightCode = TranslateSourceBooleanOperand(right, task, dataObjects, preferApplicationDatabaseBinding);
         if (string.IsNullOrWhiteSpace(leftCode) || string.IsNullOrWhiteSpace(rightCode))
             return false;
 
@@ -2220,19 +2449,20 @@ internal static partial class ProjectGenerator
         string? syntax,
         TaskSemantic task,
         IReadOnlyList<DataObjectDef> dataObjects,
-        out string code)
+        out string code,
+        bool preferApplicationDatabaseBinding = false)
     {
         code = "";
         if (!TryTakeSourceLeadingNotOperand(syntax, out var operand))
             return false;
 
-        if (TryTranslateSourceBooleanExpression(operand, task, dataObjects, out var operandCode, operand))
+        if (TryTranslateSourceBooleanExpression(operand, task, dataObjects, out var operandCode, operand, preferApplicationDatabaseBinding))
         {
             code = $"u.Not({operandCode.Trim()})";
             return true;
         }
 
-        if (TryTranslateWholeKnownSourceFunctionCall(operand, task, dataObjects, out var sourceFunctionTranslated, "Bool"))
+        if (TryTranslateWholeKnownSourceFunctionCall(operand, task, dataObjects, out var sourceFunctionTranslated, "Bool", preferApplicationDatabaseBinding: preferApplicationDatabaseBinding))
         {
             var sourceFunctionCode = sourceFunctionTranslated.Code.Trim();
             if (!string.IsNullOrWhiteSpace(sourceFunctionTranslated.SourceReturnType) &&
@@ -2284,16 +2514,17 @@ internal static partial class ProjectGenerator
     private static string TranslateSourceBooleanOperand(
         string syntax,
         TaskSemantic task,
-        IReadOnlyList<DataObjectDef> dataObjects)
+        IReadOnlyList<DataObjectDef> dataObjects,
+        bool preferApplicationDatabaseBinding = false)
     {
         var trimmed = StripRedundantOuterParentheses(syntax.Trim());
-        if (TryTranslateSourceBooleanExpression(trimmed, task, dataObjects, out var nested))
+        if (TryTranslateSourceBooleanExpression(trimmed, task, dataObjects, out var nested, preferApplicationDatabaseBinding: preferApplicationDatabaseBinding))
             return nested;
 
-        if (TryTranslateSourceComparisonExpression(trimmed, task, dataObjects, out var comparisonCode))
+        if (TryTranslateSourceComparisonExpression(trimmed, task, dataObjects, out var comparisonCode, preferApplicationDatabaseBinding))
             return comparisonCode;
 
-        if (TryTranslateWholeKnownSourceFunctionCall(trimmed, task, dataObjects, out var sourceFunctionTranslated, "Bool"))
+        if (TryTranslateWholeKnownSourceFunctionCall(trimmed, task, dataObjects, out var sourceFunctionTranslated, "Bool", preferApplicationDatabaseBinding: preferApplicationDatabaseBinding))
             return string.Equals(NormalizeReturnTypeToken(sourceFunctionTranslated.SourceReturnType), "Bool", StringComparison.Ordinal)
                 ? NormalizeStatementBooleanConditionSyntax(sourceFunctionTranslated.Code)
                 : RewriteBooleanOperand(task, sourceFunctionTranslated.Code);
@@ -2308,7 +2539,8 @@ internal static partial class ProjectGenerator
         string syntax,
         TaskSemantic task,
         IReadOnlyList<DataObjectDef> dataObjects,
-        out string code)
+        out string code,
+        bool preferApplicationDatabaseBinding = false)
     {
         code = "";
         if (!TrySplitTopLevelXpaComparisonExpression(syntax, out var left, out var comparisonOperator, out var right))
@@ -2329,21 +2561,47 @@ internal static partial class ProjectGenerator
                 rightType = normalizedTranslatedRightType;
         }
         var matchedExpectedType = ResolveMatchedComparisonExpectedReturnType(leftType, rightType);
+        var leftApplicationExpectedType = ResolveAmbiguousSingleLetterApplicationComparisonExpectedReturnType(
+            left,
+            leftType,
+            rightType,
+            task,
+            dataObjects);
+        var rightApplicationExpectedType = ResolveAmbiguousSingleLetterApplicationComparisonExpectedReturnType(
+            right,
+            rightType,
+            leftType,
+            task,
+            dataObjects);
+        if (preferApplicationDatabaseBinding)
+        {
+            var leftDatabaseExpectedType = ResolveApplicationDatabaseConfigComparisonExpectedReturnType(left, task, rightType);
+            if (!string.IsNullOrWhiteSpace(leftDatabaseExpectedType))
+                leftApplicationExpectedType = leftDatabaseExpectedType;
+
+            var rightDatabaseExpectedType = ResolveApplicationDatabaseConfigComparisonExpectedReturnType(right, task, leftType);
+            if (!string.IsNullOrWhiteSpace(rightDatabaseExpectedType))
+                rightApplicationExpectedType = rightDatabaseExpectedType;
+        }
         var dominantExpectedType = string.IsNullOrWhiteSpace(matchedExpectedType)
             ? ResolveDominantComparisonExpectedReturnType(left, leftType, right, rightType)
             : "";
-        var leftExpectedType = !string.IsNullOrWhiteSpace(dominantExpectedType)
+        var leftExpectedType = !string.IsNullOrWhiteSpace(leftApplicationExpectedType)
+            ? leftApplicationExpectedType
+            : !string.IsNullOrWhiteSpace(dominantExpectedType)
             ? dominantExpectedType
             : !string.IsNullOrWhiteSpace(matchedExpectedType)
                 ? matchedExpectedType
                 : ResolveCounterpartComparisonExpectedReturnType(left, leftType, rightType, task, dataObjects);
-        var rightExpectedType = !string.IsNullOrWhiteSpace(dominantExpectedType)
+        var rightExpectedType = !string.IsNullOrWhiteSpace(rightApplicationExpectedType)
+            ? rightApplicationExpectedType
+            : !string.IsNullOrWhiteSpace(dominantExpectedType)
             ? dominantExpectedType
             : !string.IsNullOrWhiteSpace(matchedExpectedType)
                 ? matchedExpectedType
                 : ResolveCounterpartComparisonExpectedReturnType(right, rightType, leftType, task, dataObjects);
-        var leftCode = TranslateSourceBooleanScalarOperand(left, task, dataObjects, leftExpectedType);
-        var rightCode = TranslateSourceBooleanScalarOperand(right, task, dataObjects, rightExpectedType);
+        var leftCode = TranslateSourceBooleanScalarOperand(left, task, dataObjects, leftExpectedType, preferApplicationDatabaseBinding);
+        var rightCode = TranslateSourceBooleanScalarOperand(right, task, dataObjects, rightExpectedType, preferApplicationDatabaseBinding);
         code = $"{leftCode} {comparisonOperator} {rightCode}";
         code = CollapseRedundantScalarCastWrappersDeep(code);
         return true;
@@ -2353,7 +2611,8 @@ internal static partial class ProjectGenerator
         string syntax,
         TaskSemantic task,
         IReadOnlyList<DataObjectDef> dataObjects,
-        string expectedReturnType = "")
+        string expectedReturnType = "",
+        bool preferApplicationDatabaseBinding = false)
     {
         syntax = StripRedundantOuterParentheses(syntax.Trim());
         var normalizedExpectedReturnType = NormalizeReturnTypeToken(expectedReturnType);
@@ -2383,9 +2642,9 @@ internal static partial class ProjectGenerator
         }
 
         if (!string.IsNullOrWhiteSpace(normalizedExpectedReturnType))
-            return TranslateSourceFunctionArgument(syntax, normalizedExpectedReturnType, task, dataObjects, 0).Trim();
+            return TranslateSourceFunctionArgument(syntax, normalizedExpectedReturnType, task, dataObjects, 0, preferApplicationDatabaseBinding).Trim();
 
-        if (TryTranslateWholeKnownSourceFunctionCall(syntax, task, dataObjects, out var sourceFunctionTranslated))
+        if (TryTranslateWholeKnownSourceFunctionCall(syntax, task, dataObjects, out var sourceFunctionTranslated, preferApplicationDatabaseBinding: preferApplicationDatabaseBinding))
             return sourceFunctionTranslated.Code.Trim();
 
         var translated = NormalizeDateConstructorMappings(TranslateXpaExpressionToCSharp(syntax.Trim(), task, dataObjects));
@@ -2445,6 +2704,30 @@ internal static partial class ProjectGenerator
             return "";
 
         return counterpartReturnType;
+    }
+
+    private static string ResolveAmbiguousSingleLetterApplicationComparisonExpectedReturnType(
+        string ownSyntax,
+        string ownReturnType,
+        string counterpartReturnType,
+        TaskSemantic task,
+        IReadOnlyList<DataObjectDef> dataObjects)
+    {
+        var expected = GetValueReturnType(NormalizeReturnTypeToken(counterpartReturnType));
+        if (string.IsNullOrWhiteSpace(expected) ||
+            string.Equals(expected, "object", StringComparison.Ordinal) ||
+            SourceReturnTypeMatchesExpected(ownReturnType, expected))
+            return "";
+
+        return TryResolveSingleLetterApplicationBindingForExpectedSourceType(
+            ownSyntax,
+            task,
+            dataObjects,
+            expected,
+            out _,
+            out _)
+            ? expected
+            : "";
     }
 
     private static bool IsSourceUntypedParameterGetter(string syntax)
@@ -3291,6 +3574,9 @@ internal static partial class ProjectGenerator
         if (!string.Equals(stripped, trimmed, StringComparison.Ordinal) &&
             !string.IsNullOrWhiteSpace(stripped))
             return ResolveSourceExpressionReturnType(stripped, task, dataObjects, depth + 1);
+
+        if (TryTranslateSourceVarIndexLiteral(trimmed, task, dataObjects, out _))
+            return "Number";
 
         if (TryResolveXpaLogicalLiteralCode(trimmed, out _))
             return "Bool";

@@ -482,7 +482,6 @@ internal static partial class ProjectGenerator
         if (IsKnownExpressionReturnTypeCompatible(operand, expectedValueReturnType, task))
             return StripRedundantOuterParentheses(operand.Trim());
 
-        TrackLegacyExpressionTreatment("NormalizeType", nameof(NormalizeComparisonOperandForExpected));
         if (string.Equals(expected.AttrObj, "FIELD_NUMERIC", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(expectedValueReturnType, "Number", StringComparison.Ordinal))
         {

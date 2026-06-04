@@ -716,7 +716,7 @@ internal static partial class ProjectGenerator
             }
         }
 
-        return rc.AttrObj switch
+        var rendered = rc.AttrObj switch
         {
             "FIELD_NUMERIC" => $"{conditionSource} != 0",
             "FIELD_BOOLEAN" => $"{conditionSource} != false",
@@ -726,6 +726,12 @@ internal static partial class ProjectGenerator
             "FIELD_TIME" => $"{conditionSource} != 0",
             _ => ""
         };
+        return TrackCriticalExternalCoercionIfBridgeChanged(
+            "DataView",
+            nameof(ResolveParameterRangeConditionExpression),
+            conditionSource,
+            rendered,
+            $"attr={rc.AttrObj} expr={conditionSource}");
     }
 }
 

@@ -1118,14 +1118,20 @@ public static class ConversionRunner
     private static void CopyProjectResourceFolders(string xmlPath, string solutionRoot)
     {
         var sourceDir = Path.GetDirectoryName(xmlPath);
-        if (string.IsNullOrWhiteSpace(sourceDir))
-            return;
+        var candidates = new List<string>();
+        if (!string.IsNullOrWhiteSpace(sourceDir))
+        {
+            candidates.Add(Path.Combine(sourceDir, "Resources"));
+            candidates.Add(Path.Combine(sourceDir, "resources"));
+        }
 
-        foreach (var candidate in new[]
-                 {
-                     Path.Combine(sourceDir, "Resources"),
-                     Path.Combine(sourceDir, "resources")
-                 })
+        if (!string.IsNullOrWhiteSpace(_runtimeRootOverride))
+        {
+            candidates.Add(Path.Combine(_runtimeRootOverride!, "Resources"));
+            candidates.Add(Path.Combine(_runtimeRootOverride!, "resources"));
+        }
+
+        foreach (var candidate in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
         {
             if (!Directory.Exists(candidate))
                 continue;

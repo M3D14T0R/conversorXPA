@@ -13,7 +13,7 @@ internal static partial class ProjectGenerator
         TrackLegacyExpressionTreatment("GeneratedCleanup", nameof(NormalizeGeneratedTaskCode));
         var taskDetail = CreateNewLegacyGeneratedTaskDetail(task);
         var before = code;
-        code = TrackNewLegacyCleanupTreatmentIfChanged("GeneratedCleanup", nameof(NormalizeGeneratedCode), before, NormalizeGeneratedCode(before), taskDetail);
+        code = TrackNewLegacyCleanupTreatmentIfChanged("GeneratedCleanup", nameof(NormalizeGeneratedCode), before, NormalizeGeneratedCode(before, taskDetail), taskDetail);
 
         before = code;
         code = TrackNewLegacyCleanupTreatmentIfChanged("GeneratedCleanup", nameof(RewriteGeneratedColumnIndexOfCalls), before, RewriteGeneratedColumnIndexOfCalls(before, task), taskDetail);
@@ -43,12 +43,13 @@ internal static partial class ProjectGenerator
         return rewritten;
     }
 
-    private static string NormalizeGeneratedCode(string code)
+    private static string NormalizeGeneratedCode(string code, string? taskDetail = null)
     {
         TrackLegacyExpressionTreatment("GeneratedCleanup", nameof(NormalizeGeneratedCode));
         if (string.IsNullOrWhiteSpace(code))
             return code;
 
+        var before = code;
         code = code
             .Replace("\u00E2\u20AC\u2122", "\u2019", StringComparison.Ordinal)
             .Replace("\u00E2\u20AC\u02DC", "\u2018", StringComparison.Ordinal)
@@ -87,22 +88,69 @@ internal static partial class ProjectGenerator
             .Replace("\u00C2\u00B0", "\u00B0", StringComparison.Ordinal)
             .Replace("\u00C2\u00BA", "\u00BA", StringComparison.Ordinal)
             .Replace("\u00C2\u00AA", "\u00AA", StringComparison.Ordinal);
+        LogGeneratedCleanupStepIfChanged(nameof(NormalizeGeneratedCode) + ".RepairMojibake", before, code, taskDetail);
 
+        before = code;
         code = RewriteSilentSetBlobAssignments(code);
-        code = RewriteMalformedApplicationParameterIndexCalls(code);
-        code = RewriteMalformedApplicationLevelCalls(code);
-        code = RewriteApplicationTextTruthiness(code);
-        code = RewriteArrayColumnNullChecks(code);
-        code = RewriteArrayColumnIndexOfCalls(code);
-        code = RewriteGeneratedColumnIndexOfCalls(code);
-        code = RewriteKnownBooleanFunctionNumericComparisons(code);
-        code = NormalizeStandaloneParenthesizedInvocationStatements(code);
-        code = RepairMalformedBooleanStatementHeaders(code);
-        code = CollapseDuplicateIfBlocks(code);
-        code = code.Replace("new Cigam.Ambiente.Padroes.BuscaPadraoModel(", "Cigam.Ambiente.Padroes.BuscaPadraoModel(", StringComparison.Ordinal);
+        LogGeneratedCleanupStepIfChanged(nameof(RewriteSilentSetBlobAssignments), before, code, taskDetail);
 
+        before = code;
+        code = RewriteMalformedApplicationParameterIndexCalls(code);
+        LogGeneratedCleanupStepIfChanged(nameof(RewriteMalformedApplicationParameterIndexCalls), before, code, taskDetail);
+
+        before = code;
+        code = RewriteMalformedApplicationLevelCalls(code);
+        LogGeneratedCleanupStepIfChanged(nameof(RewriteMalformedApplicationLevelCalls), before, code, taskDetail);
+
+        before = code;
+        code = RewriteApplicationTextTruthiness(code);
+        LogGeneratedCleanupStepIfChanged(nameof(RewriteApplicationTextTruthiness), before, code, taskDetail);
+
+        before = code;
+        code = RewriteArrayColumnNullChecks(code);
+        LogGeneratedCleanupStepIfChanged(nameof(RewriteArrayColumnNullChecks), before, code, taskDetail);
+
+        before = code;
+        code = RewriteArrayColumnIndexOfCalls(code);
+        LogGeneratedCleanupStepIfChanged(nameof(RewriteArrayColumnIndexOfCalls), before, code, taskDetail);
+
+        before = code;
+        code = RewriteGeneratedColumnIndexOfCalls(code);
+        LogGeneratedCleanupStepIfChanged(nameof(RewriteGeneratedColumnIndexOfCalls), before, code, taskDetail);
+
+        before = code;
+        code = RewriteKnownBooleanFunctionNumericComparisons(code);
+        LogGeneratedCleanupStepIfChanged(nameof(RewriteKnownBooleanFunctionNumericComparisons), before, code, taskDetail);
+
+        before = code;
+        code = NormalizeStandaloneParenthesizedInvocationStatements(code);
+        LogGeneratedCleanupStepIfChanged(nameof(NormalizeStandaloneParenthesizedInvocationStatements), before, code, taskDetail);
+
+        before = code;
+        code = RepairMalformedBooleanStatementHeaders(code);
+        LogGeneratedCleanupStepIfChanged(nameof(RepairMalformedBooleanStatementHeaders), before, code, taskDetail);
+
+        before = code;
+        code = CollapseDuplicateIfBlocks(code);
+        LogGeneratedCleanupStepIfChanged(nameof(CollapseDuplicateIfBlocks), before, code, taskDetail);
+
+        before = code;
         code = code.Replace("Application.AllPrograms.", "Application.Instance.AllPrograms.", StringComparison.Ordinal);
+        LogGeneratedCleanupStepIfChanged("RewriteApplicationAllPrograms", before, code, taskDetail);
         return code;
+    }
+
+    private static void LogGeneratedCleanupStepIfChanged(string method, string before, string after, string? taskDetail)
+    {
+        if (string.Equals(before, after, StringComparison.Ordinal) ||
+            AreTelemetryEquivalentExpressionForms(before, after))
+            return;
+
+        ConversionTelemetry.Log(
+            "GENERATED_CLEANUP_STEP",
+            string.IsNullOrWhiteSpace(taskDetail)
+                ? method
+                : string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{method} {taskDetail}"));
     }
 
     private static string RewriteKnownBooleanFunctionNumericComparisons(string code)
@@ -237,7 +285,14 @@ internal static partial class ProjectGenerator
             code = Regex.Replace(
                 code,
                 $@"u\.IsNull\(\s*{Regex.Escape(name)}\s*\)",
-                $"({name}.Value == null)",
+                match =>
+                {
+                    var replacement = $"({name}.Value == null)";
+                    ConversionTelemetry.Log(
+                        "GENERATED_CLEANUP_DETAIL",
+                        $"RewriteArrayColumnNullChecks from={QuoteTelemetry(match.Value)} to={QuoteTelemetry(replacement)}");
+                    return replacement;
+                },
                 RegexOptions.CultureInvariant);
         }
 
@@ -271,7 +326,11 @@ internal static partial class ProjectGenerator
                 if (!ownerLooksLikeGeneratedColumn || !columnNames.Contains(argMember))
                     return match.Value;
 
-                return $"u.IndexOf({match.Groups["arg"].Value})";
+                var replacement = $"u.IndexOf({match.Groups["arg"].Value})";
+                ConversionTelemetry.Log(
+                    "GENERATED_CLEANUP_DETAIL",
+                    $"RewriteGeneratedColumnIndexOfCalls from={QuoteTelemetry(match.Value)} to={QuoteTelemetry(replacement)}");
+                return replacement;
             },
             RegexOptions.CultureInvariant);
     }
@@ -298,7 +357,11 @@ internal static partial class ProjectGenerator
                     !IsGeneratedIndexReference(task, arg, columnNames))
                     return match.Value;
 
-                return $"u.IndexOf({arg})";
+                var replacement = $"u.IndexOf({arg})";
+                ConversionTelemetry.Log(
+                    "GENERATED_CLEANUP_DETAIL",
+                    $"RewriteGeneratedColumnIndexOfCalls task={task.Ordinal} from={QuoteTelemetry(match.Value)} to={QuoteTelemetry(replacement)}");
+                return replacement;
             },
             RegexOptions.CultureInvariant);
     }
@@ -548,6 +611,7 @@ internal static partial class ProjectGenerator
 
         var normalized = code.Replace("\r\n", "\n", StringComparison.Ordinal);
         var lines = normalized.Split('\n');
+        var changed = false;
         for (var i = 0; i < lines.Length; i++)
         {
             var line = lines[i];
@@ -575,12 +639,17 @@ internal static partial class ProjectGenerator
                 !string.Equals(functionName, "u.Blb2File", StringComparison.OrdinalIgnoreCase))
                 continue;
 
+            ConversionTelemetry.Log(
+                "GENERATED_CLEANUP_DETAIL",
+                $"RewriteSilentSetBlobAssignments lhs={QuoteTelemetry(lhs)} rhs={QuoteTelemetry(TruncateTelemetryValue(rhs))}");
+
             var indentLength = line.TakeWhile(char.IsWhiteSpace).Count();
             var indent = line[..indentLength];
             lines[i] = $"{indent}{lhs}.Value = {rhs};";
+            changed = true;
         }
 
-        return string.Join("\r\n", lines);
+        return changed ? string.Join("\r\n", lines) : code;
     }
 
     private static string RewriteMalformedApplicationParameterIndexCalls(string code)
@@ -591,6 +660,7 @@ internal static partial class ProjectGenerator
 
         var normalized = code.Replace("\r\n", "\n", StringComparison.Ordinal);
         const string instanceMarker = "Application.Instance.";
+        var changed = false;
         var index = normalized.IndexOf(instanceMarker, StringComparison.Ordinal);
         while (index >= 0)
         {
@@ -637,11 +707,16 @@ internal static partial class ProjectGenerator
                 continue;
             }
 
-            normalized = normalized[..index] + $"u.IndexOf({splitArgs[0].Trim()})" + normalized[(closeParen + 1)..];
+            var replacement = $"u.IndexOf({splitArgs[0].Trim()})";
+            ConversionTelemetry.Log(
+                "GENERATED_CLEANUP_DETAIL",
+                $"RewriteMalformedApplicationParameterIndexCalls member={QuoteTelemetry(memberName)} replacement={QuoteTelemetry(replacement)}");
+            normalized = normalized[..index] + replacement + normalized[(closeParen + 1)..];
+            changed = true;
             index = normalized.IndexOf(instanceMarker, index + "u.IndexOf(".Length, StringComparison.Ordinal);
         }
 
-        return normalized.Replace("\n", "\r\n", StringComparison.Ordinal);
+        return changed ? normalized.Replace("\n", "\r\n", StringComparison.Ordinal) : code;
     }
 
     private static string RewriteMalformedApplicationLevelCalls(string code)
@@ -653,6 +728,7 @@ internal static partial class ProjectGenerator
 
         var normalized = code.Replace("\r\n", "\n", StringComparison.Ordinal);
         const string instanceMarker = "Application.Instance.";
+        var changed = false;
         var index = normalized.IndexOf(instanceMarker, StringComparison.Ordinal);
         while (index >= 0)
         {
@@ -683,11 +759,16 @@ internal static partial class ProjectGenerator
                 continue;
             }
 
-            normalized = normalized[..index] + $"u.Level({arguments})" + normalized[(closeParen + 1)..];
+            var replacement = $"u.Level({arguments})";
+            ConversionTelemetry.Log(
+                "GENERATED_CLEANUP_DETAIL",
+                $"RewriteMalformedApplicationLevelCalls member={QuoteTelemetry(normalized[memberStart..memberEnd])} replacement={QuoteTelemetry(replacement)}");
+            normalized = normalized[..index] + replacement + normalized[(closeParen + 1)..];
+            changed = true;
             index = normalized.IndexOf(instanceMarker, index + "u.Level(".Length, StringComparison.Ordinal);
         }
 
-        return normalized.Replace("\n", "\r\n", StringComparison.Ordinal);
+        return changed ? normalized.Replace("\n", "\r\n", StringComparison.Ordinal) : code;
     }
 
     private static string RewriteApplicationTextTruthiness(string code)
@@ -737,6 +818,7 @@ internal static partial class ProjectGenerator
 
         var normalized = code.Replace("\r\n", "\n", StringComparison.Ordinal);
         var lines = normalized.Split('\n');
+        var changed = false;
         for (var i = 0; i < lines.Length; i++)
         {
             var line = lines[i];
@@ -772,9 +854,10 @@ internal static partial class ProjectGenerator
             // if ((a)) || ((b))
             // Re-wrap the full condition instead of trying to rewrite the expression itself.
             lines[i] = $"{indent}{keyword}({suffix.Trim()})";
+            changed = true;
         }
 
-        return string.Join("\r\n", lines);
+        return changed ? string.Join("\r\n", lines) : code;
     }
 
     private static string CollapseDuplicateIfBlocks(string code)
@@ -784,6 +867,7 @@ internal static partial class ProjectGenerator
 
         var normalized = code.Replace("\r\n", "\n", StringComparison.Ordinal);
         var duplicatePattern = "if (";
+        var changed = false;
         var index = normalized.IndexOf(duplicatePattern, StringComparison.Ordinal);
         while (index >= 0)
         {
@@ -829,10 +913,11 @@ internal static partial class ProjectGenerator
             var outerIndent = GetLineIndent(normalized, index);
             var replacement = $"if ({outerCond})\n{outerIndent}{{\n";
             normalized = normalized[..index] + replacement + normalized[(innerBraceStart + 1)..];
+            changed = true;
             index = normalized.IndexOf(duplicatePattern, index + replacement.Length, StringComparison.Ordinal);
         }
 
-        return normalized.Replace("\n", "\r\n", StringComparison.Ordinal);
+        return changed ? normalized.Replace("\n", "\r\n", StringComparison.Ordinal) : code;
     }
 
     private static int SkipWhitespace(string text, int index)

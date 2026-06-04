@@ -197,7 +197,8 @@ internal static partial class ProjectGenerator
                 if (string.Equals(token, "VAR", StringComparison.OrdinalIgnoreCase) &&
                     IsBareIdentifier(literalValue))
                 {
-                    sb.Append($"u.IndexOf({literalValue})");
+                    var binding = ResolveVarLiteralPostfixBinding(literalValue, task, selectMap, dataObjects);
+                    sb.Append($"u.IndexOf({binding})");
                 }
                 else if ((string.Equals(token, "MENU", StringComparison.OrdinalIgnoreCase) ||
                           string.Equals(token, "FORM", StringComparison.OrdinalIgnoreCase)) &&
@@ -216,6 +217,98 @@ internal static partial class ProjectGenerator
         return sb.ToString();
     }
 
+    private static string ResolveVarLiteralPostfixBinding(
+        string literalValue,
+        TaskSemantic task,
+        IReadOnlyDictionary<string, string> selectMap,
+        IReadOnlyList<DataObjectDef> dataObjects)
+    {
+        var literal = literalValue.Trim();
+        if (string.IsNullOrWhiteSpace(literal))
+            return literal;
+
+        if (selectMap.TryGetValue(literal, out var selectBinding) &&
+            !string.IsNullOrWhiteSpace(selectBinding))
+            return selectBinding;
+
+        var directSelect = task.SelectsSemantic.Items
+            .FirstOrDefault(s => string.Equals(s.Name, literal, StringComparison.OrdinalIgnoreCase));
+        if (directSelect is not null)
+        {
+            var directExpr = ResolveSelectExpression(directSelect, task, dataObjects, "");
+            if (!string.IsNullOrWhiteSpace(directExpr))
+                return directExpr;
+        }
+
+        if (_parentSelectMapByTaskOrdinal.TryGetValue(task.Ordinal, out var parentSelectMap) &&
+            parentSelectMap.TryGetValue(literal, out var parentSelectExpr) &&
+            !string.IsNullOrWhiteSpace(parentSelectExpr))
+            return parentSelectExpr;
+
+        if (TryResolveTaskResourceByLiteralName(task, literal, out var namedResourceBinding))
+            return namedResourceBinding;
+
+        var allTasks = _allTasks ?? Array.Empty<TaskSemantic>();
+        if (TryResolveLocalOrParentOrdinalVarLiteralBinding(literal, task, allTasks, out var ordinalBinding))
+            return ordinalBinding;
+
+        var fallback = ResolveExpressionOrdinalBinding(literal, task, allTasks, dataObjects);
+        return string.IsNullOrWhiteSpace(fallback) ? literal : fallback;
+    }
+
+    private static bool TryResolveTaskResourceByLiteralName(TaskSemantic task, string literal, out string binding)
+    {
+        binding = "";
+        foreach (var resource in task.ResourcesSemantic.Ordered)
+        {
+            var memberName = ResolveTaskResourceMemberName(task, resource);
+            if (string.Equals(resource.Name, literal, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(ToLegacyVariableName(resource.Name ?? ""), literal, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(ToCodeIdentifierPreservingCase(resource.Name ?? ""), literal, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(ToPascalIdentifier(resource.Name ?? ""), literal, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(memberName, literal, StringComparison.OrdinalIgnoreCase))
+            {
+                binding = memberName;
+                return !string.IsNullOrWhiteSpace(binding);
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryResolveLocalOrParentOrdinalVarLiteralBinding(
+        string literal,
+        TaskSemantic task,
+        IReadOnlyList<TaskSemantic> allTasks,
+        out string binding)
+    {
+        binding = "";
+        var normalized = literal.Trim().ToUpperInvariant();
+        if (!IsAlphabeticBindingToken(normalized))
+            return false;
+
+        long slotLong = 0;
+        foreach (var ch in normalized)
+        {
+            slotLong = (slotLong * 26) + (ch - 'A' + 1);
+            if (slotLong > int.MaxValue)
+                return false;
+        }
+
+        var columnIndex = ((int)slotLong) - 2;
+        if (columnIndex <= 0)
+            return false;
+
+        if (columnIndex <= task.ResourcesSemantic.Ordered.Count)
+        {
+            binding = ResolveTaskResourceMemberName(task, task.ResourcesSemantic.Ordered[columnIndex - 1]);
+            return !string.IsNullOrWhiteSpace(binding);
+        }
+
+        binding = ResolveOrdinalBindingFromParentChain(columnIndex, task, allTasks);
+        return !string.IsNullOrWhiteSpace(binding);
+    }
+
     private static string RewriteIdentifierBindingsOutsideQuotes(
         string input,
         TaskSemantic task,
@@ -231,7 +324,8 @@ internal static partial class ProjectGenerator
             "AND", "OR", "NOT", "MOD", "TRUE", "FALSE", "NULL", "DATE", "TIME", "RIGHT", "DSOURCE", "EXP", "VAR",
             // Counter(0) is normalized by the semantic phase to the controller Counter property.
             // It must not be rebound to an application select with the same public name.
-            "Counter"
+            "Counter",
+            "Counter_"
         };
         var resourceMap = task.ResourcesSemantic.Ordered
             .SelectMany(resource =>
@@ -334,16 +428,19 @@ internal static partial class ProjectGenerator
                 continue;
             }
 
-            if (token.Length == 1 &&
-                TryResolveIdentifierBinding(token, appMap) is string singleLetterAppBinding &&
-                !string.IsNullOrWhiteSpace(singleLetterAppBinding))
-            {
-                sb.Append(singleLetterAppBinding);
-                i = tokenEnd;
-                continue;
-            }
+            var replacement = TryResolvePreferredApplicationSingleLetterBinding(
+                input,
+                i,
+                tokenEnd,
+                token,
+                task,
+                selectMap,
+                localMap,
+                parentMap,
+                allTasks,
+                dataObjects);
 
-            var replacement =
+            replacement ??=
                 TryResolveIdentifierBinding(token, resourceMap) ??
                 TryResolveIdentifierBinding(token, localMap) ??
                 TryResolveIdentifierBinding(token, parentMap);
@@ -526,6 +623,364 @@ internal static partial class ProjectGenerator
         return bindings.TryGetValue(token, out var replacement) ? replacement : null;
     }
 
+    private static string? TryResolvePreferredApplicationSingleLetterBinding(
+        string input,
+        int tokenStart,
+        int tokenEnd,
+        string token,
+        TaskSemantic task,
+        IReadOnlyDictionary<string, string> selectMap,
+        IReadOnlyDictionary<string, string> localMap,
+        IReadOnlyDictionary<string, string> parentMap,
+        IReadOnlyList<TaskSemantic> allTasks,
+        IReadOnlyList<DataObjectDef> dataObjects)
+    {
+        if (string.IsNullOrWhiteSpace(token) ||
+            token.Length != 1 ||
+            !IsAlphabeticBindingToken(token))
+            return null;
+
+        var slot = ToAlphabeticSlot(token);
+        var applicationBinding = ResolveApplicationOrdinalBinding(slot, allTasks);
+        if (string.IsNullOrWhiteSpace(applicationBinding) ||
+            !TryResolveBindingReturnTypeForPreference(applicationBinding, task, out var applicationReturnType))
+            return null;
+
+        var localBinding =
+            TryResolveIdentifierBinding(token, localMap) ??
+            TryResolveIdentifierBinding(token, parentMap) ??
+            ResolveExpressionOrdinalBinding(token, task, allTasks, dataObjects);
+
+        if (string.IsNullOrWhiteSpace(localBinding))
+            return applicationBinding;
+
+        if (string.Equals(localBinding.Trim(), applicationBinding.Trim(), StringComparison.Ordinal))
+            return applicationBinding;
+
+        if (!TryResolveBindingReturnTypeForPreference(localBinding, task, out var localReturnType))
+            return applicationBinding;
+
+        if (TryInferIdentifierExpectedReturnType(
+                input,
+                tokenStart,
+                tokenEnd,
+                task,
+                selectMap,
+                localMap,
+                parentMap,
+                allTasks,
+                dataObjects,
+                out var expectedReturnType))
+        {
+            return ReturnTypeMatchesExpected(applicationReturnType, expectedReturnType) &&
+                   !ReturnTypeMatchesExpected(localReturnType, expectedReturnType)
+                ? applicationBinding
+                : null;
+        }
+
+        var localValueType = GetValueReturnType(NormalizeReturnTypeToken(localReturnType));
+        var applicationValueType = GetValueReturnType(NormalizeReturnTypeToken(applicationReturnType));
+        if (IsIdentifierInNumericComparison(input, tokenStart, tokenEnd) &&
+            string.Equals(applicationValueType, "Number", StringComparison.Ordinal) &&
+            !string.Equals(localValueType, "Number", StringComparison.Ordinal))
+            return applicationBinding;
+
+        return string.Equals(localValueType, "object", StringComparison.Ordinal) &&
+               !string.Equals(applicationValueType, "object", StringComparison.Ordinal)
+            ? applicationBinding
+            : null;
+    }
+
+    private static bool TryResolveBindingReturnTypeForPreference(
+        string binding,
+        TaskSemantic task,
+        out string returnType)
+    {
+        returnType = "";
+        if (string.IsNullOrWhiteSpace(binding))
+            return false;
+
+        var trimmed = binding.Trim();
+        if (TryResolveTranslatedSourceBindingReturnType(trimmed, task, out returnType) &&
+            !string.IsNullOrWhiteSpace(returnType))
+            return true;
+
+        if (TryResolveSimpleSourceReturnTypeFromResourcePath(task, trimmed, out returnType) &&
+            !string.IsNullOrWhiteSpace(returnType))
+            return true;
+
+        returnType = NormalizeReturnTypeToken(ResolveExpressionReturnType(null, trimmed, task));
+        return !string.IsNullOrWhiteSpace(returnType);
+    }
+
+    private static bool TryInferIdentifierExpectedReturnType(
+        string input,
+        int tokenStart,
+        int tokenEnd,
+        TaskSemantic task,
+        IReadOnlyDictionary<string, string> selectMap,
+        IReadOnlyDictionary<string, string> localMap,
+        IReadOnlyDictionary<string, string> parentMap,
+        IReadOnlyList<TaskSemantic> allTasks,
+        IReadOnlyList<DataObjectDef> dataObjects,
+        out string expectedReturnType)
+    {
+        expectedReturnType = "";
+
+        if (TryFindContainingFunctionCallArgument(
+                input,
+                tokenStart,
+                tokenEnd,
+                out var functionName,
+                out var argumentIndex,
+                out var argumentCount))
+        {
+            if (TryResolveXpaFunctionEmissionArgumentReturnTypeContract(
+                    functionName,
+                    argumentIndex,
+                    argumentCount,
+                    out expectedReturnType))
+                return true;
+
+            var resolvedFunctionName = ResolveFunctionNameForDotNetArgumentEvidence(
+                functionName,
+                task,
+                selectMap,
+                localMap,
+                parentMap,
+                allTasks,
+                dataObjects);
+            if (TryReadDotNetMethodArgumentTypeEvidence(
+                    resolvedFunctionName,
+                    task,
+                    argumentIndex,
+                    argumentCount,
+                    out expectedReturnType))
+                return true;
+
+            if (TryResolveKnownDotNetMethodArgumentReturnType(
+                    resolvedFunctionName,
+                    task,
+                    argumentIndex,
+                    argumentCount,
+                    out expectedReturnType))
+                return true;
+        }
+
+        if (IsIdentifierInNumericComparison(input, tokenStart, tokenEnd))
+        {
+            expectedReturnType = "Number";
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryResolveKnownDotNetMethodArgumentReturnType(
+        string functionName,
+        TaskSemantic task,
+        int argumentIndex,
+        int argumentCount,
+        out string returnType)
+    {
+        returnType = "";
+        if (string.IsNullOrWhiteSpace(functionName) ||
+            argumentIndex < 0 ||
+            argumentIndex >= argumentCount)
+            return false;
+
+        var dot = functionName.LastIndexOf('.');
+        if (dot <= 0 || dot + 1 >= functionName.Length)
+            return false;
+
+        var ownerPath = functionName[..dot].Trim();
+        var methodName = functionName[(dot + 1)..].Trim();
+        if (string.IsNullOrWhiteSpace(ownerPath) ||
+            string.IsNullOrWhiteSpace(methodName))
+            return false;
+
+        var resource = ResolveResourceByTargetPath(task, ownerPath, _allTasks ?? Array.Empty<TaskSemantic>());
+        if (resource is null || !IsDotNetTaskResource(resource))
+            return false;
+
+        if (argumentIndex == 0 &&
+            argumentCount == 1 &&
+            string.Equals(methodName, "GetPositionFromCharIndex", StringComparison.Ordinal))
+        {
+            returnType = "Number";
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool ReturnTypeMatchesExpected(string returnType, string expectedReturnType)
+    {
+        var valueType = GetValueReturnType(NormalizeReturnTypeToken(returnType));
+        var expectedValueType = GetValueReturnType(NormalizeReturnTypeToken(expectedReturnType));
+        return !string.IsNullOrWhiteSpace(valueType) &&
+               !string.IsNullOrWhiteSpace(expectedValueType) &&
+               string.Equals(valueType, expectedValueType, StringComparison.Ordinal);
+    }
+
+    private static string ResolveFunctionNameForDotNetArgumentEvidence(
+        string functionName,
+        TaskSemantic task,
+        IReadOnlyDictionary<string, string> selectMap,
+        IReadOnlyDictionary<string, string> localMap,
+        IReadOnlyDictionary<string, string> parentMap,
+        IReadOnlyList<TaskSemantic> allTasks,
+        IReadOnlyList<DataObjectDef> dataObjects)
+    {
+        var dot = functionName.LastIndexOf('.');
+        if (dot <= 0 || dot + 1 >= functionName.Length)
+            return functionName;
+
+        var owner = functionName[..dot].Trim();
+        var methodName = functionName[(dot + 1)..].Trim();
+        if (string.IsNullOrWhiteSpace(owner) || string.IsNullOrWhiteSpace(methodName))
+            return functionName;
+
+        var ownerBinding =
+            TryResolveIdentifierBinding(owner, selectMap) ??
+            TryResolveIdentifierBinding(owner, localMap) ??
+            TryResolveIdentifierBinding(owner, parentMap) ??
+            ResolveExpressionOrdinalBinding(owner, task, allTasks, dataObjects);
+
+        return string.IsNullOrWhiteSpace(ownerBinding)
+            ? functionName
+            : ownerBinding.Trim() + "." + methodName;
+    }
+
+    private static bool TryFindContainingFunctionCallArgument(
+        string input,
+        int tokenStart,
+        int tokenEnd,
+        out string functionName,
+        out int argumentIndex,
+        out int argumentCount)
+    {
+        functionName = "";
+        argumentIndex = -1;
+        argumentCount = 0;
+
+        var stack = new List<int>();
+        for (var i = 0; i < tokenStart;)
+        {
+            if (IsQuotedSegmentStart(input, i))
+            {
+                if (!TryReadQuotedSegmentEnd(input, i, out var quoteEnd))
+                    return false;
+                i = quoteEnd + 1;
+                continue;
+            }
+
+            if (input[i] == '(')
+                stack.Add(i);
+            else if (input[i] == ')' && stack.Count > 0)
+                stack.RemoveAt(stack.Count - 1);
+
+            i++;
+        }
+
+        for (var stackIndex = stack.Count - 1; stackIndex >= 0; stackIndex--)
+        {
+            var open = stack[stackIndex];
+            var close = FindMatchingParen(input, open);
+            if (close < tokenEnd)
+                continue;
+
+            if (!TryReadFunctionNameBeforeOpenParen(input, open, out functionName))
+                continue;
+
+            argumentIndex = CountTopLevelCommas(input, open + 1, tokenStart);
+            argumentCount = CountTopLevelCommas(input, open + 1, close) + 1;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryReadFunctionNameBeforeOpenParen(string input, int openParenIndex, out string functionName)
+    {
+        functionName = "";
+        var end = openParenIndex - 1;
+        while (end >= 0 && char.IsWhiteSpace(input[end]))
+            end--;
+        if (end < 0)
+            return false;
+
+        var start = end;
+        while (start >= 0 &&
+               (char.IsLetterOrDigit(input[start]) ||
+                input[start] == '_' ||
+                input[start] == '.'))
+            start--;
+
+        functionName = input[(start + 1)..(end + 1)].Trim();
+        return !string.IsNullOrWhiteSpace(functionName);
+    }
+
+    private static int CountTopLevelCommas(string input, int start, int end)
+    {
+        var commas = 0;
+        var depth = 0;
+        for (var i = start; i < end;)
+        {
+            if (IsQuotedSegmentStart(input, i))
+            {
+                if (!TryReadQuotedSegmentEnd(input, i, out var quoteEnd))
+                    return commas;
+                i = quoteEnd + 1;
+                continue;
+            }
+
+            if (input[i] == '(')
+                depth++;
+            else if (input[i] == ')' && depth > 0)
+                depth--;
+            else if (input[i] == ',' && depth == 0)
+                commas++;
+
+            i++;
+        }
+
+        return commas;
+    }
+
+    private static bool IsIdentifierInNumericComparison(string input, int tokenStart, int tokenEnd)
+    {
+        var after = tokenEnd;
+        while (after < input.Length && char.IsWhiteSpace(input[after]))
+            after++;
+        if (after < input.Length && IsComparisonOperatorStart(input[after]))
+        {
+            var valueStart = after + 1;
+            if (after + 1 < input.Length && input[after + 1] == '=')
+                valueStart++;
+            while (valueStart < input.Length && char.IsWhiteSpace(input[valueStart]))
+                valueStart++;
+            if (valueStart < input.Length && (char.IsDigit(input[valueStart]) || input[valueStart] == '-' || input[valueStart] == '+'))
+                return true;
+        }
+
+        var before = tokenStart - 1;
+        while (before >= 0 && char.IsWhiteSpace(input[before]))
+            before--;
+        if (before >= 0 && IsComparisonOperatorStart(input[before]))
+        {
+            var numberEnd = before - 1;
+            while (numberEnd >= 0 && char.IsWhiteSpace(input[numberEnd]))
+                numberEnd--;
+            return numberEnd >= 0 && char.IsDigit(input[numberEnd]);
+        }
+
+        return false;
+    }
+
+    private static bool IsComparisonOperatorStart(char ch)
+        => ch == '<' || ch == '>' || ch == '=';
+
     private static string? TryBuildUnresolvedSelectGapToken(
         string token,
         TaskSemantic task,
@@ -617,9 +1072,26 @@ internal static partial class ProjectGenerator
         }
 
         AddTaskIdentifierBindings(map, appTask, "Application.Instance.", Array.Empty<DataObjectDef>());
+        foreach (var key in map
+                     .Where(kv => IsApplicationCounterReference(kv.Value))
+                     .Select(kv => kv.Key)
+                     .ToArray())
+        {
+            map.Remove(key);
+        }
         _applicationResourceBindingMap = map;
         return map;
     }
+
+    private static bool IsApplicationCounterReference(string value)
+        => string.Equals(value, "Application.Instance.Counter", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(value, "Application.Instance.Counter_", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsRuntimeCounterBinding(string key, string value)
+        => string.Equals(key, "Counter", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(key, "Counter_", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(value, "Counter", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(value, "Counter_", StringComparison.OrdinalIgnoreCase);
 
     private static void AddTaskIdentifierBindings(
         Dictionary<string, string> map,

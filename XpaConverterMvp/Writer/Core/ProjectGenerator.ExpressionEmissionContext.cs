@@ -522,20 +522,12 @@ internal static partial class ProjectGenerator
             string.IsNullOrWhiteSpace(targetInfo.ModelAttrObj) &&
             leftExpr.Trim().EndsWith(".Hora", StringComparison.OrdinalIgnoreCase))
         {
-            return TrackLegacyExpressionTreatmentIfChanged(
-                "NormalizeType",
-                nameof(NormalizeComparisonRightExpression),
-                original,
-                EmitExpressionForContext(
+            return EmitExpressionForContext(
                 rightExpr,
                 task,
-                new ExpressionEmissionContext(ExpressionSinkKind.FilterComparison, ExpectedTypeForAttrObj("FIELD_TIME"), "", false, null, "")));
+                new ExpressionEmissionContext(ExpressionSinkKind.FilterComparison, ExpectedTypeForAttrObj("FIELD_TIME"), "", false, null, ""));
         }
-        return TrackLegacyExpressionTreatmentIfChanged(
-            "NormalizeType",
-            nameof(NormalizeComparisonRightExpression),
-            original,
-            EmitExpressionForContext(rightExpr, task, CreateFilterComparisonEmissionContext(targetInfo)));
+        return EmitExpressionForContext(rightExpr, task, CreateFilterComparisonEmissionContext(targetInfo));
     }
 
     private static string RewriteSimpleBlobNullComparisons(string expression, TaskSemantic task)
@@ -804,8 +796,8 @@ internal static partial class ProjectGenerator
             return expression;
 
         var normalized = string.Equals(targetType, "Date", StringComparison.OrdinalIgnoreCase)
-            ? NormalizeDateConditionalExpressionCentral(args[0])
-            : NormalizeTimeConditionalExpressionCentral(args[0]);
+            ? EmitScalarArgumentFromEvidence(args[0].Trim(), "Date")
+            : EmitScalarArgumentFromEvidence(args[0].Trim(), "Time");
 
         if (string.Equals(normalized, args[0], StringComparison.Ordinal))
             return expression;
@@ -1088,7 +1080,7 @@ internal static partial class ProjectGenerator
         return trimmed["() =>".Length..].Trim();
     }
 
-    private static string NormalizeExpressionForDeclaredReturnTypeCentral(string code, string returnType, string? attr)
+    private static string NormalizeExpressionForDeclaredReturnTypeCentral(string code, string returnType, string? attr, TaskSemantic? task = null)
     {
         if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(returnType))
             return code;
@@ -1124,10 +1116,10 @@ internal static partial class ProjectGenerator
             {
                 var explicitInner = explicitCastArgs[0].Trim();
                 if (IsKnownTextualExpressionForByteArrayToTextUnwrap(explicitInner))
-                    return NormalizeExpressionForDeclaredReturnTypeCentral(explicitInner, returnType, attr);
+                    return NormalizeExpressionForDeclaredReturnTypeCentral(explicitInner, returnType, attr, task);
             }
 
-            var normalizedInner = NormalizeExpressionForDeclaredReturnTypeCentral(explicitCastArgs[0].Trim(), returnType, attr);
+            var normalizedInner = NormalizeExpressionForDeclaredReturnTypeCentral(explicitCastArgs[0].Trim(), returnType, attr, task);
             var rebuilt = $"{explicitCastName}({normalizedInner})";
             if (string.Equals(returnType, "Text", StringComparison.Ordinal) &&
                 TryUnwrapNestedCastToTextExpressionCentral(rebuilt, out var explicitTextInner))
@@ -1145,14 +1137,12 @@ internal static partial class ProjectGenerator
             var innerTopLevelCall = TryGetTopLevelFunctionName(inner);
             if (inner.StartsWith("new ", StringComparison.Ordinal) ||
                 IsTopLevelCall(innerTopLevelCall, "u.DataViewToDNDataTable"))
-                return NormalizeExpressionForDeclaredReturnTypeCentral(inner, returnType, attr);
+                return NormalizeExpressionForDeclaredReturnTypeCentral(inner, returnType, attr, task);
         }
 
         if (ExpressionAttributeMatchesReturnType(attr, returnType) &&
             !RequiresExplicitNormalizationForDeclaredReturnType(code, returnType))
             return code;
-
-        code = NormalizeConditionalBranchesForDeclaredReturnType(code, returnType, attr);
 
         if (string.Equals(returnType, "Text", StringComparison.Ordinal))
         {
@@ -1166,11 +1156,11 @@ internal static partial class ProjectGenerator
 
         var normalized = returnType switch
         {
-            "Number" => EmitScalarArgumentFromEvidence(code, "Number"),
-            "Date" => EmitScalarArgumentFromEvidence(code, "Date"),
-            "Time" => EmitScalarArgumentFromEvidence(code, "Time"),
-            "Bool" => EmitScalarArgumentFromEvidence(code, "Bool"),
-            "Text" => EmitScalarArgumentFromEvidence(code, "Text"),
+            "Number" => EmitScalarArgumentFromEvidence(code, "Number", task),
+            "Date" => EmitScalarArgumentFromEvidence(code, "Date", task),
+            "Time" => EmitScalarArgumentFromEvidence(code, "Time", task),
+            "Bool" => EmitScalarArgumentFromEvidence(code, "Bool", task),
+            "Text" => EmitScalarArgumentFromEvidence(code, "Text", task),
             "byte[]" => CoerceExpressionWithTypeEngine(code, null, ExpectedTypeForReturnType("byte[]"), alwaysCoerceWholeExpression: true),
             "Text[]" => NormalizeArrayExpressionForDeclaredReturnType(code, "Text"),
             "Number[]" => NormalizeArrayExpressionForDeclaredReturnType(code, "Number"),
@@ -3911,48 +3901,30 @@ internal static partial class ProjectGenerator
         {
             var rewritten = RewriteFunctionCalls(trimmed, "SharedValGet", args => $"u.SharedValGetNumber({string.Join(", ", args)})");
             rewritten = RewriteFunctionCalls(rewritten, "u.SharedValGet", args => $"u.SharedValGetNumber({string.Join(", ", args)})");
-            return TrackLegacyExpressionTreatmentIfChanged(
-                "NormalizeType",
-                nameof(NormalizeNumericFormattingArgumentCentral),
-                original,
-                rewritten);
+            return rewritten;
         }
 
         if (IsTopLevelCall(topLevelCall, "u.CallDLL") || IsTopLevelCall(topLevelCall, "CallDLL"))
-            return TrackLegacyExpressionTreatmentIfChanged(
-                "NormalizeType",
-                nameof(NormalizeNumericFormattingArgumentCentral),
-                original,
-                EmitScalarArgumentFromEvidence(trimmed, "Number"));
+            return task is not null
+                ? EmitExpressionForContext(trimmed, task, CreateExpectedEmissionContext(ExpectedTypeForReturnType("Number")))
+                : EmitScalarArgumentFromEvidence(trimmed, "Number");
 
         if (task is not null)
         {
             var expected = ExpectedTypeForReturnType("Number");
             var rewritten = EmitExpressionForExpectedType(trimmed, task, expected);
             if (!string.Equals(rewritten, trimmed, StringComparison.Ordinal))
-                return TrackLegacyExpressionTreatmentIfChanged(
-                    "NormalizeType",
-                    nameof(NormalizeNumericFormattingArgumentCentral),
-                    original,
-                    rewritten);
+                return rewritten;
 
             var inferred = ResolveExpectedTypeFromExpressionEvidence(task, trimmed);
             var inferredReturnType = GetValueReturnType(inferred.ReturnType);
             if (IsSimpleIdentifierPath(trimmed) &&
                 !string.Equals(inferred.AttrObj, "FIELD_NUMERIC", StringComparison.OrdinalIgnoreCase))
-                return TrackLegacyExpressionTreatmentIfChanged(
-                    "NormalizeType",
-                    nameof(NormalizeNumericFormattingArgumentCentral),
-                    original,
-                    ApplyAttributeCastCentral(trimmed, "FIELD_NUMERIC"));
+                return EmitExpressionForContext(trimmed, task, CreateExpectedEmissionContext(ExpectedTypeForReturnType("Number")));
 
             if (IsSimpleIdentifierPath(trimmed) &&
                 !string.Equals(inferredReturnType, "Number", StringComparison.Ordinal))
-                return TrackLegacyExpressionTreatmentIfChanged(
-                    "NormalizeType",
-                    nameof(NormalizeNumericFormattingArgumentCentral),
-                    original,
-                    ApplyAttributeCastCentral(trimmed, "FIELD_NUMERIC"));
+                return EmitExpressionForContext(trimmed, task, CreateExpectedEmissionContext(ExpectedTypeForReturnType("Number")));
         }
 
         if (IsSimpleIdentifierPath(trimmed) &&
@@ -3964,11 +3936,9 @@ internal static partial class ProjectGenerator
             !IsTopLevelCall(topLevelCall, "u.Val") &&
             !IsTopLevelCall(topLevelCall, "Val"))
         {
-            return TrackLegacyExpressionTreatmentIfChanged(
-                "NormalizeType",
-                nameof(NormalizeNumericFormattingArgumentCentral),
-                original,
-                EmitScalarArgumentFromEvidence(trimmed, "Number"));
+            return task is not null
+                ? EmitExpressionForContext(trimmed, task, CreateExpectedEmissionContext(ExpectedTypeForReturnType("Number")))
+                : EmitScalarArgumentFromEvidence(trimmed, "Number");
         }
 
         return trimmed;
@@ -4180,7 +4150,7 @@ internal static partial class ProjectGenerator
             args[argIndex] = EmitScalarArgumentFromEvidence(
                 StripExpectedAttributeCastWrappers(
                     NormalizeNumericOperands(
-                        NormalizeTimeConditionalExpression(args[argIndex])),
+                        args[argIndex]),
                     "FIELD_TIME"),
                 "Time");
         }
@@ -4499,7 +4469,7 @@ internal static partial class ProjectGenerator
                 return null;
             args[0] = EmitScalarArgumentFromEvidence(
                 StripExpectedAttributeCastWrappers(
-                    NormalizeDateConditionalExpression(args[0].Trim()),
+                    args[0].Trim(),
                     "FIELD_DATE"),
                 "Date");
             if (args.Count > 1)
@@ -4513,7 +4483,7 @@ internal static partial class ProjectGenerator
                 return null;
             args[0] = EmitScalarArgumentFromEvidence(
                 StripExpectedAttributeCastWrappers(
-                    NormalizeTimeConditionalExpression(args[0].Trim()),
+                    args[0].Trim(),
                     "FIELD_TIME"),
                 "Time");
             if (args.Count > 1)
@@ -4698,10 +4668,8 @@ internal static partial class ProjectGenerator
 
         translated = RewriteAncestorResourceMemberReferences(translated, task);
         translated = RewriteTextSinkCallsCentral(translated);
-        translated = NormalizeTextFunctionInputsCentral(translated);
-        translated = NormalizeFormattingFunctionInputsCentral(translated);
         translated = NormalizeNumericOperands(translated);
-        translated = NormalizeConditionalByTypedBranchEvidence(translated);
+        translated = RenderStrictFunctionArgumentBridges(translated, task);
         translated = RewriteSimpleBlobNullComparisons(translated, task);
         translated = RewriteSharedValGetComparisonOperands(translated);
         translated = RewriteSharedValGetByAttribute(attr, translated);
@@ -4748,11 +4716,11 @@ internal static partial class ProjectGenerator
         }
 
         if (string.Equals(attr, "D", StringComparison.OrdinalIgnoreCase))
-            translated = NormalizeDateConditionalExpression(translated);
+            translated = EmitExpressionForContext(translated, task, CreateExpectedEmissionContext(ExpectedTypeForReturnType("Date")));
 
         if (string.Equals(attr, "T", StringComparison.OrdinalIgnoreCase))
         {
-            translated = NormalizeTimeConditionalExpression(translated);
+            translated = EmitExpressionForContext(translated, task, CreateExpectedEmissionContext(ExpectedTypeForReturnType("Time")));
             if (SplitTopLevelArithmeticExpression(translated.Trim()) is not null)
                 translated = EmitExpressionForContext(translated, task, CreateExpectedEmissionContext(ExpectedTypeForReturnType("Time")));
         }
@@ -6967,6 +6935,9 @@ internal static partial class ProjectGenerator
         if (string.IsNullOrWhiteSpace(normalizedFunctionName))
             return false;
 
+        if (TryNormalizeDotNetStaticMethodExpression(normalizedFunctionName, normalizedType, args, out normalizedCtor))
+            return true;
+
         if (!string.IsNullOrWhiteSpace(rawObjectType) &&
             string.Equals(normalizedFunctionName, rawObjectType, StringComparison.Ordinal))
         {
@@ -7013,6 +6984,35 @@ internal static partial class ProjectGenerator
         }
 
         return false;
+    }
+
+    private static bool TryNormalizeDotNetStaticMethodExpression(
+        string normalizedFunctionName,
+        string? normalizedTargetType,
+        IReadOnlyList<string> args,
+        out string normalizedMethodCall)
+    {
+        normalizedMethodCall = "";
+        if (string.IsNullOrWhiteSpace(normalizedFunctionName) ||
+            string.IsNullOrWhiteSpace(normalizedTargetType))
+            return false;
+
+        var dot = normalizedFunctionName.LastIndexOf('.');
+        if (dot <= 0 || dot + 1 >= normalizedFunctionName.Length)
+            return false;
+
+        var ownerType = normalizedFunctionName[..dot];
+        var methodName = normalizedFunctionName[(dot + 1)..];
+        if (!TryReadDotNetMethodReturnType(ownerType, methodName, args.Count, out var returnType))
+            return false;
+
+        var normalizedReturnType = NormalizeDotNetObjectType(returnType);
+        var normalizedExpectedType = NormalizeDotNetObjectType(normalizedTargetType);
+        if (!string.Equals(normalizedReturnType, normalizedExpectedType, StringComparison.Ordinal))
+            return false;
+
+        normalizedMethodCall = $"{ownerType}.{methodName}({string.Join(", ", args)})";
+        return true;
     }
 
     private static string StripLeadingDotNetQualifier(string functionName)
@@ -7431,15 +7431,6 @@ internal static partial class ProjectGenerator
         {
             var parameterType = NormalizeReturnTypeToken(parameters[i].ParameterType);
             var rewritten = CoerceCallArgumentForParameter(args[i].Trim(), parameterType, currentTask, !IsInputParameterDirection(parameters[i].ParameterDirection));
-
-            if ((string.Equals(parameterType, "Number", StringComparison.Ordinal) ||
-                 string.Equals(parameterType, "NumberParameter", StringComparison.Ordinal)) &&
-                TryParseFunctionCall(StripRedundantOuterParentheses(rewritten.Trim()), out var functionName, out var functionArgs) &&
-                IsTopLevelCall(functionName, "u.CastToNumber") &&
-                functionArgs.Count == 1)
-            {
-                rewritten = $"u.CastToNumber({NormalizeCastToNumberInputUsingResolvedTypeCentral(functionArgs[0].Trim(), currentTask)})";
-            }
 
             args[i] = rewritten;
         }

@@ -533,12 +533,19 @@ internal static class SemanticBuilder
 
     private static LayoutSemantic BuildLayoutSemantic(TaskDef task, IReadOnlyList<TaskDef> allTasks, IReadOnlyList<DataObjectDef> dataObjects)
     {
+        var textIoFormIndexes = task.FormIos
+            .Where(io => string.Equals(io.OperationType, "I", StringComparison.OrdinalIgnoreCase) && io.FormEntryIndex.HasValue)
+            .Select(io => io.FormEntryIndex!.Value)
+            .ToHashSet();
+
         var printForms = task.FormEntries
-            .Where(x => string.Equals(x.Model, "FORM_GUI1", StringComparison.OrdinalIgnoreCase))
+            .Where(x => string.Equals(x.Model, "FORM_GUI1", StringComparison.OrdinalIgnoreCase) && !textIoFormIndexes.Contains(x.Index))
             .OrderBy(x => x.Index)
             .ToList();
         var textForms = task.FormEntries
-            .Where(x => string.Equals(x.Model, "FORM_TEXT", StringComparison.OrdinalIgnoreCase))
+            .Where(x =>
+                string.Equals(x.Model, "FORM_TEXT", StringComparison.OrdinalIgnoreCase) ||
+                (string.Equals(x.Model, "FORM_GUI1", StringComparison.OrdinalIgnoreCase) && textIoFormIndexes.Contains(x.Index)))
             .OrderBy(x => x.Index)
             .ToList();
         var mergeForms = task.FormEntries
@@ -1382,8 +1389,18 @@ internal static class SemanticBuilder
         if (appTask is null)
             return result;
         foreach (var kv in appTask.SelectsSemantic.NameToExpression)
+        {
+            if (IsCounterSelectBinding(kv.Key, kv.Value))
+                continue;
             result[kv.Key] = $"Application.Instance.{kv.Value}";
+        }
         return result;
+
+        static bool IsCounterSelectBinding(string key, string value)
+            => string.Equals(key, "Counter", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(key, "Counter_", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(value, "Counter", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(value, "Counter_", StringComparison.OrdinalIgnoreCase);
     }
 
     private static Dictionary<string, string> BuildParentSelectMap(

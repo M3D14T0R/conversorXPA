@@ -127,8 +127,7 @@ internal static partial class ProjectGenerator
                 t.Execution.EndTaskConditionExpressionId.HasValue)
             {
                 var exitCondition = ResolveExpressionCode(t.Execution.EndTaskConditionExpressionId.Value.ToString(), t, dataObjects, CreateBooleanConditionEmissionContext());
-                if (IsTextIoReaderStream(t))
-                    exitCondition = exitCondition.Replace("u.EOF(0,1)", "_ioReport.EndOfFile", StringComparison.OrdinalIgnoreCase);
+                exitCondition = ResolveTextIoEndOfFileExpression(t, exitCondition);
                 var reevaluateArg = ResolveImmediateExitReevaluationArgument(exitCondition, t);
                 if (!string.IsNullOrWhiteSpace(exitCondition) && !string.IsNullOrWhiteSpace(reevaluateArg))
                 {
@@ -142,8 +141,7 @@ internal static partial class ProjectGenerator
                 if (t.Execution.EndTaskConditionExpressionId.HasValue)
                 {
                     var exitCondition = ResolveExpressionCode(t.Execution.EndTaskConditionExpressionId.Value.ToString(), t, dataObjects, CreateBooleanConditionEmissionContext());
-                    if (IsTextIoReaderStream(t))
-                        exitCondition = exitCondition.Replace("u.EOF(0,1)", "_ioReport.EndOfFile", StringComparison.OrdinalIgnoreCase);
+                    exitCondition = ResolveTextIoEndOfFileExpression(t, exitCondition);
                     if (!string.IsNullOrWhiteSpace(exitCondition))
                         sb.AppendLine($"        Exit({timing}, () => {exitCondition});");
                     else
@@ -355,6 +353,26 @@ internal static partial class ProjectGenerator
             EmitAllowUserAbortIfNeeded();
         }
         sb.AppendLine("    }");
+    }
+
+    private static string ResolveTextIoEndOfFileExpression(TaskSemantic task, string exitCondition)
+    {
+        if (string.IsNullOrWhiteSpace(exitCondition) ||
+            exitCondition.IndexOf("u.EOF(0,1)", StringComparison.OrdinalIgnoreCase) < 0 ||
+            !HasTextIoLayout(task) ||
+            !IsTextIoReaderStream(task))
+        {
+            return exitCondition;
+        }
+
+        var reader = ResolveTextIoStreams(task)
+            .FirstOrDefault(stream =>
+                string.Equals(stream.StreamType, "FileReader", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(stream.StreamType, "ByteArrayReader", StringComparison.OrdinalIgnoreCase));
+        if (string.IsNullOrWhiteSpace(reader?.VariableName))
+            return exitCondition;
+
+        return exitCondition.Replace("u.EOF(0,1)", $"{reader.VariableName}.EndOfFile", StringComparison.OrdinalIgnoreCase);
     }
 }
 

@@ -102,6 +102,7 @@ internal static partial class ProjectGenerator
     {
         if (task is not null)
         {
+            bindExpr = RenderStrictFunctionArgumentBridges(bindExpr, task);
             if (bindExpr.Contains("u.CastToText(", StringComparison.Ordinal))
                 bindExpr = RenderStrictConditionalInsideExpectedCast(bindExpr, "Text", task);
             if (bindExpr.Contains("u.CastToNumber(", StringComparison.Ordinal))
@@ -189,22 +190,6 @@ internal static partial class ProjectGenerator
 
         var slot = (int)slotLong;
 
-        // In task expressions, single-letter bindings such as U/V/X/Y often refer to
-        // application-level select aliases that represent shared tooltip/context state.
-        // Prefer those application select bindings first when they exist, then fall
-        // back to application resources and finally to the legacy local-offset behavior.
-        if (normalized.Length == 1)
-        {
-            var applicationSelectMap = BuildApplicationSelectMap(allTasks, dataObjects);
-            if (applicationSelectMap.TryGetValue(normalized, out var singleLetterApplicationSelectBinding) &&
-                !string.IsNullOrWhiteSpace(singleLetterApplicationSelectBinding))
-                return singleLetterApplicationSelectBinding;
-
-            var singleLetterApplicationBinding = ResolveApplicationOrdinalBinding(slot, allTasks);
-            if (!string.IsNullOrWhiteSpace(singleLetterApplicationBinding))
-                return singleLetterApplicationBinding!;
-        }
-
         // In task expressions, single-letter ordinal bindings are offset from C:
         // C -> column 1, D -> column 2, etc.
         var columnIndex = slot - 2;
@@ -220,11 +205,18 @@ internal static partial class ProjectGenerator
             .DefaultIfEmpty(int.MaxValue)
             .Min();
 
-        if (task.ParentOrdinal.HasValue && slot < minLocalSelectSlot)
+        if (slot < minLocalSelectSlot && minLocalSelectSlot != int.MaxValue)
         {
-            var parentBinding = ResolveOrdinalBindingFromParentChain(columnIndex, task, allTasks);
-            if (!string.IsNullOrWhiteSpace(parentBinding))
-                return parentBinding;
+            if (task.ParentOrdinal.HasValue)
+            {
+                var parentBinding = ResolveOrdinalBindingFromParentChain(columnIndex, task, allTasks);
+                if (!string.IsNullOrWhiteSpace(parentBinding))
+                    return parentBinding;
+            }
+
+            var applicationBinding = ResolveApplicationOrdinalBinding(slot, allTasks);
+            if (!string.IsNullOrWhiteSpace(applicationBinding))
+                return applicationBinding;
         }
 
         if (columnIndex <= task.ResourcesSemantic.Ordered.Count)
@@ -233,6 +225,21 @@ internal static partial class ProjectGenerator
         var fallbackParentBinding = ResolveOrdinalBindingFromParentChain(columnIndex, task, allTasks);
         if (!string.IsNullOrWhiteSpace(fallbackParentBinding))
             return fallbackParentBinding;
+
+        // Application-level single-letter aliases are valid only as a fallback. Local
+        // task resources and parent resources must win, especially for source VAR
+        // literals that feed u.IndexOf/u.Level-style runtime calls.
+        if (normalized.Length == 1)
+        {
+            var applicationSelectMap = BuildApplicationSelectMap(allTasks, dataObjects);
+            if (applicationSelectMap.TryGetValue(normalized, out var singleLetterApplicationSelectBinding) &&
+                !string.IsNullOrWhiteSpace(singleLetterApplicationSelectBinding))
+                return singleLetterApplicationSelectBinding;
+
+            var singleLetterApplicationBinding = ResolveApplicationOrdinalBinding(slot, allTasks);
+            if (!string.IsNullOrWhiteSpace(singleLetterApplicationBinding))
+                return singleLetterApplicationBinding!;
+        }
 
         return "";
     }
@@ -260,7 +267,12 @@ internal static partial class ProjectGenerator
             return null;
 
         if (slot <= appTask.ResourcesSemantic.Ordered.Count)
-            return $"Application.Instance.{ResolveTaskResourceMemberName(appTask, appTask.ResourcesSemantic.Ordered[slot - 1])}";
+        {
+            var memberName = ResolveTaskResourceMemberName(appTask, appTask.ResourcesSemantic.Ordered[slot - 1]);
+            return IsRuntimeCounterBinding(appTask.ResourcesSemantic.Ordered[slot - 1].Name ?? "", memberName)
+                ? "Counter"
+                : $"Application.Instance.{memberName}";
+        }
 
         return null;
     }
@@ -320,13 +332,14 @@ internal static partial class ProjectGenerator
         expr = ApplyExpressionLiteralNormalization(expr, dataObjects, expressionAttr);
         expr = RenderRegisteredExpressionCalculation(expr);
         expr = ApplyXpaFunctionMap(expr, task, expressionAttr);
-        expr = NormalizeTaskFunctionCallArguments(expr, task);
+        expr = RenderStrictFunctionArgumentBridges(expr, task);
+        expr = RenderArrayIsNullCallsFromEvidence(expr, task);
         expr = ApplyXpaNumericOperators(expr);
         expr = ApplyXpaLikeOperators(expr);
         expr = ApplyExpressionRuntimeNormalization(expr);
         expr = RewriteDnCastExpressions(expr);
         expr = RewriteDnSetExpressions(expr);
-        expr = NormalizeConstructorLikeExecuteCalls(expr);
+        expr = RenderDotNetConstructorLikeExecuteCalls(expr);
         expr = RestoreApplicationQuoteDelimiterMisbindings(expr, task, expressionAttr, dataObjects);
         expr = ApplyExpressionFormattingNormalization(expr);
         expr = NormalizeCSharpStringLiterals(expr);
@@ -342,6 +355,68 @@ internal static partial class ProjectGenerator
         expr = NormalizeDotNetArrayConstructorMappings(expr);
         expr = RenderTypeValuedCaseExpressions(expr);
         return expr;
+    }
+
+    private static string RenderArrayIsNullCallsFromEvidence(string expression, TaskSemantic task)
+    {
+        if (string.IsNullOrWhiteSpace(expression) ||
+            expression.IndexOf("IsNull", StringComparison.OrdinalIgnoreCase) < 0)
+            return expression;
+
+        string? RewriteIsNull(List<string> args)
+        {
+            if (args.Count != 1)
+                return null;
+
+            var argument = StripRedundantOuterParentheses(args[0].Trim());
+            if (string.IsNullOrWhiteSpace(argument) || !IsSimpleIdentifierPath(argument))
+                return null;
+
+            var targetInfo = ResolveTargetValueInfo(task, null, argument);
+            return targetInfo.IsArray || IsArrayTargetByDirectResourceEvidence(task, argument)
+                ? $"({argument}.Value == null)"
+                : null;
+        }
+
+        var rewritten = RewriteFunctionCalls(expression, "u.IsNull", RewriteIsNull);
+        return RewriteFunctionCalls(rewritten, "IsNull", RewriteIsNull);
+    }
+
+    private static bool IsArrayTargetByDirectResourceEvidence(TaskSemantic task, string target)
+    {
+        var normalizedTarget = StripRedundantOuterParentheses(target.Trim());
+        if (normalizedTarget.EndsWith(".Value", StringComparison.Ordinal))
+            normalizedTarget = normalizedTarget[..^".Value".Length];
+
+        foreach (var resource in task.ResourcesSemantic.Ordered)
+        {
+            var memberName = ResolveTaskResourceMemberName(task, resource);
+            if (!MatchesResourceTargetName(resource, memberName, normalizedTarget))
+                continue;
+
+            var resolvedType = ResolveTaskResourceColumnType(resource, _allFieldModels, task);
+            return resolvedType.StartsWith("ArrayColumn<", StringComparison.Ordinal);
+        }
+
+        if (ResolveResourceByTargetPath(task, normalizedTarget, _allTasks ?? Array.Empty<TaskSemantic>()) is not { } pathResource)
+            return false;
+
+        var ownerTask = ResolveOwningTaskForResource(pathResource);
+        if (ownerTask is null)
+            return false;
+
+        var pathResolvedType = ResolveTaskResourceColumnType(pathResource, _allFieldModels, ownerTask);
+        return pathResolvedType.StartsWith("ArrayColumn<", StringComparison.Ordinal);
+    }
+
+    private static bool MatchesResourceTargetName(TaskResourceColumnDef resource, string memberName, string target)
+    {
+        if (string.Equals(memberName, target, StringComparison.Ordinal))
+            return true;
+
+        return string.Equals(ToCodeIdentifierPreservingCase(resource.Name ?? ""), target, StringComparison.Ordinal) ||
+               string.Equals(ToPascalIdentifier(resource.Name ?? ""), target, StringComparison.Ordinal) ||
+               string.Equals(ToLegacyVariableName(resource.Name ?? ""), target, StringComparison.Ordinal);
     }
 
     private static string RenderTypeValuedCaseExpressions(string expression)
@@ -518,6 +593,15 @@ internal static partial class ProjectGenerator
             while (nextNonSpace < expression.Length && char.IsWhiteSpace(expression[nextNonSpace]))
                 nextNonSpace++;
 
+            if (string.Equals(token, "u", StringComparison.Ordinal) &&
+                nextNonSpace < expression.Length &&
+                expression[nextNonSpace] == '.')
+            {
+                result.Append(token);
+                i = end - 1;
+                continue;
+            }
+
             if ((start == 0 || (!char.IsLetterOrDigit(prev) && prev != '_' && prev != '.')) &&
                 (end == expression.Length || (!char.IsLetterOrDigit(next) && next != '_')) &&
                 (nextNonSpace >= expression.Length || expression[nextNonSpace] != '('))
@@ -658,6 +742,9 @@ internal static partial class ProjectGenerator
             {
                 var resource = owner.ResourcesSemantic.Ordered[i];
                 var memberName = ResolveTaskResourceMemberName(owner, resource);
+                if (prefix.StartsWith("Application.Instance.", StringComparison.Ordinal) &&
+                    IsRuntimeCounterBinding(resource.Name ?? "", memberName))
+                    continue;
                 var reference = prefix + memberName;
 
                 if (!string.IsNullOrWhiteSpace(resource.Name))
@@ -681,6 +768,8 @@ internal static partial class ProjectGenerator
             foreach (var pair in BuildSelectNameToExpressionMap(owner, dataObjects))
             {
                 if (string.IsNullOrWhiteSpace(pair.Key) || string.IsNullOrWhiteSpace(pair.Value))
+                    continue;
+                if (IsRuntimeCounterBinding(pair.Key, pair.Value))
                     continue;
 
                 var reference = pair.Value.StartsWith("Application.Instance.", StringComparison.Ordinal)
@@ -707,18 +796,17 @@ internal static partial class ProjectGenerator
                 parentOrdinal = parentTask.ParentOrdinal;
             }
 
-            foreach (var rootTask in _allTasks.Where(x => x.MainProgram || x.ParentOrdinal is null))
+            var appTask = _allTasks.FirstOrDefault(x => x.MainProgram) ?? _allTasks.FirstOrDefault(x => x.ParentOrdinal is null);
+            if (appTask is not null && !ReferenceEquals(appTask, task))
             {
-                if (ReferenceEquals(rootTask, task))
-                    continue;
-
-                AddResourceKeys(rootTask, "Application.Instance.", includeSlotAliases: true, slotAliasBase: 1, maxSlotAliasLength: 1);
-                AddSelectKeys(rootTask, "Application.Instance.");
+                AddResourceKeys(appTask, "Application.Instance.", includeSlotAliases: true, slotAliasBase: 1, maxSlotAliasLength: 1);
+                AddSelectKeys(appTask, "Application.Instance.");
             }
         }
 
         _accessibleLegacyResourceReferenceMapCache[task.Ordinal] = result;
         return result;
+
     }
 
     private static IReadOnlyList<string> GetAccessibleResourceKeys(TaskSemantic task, IReadOnlyList<DataObjectDef> dataObjects)
@@ -800,12 +888,11 @@ internal static partial class ProjectGenerator
         return sb.ToString();
     }
 
-    private static string NormalizeConstructorLikeExecuteCalls(string expr)
+    private static string RenderDotNetConstructorLikeExecuteCalls(string expr)
     {
         if (string.IsNullOrWhiteSpace(expr) || expr.IndexOf(".Execute(", StringComparison.Ordinal) < 0)
             return expr;
 
-        var original = expr;
         var start = 0;
         while (start < expr.Length)
         {
@@ -833,20 +920,20 @@ internal static partial class ProjectGenerator
             while (next < expr.Length && char.IsWhiteSpace(expr[next]))
                 next++;
 
+            var typeName = StripLeadingDotNetQualifier(match.Groups["name"].Value);
             if (next + ".Execute(".Length <= expr.Length &&
                 string.Equals(expr.Substring(next, ".Execute(".Length), ".Execute(", StringComparison.Ordinal) &&
-                LooksLikeClrConstructorName(match.Groups["name"].Value))
+                LooksLikeClrConstructorName(typeName))
             {
-                expr = expr[..absStart] + "new " + expr[absStart..];
-                start = closeParen + 5;
+                var originalNameLength = match.Groups["name"].Length;
+                var replacement = "new " + typeName;
+                expr = expr[..absStart] + replacement + expr[(absStart + originalNameLength)..];
+                start = absStart + replacement.Length;
                 continue;
             }
 
             start = closeParen + 1;
         }
-
-        if (!string.Equals(original, expr, StringComparison.Ordinal))
-            TrackLegacyExpressionTreatment("NormalizeType", nameof(NormalizeConstructorLikeExecuteCalls));
 
         return expr;
     }

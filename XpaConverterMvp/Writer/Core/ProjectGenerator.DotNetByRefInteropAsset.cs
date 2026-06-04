@@ -18,12 +18,12 @@ internal static partial class ProjectGenerator
         bool IsOut);
 
     private static bool UsesDotNetByRefInterop(ProjectSemantic parsed)
-        => CollectDotNetByRefMethodContracts(parsed).Count > 0;
+        => ProjectUsesDnRefSyntax(parsed) || CollectDotNetByRefMethodContracts(parsed).Count > 0;
 
     private static void WriteDotNetByRefInteropAsset(string outputRoot, string appNamespace, ProjectSemantic parsed)
     {
         var contracts = CollectDotNetByRefMethodContracts(parsed);
-        if (contracts.Count == 0)
+        if (contracts.Count == 0 && !ProjectUsesDnRefSyntax(parsed))
             return;
 
         var sb = new StringBuilder();
@@ -31,6 +31,7 @@ internal static partial class ProjectGenerator
         sb.AppendLine();
         sb.AppendLine("internal static class DotNetByRefInterop");
         sb.AppendLine("{");
+        AppendCommonDotNetByRefHelpers(sb);
         foreach (var contract in contracts
                      .OrderBy(c => c.DeclaringType, StringComparer.Ordinal)
                      .ThenBy(c => c.MethodName, StringComparer.Ordinal)
@@ -42,6 +43,47 @@ internal static partial class ProjectGenerator
         sb.AppendLine("}");
 
         WriteGeneratedSourceFile(outputRoot, "DotNetByRefInterop", sb.ToString(), Encoding.UTF8);
+    }
+
+    private static bool ProjectUsesDnRefSyntax(ProjectSemantic parsed)
+        => parsed.Tasks
+            .Where(ShouldGenerateForTarget)
+            .SelectMany(task => task.ExpressionsSemantic.Entries)
+            .Any(expression => (expression.Syntax ?? "").IndexOf("DNRef(", StringComparison.OrdinalIgnoreCase) >= 0);
+
+    private static void AppendCommonDotNetByRefHelpers(StringBuilder sb)
+    {
+        sb.AppendLine("    internal delegate void StringOutAction(out string value);");
+        sb.AppendLine("    internal delegate void StringRefAction(ref string value);");
+        sb.AppendLine();
+        sb.AppendLine("    internal static void InvokeStringOut(global::ENV.Data.ByteArrayColumn target, StringOutAction action)");
+        sb.AppendLine("    {");
+        sb.AppendLine("        string value;");
+        sb.AppendLine("        action(out value);");
+        sb.AppendLine("        target.Value = global::ENV.UserMethods.Instance.CastToByteArray(value ?? \"\");");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    internal static void InvokeStringOut(global::ENV.Data.TextColumn target, StringOutAction action)");
+        sb.AppendLine("    {");
+        sb.AppendLine("        string value;");
+        sb.AppendLine("        action(out value);");
+        sb.AppendLine("        target.Value = value ?? \"\";");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    internal static void InvokeStringRef(global::ENV.Data.ByteArrayColumn target, StringRefAction action)");
+        sb.AppendLine("    {");
+        sb.AppendLine("        var value = global::ENV.UserMethods.Instance.ByteArrayToText(target).ToString();");
+        sb.AppendLine("        action(ref value);");
+        sb.AppendLine("        target.Value = global::ENV.UserMethods.Instance.CastToByteArray(value ?? \"\");");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    internal static void InvokeStringRef(global::ENV.Data.TextColumn target, StringRefAction action)");
+        sb.AppendLine("    {");
+        sb.AppendLine("        var value = ((string)target) ?? \"\";");
+        sb.AppendLine("        action(ref value);");
+        sb.AppendLine("        target.Value = value ?? \"\";");
+        sb.AppendLine("    }");
+        sb.AppendLine();
     }
 
     private static IReadOnlyList<DotNetByRefMethodContract> CollectDotNetByRefMethodContracts(ProjectSemantic parsed)

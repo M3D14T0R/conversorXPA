@@ -212,16 +212,25 @@ internal static partial class ProjectGenerator
         }
         if (TryNormalizeDirectResourceReference(value, task, out var normalizedDirectReference))
             value = normalizedDirectReference;
-        var topLevelCall = TryGetTopLevelFunctionName(value);
         var assignmentContext = CreateAssignmentEmissionContext(targetInfo, target);
         if (TryEmitThroughStrictEmittedExpression(value, task, assignmentContext, out var strictValue))
             value = strictValue;
         else if (TryEmitForDeclaredAssignmentType(value, task, resolvedColumnType, out var declaredValue))
             value = declaredValue;
         value = RenderDeclaredAssignmentBridge(value, resolvedColumnType);
+        var topLevelCall = TryGetTopLevelFunctionName(value);
         if (targetInfo.IsArray &&
             value.Trim().Equals("u.CastToByteArray(u.Null())", StringComparison.Ordinal))
+        {
+            var previousValue = value;
             value = "u.CastToTextArray(u.Null())";
+            TrackCriticalExternalCoercionIfBridgeChanged(
+                "Assignment",
+                "ArrayNullBridge",
+                previousValue,
+                value,
+                $"target={target} declaredColumnType={resolvedColumnType}");
+        }
 
         if (update.Incremental)
         {
@@ -333,13 +342,19 @@ internal static partial class ProjectGenerator
         if (string.IsNullOrWhiteSpace(trimmed))
             return value;
 
-        return declaredColumnType switch
+        var rendered = declaredColumnType switch
         {
             "NumberColumn" when IsObjectReturningRuntimeCall(trimmed) => $"u.CastToNumber({trimmed})",
             "TextColumn" when IsObjectReturningRuntimeCall(trimmed) => $"u.CastToText({trimmed})",
             "ByteArrayColumn" when IsObjectReturningRuntimeCall(trimmed) => $"u.CastToByteArray({trimmed})",
             _ => value
         };
+        return TrackCriticalExternalCoercionIfBridgeChanged(
+            "Assignment",
+            nameof(RenderDeclaredAssignmentBridge),
+            trimmed,
+            rendered,
+            $"declaredColumnType={declaredColumnType} expr={trimmed}");
     }
 
     private static bool IsObjectReturningRuntimeCall(string value)

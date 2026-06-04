@@ -10,6 +10,7 @@ internal static partial class ProjectGenerator
 {
     private static readonly ConcurrentDictionary<string, string> _dotNetMemberTypeEvidenceCache = new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<string, string> _dotNetMethodReturnTypeEvidenceCache = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, string> _dotNetMethodParameterTypeEvidenceCache = new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<string, bool> _dotNetMemberExistenceEvidenceCache = new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<string, string> _dotNetTypeAssemblyPathEvidenceCache = new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<string, bool> _dotNetEvidenceAssemblyDependencyLoadCache = new(StringComparer.OrdinalIgnoreCase);
@@ -68,6 +69,41 @@ internal static partial class ProjectGenerator
 
         var objectType = NormalizeDotNetObjectType(resource.ObjectType ?? "");
         return TryReadDotNetMethodReturnType(objectType, methodName, args.Count, out returnType);
+    }
+
+    private static bool TryReadDotNetMethodArgumentTypeEvidence(
+        string functionName,
+        TaskSemantic task,
+        int argumentIndex,
+        int argumentCount,
+        out string returnType)
+    {
+        returnType = "";
+        if (string.IsNullOrWhiteSpace(functionName) ||
+            argumentIndex < 0 ||
+            argumentIndex >= argumentCount)
+            return false;
+
+        var dot = functionName.LastIndexOf('.');
+        if (dot <= 0 || dot + 1 >= functionName.Length)
+            return false;
+
+        var ownerPath = functionName[..dot].Trim();
+        var methodName = functionName[(dot + 1)..].Trim();
+        if (string.IsNullOrWhiteSpace(ownerPath) || string.IsNullOrWhiteSpace(methodName))
+            return false;
+
+        var resource = ResolveResourceByTargetPath(task, ownerPath, _allTasks ?? Array.Empty<TaskSemantic>());
+        if (resource is null || !IsDotNetTaskResource(resource))
+            return false;
+
+        var objectType = NormalizeDotNetObjectType(resource.ObjectType ?? "");
+        return TryReadDotNetMethodParameterType(
+            objectType,
+            methodName,
+            argumentCount,
+            argumentIndex,
+            out returnType);
     }
 
     private static bool TryReadDotNetMemberEvidence(
@@ -221,6 +257,86 @@ internal static partial class ProjectGenerator
         return TryMapClrEvidenceType(type, out var mapped)
             ? mapped
             : type.FullName ?? type.Name;
+    }
+
+    private static bool TryReadDotNetMethodParameterType(
+        string objectType,
+        string methodName,
+        int argumentCount,
+        int argumentIndex,
+        out string returnType)
+    {
+        returnType = "";
+        var normalizedObjectType = NormalizeDotNetObjectType(objectType ?? "");
+        var normalizedMethodName = (methodName ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(normalizedObjectType) ||
+            string.IsNullOrWhiteSpace(normalizedMethodName) ||
+            argumentCount < 0 ||
+            argumentIndex < 0 ||
+            argumentIndex >= argumentCount)
+            return false;
+
+        var assemblyPath = FindMappedAssemblyPathForDotNetType(normalizedObjectType);
+        var cacheKey = BuildDotNetEvidenceCacheKey(
+            normalizedObjectType,
+            string.Create(
+                System.Globalization.CultureInfo.InvariantCulture,
+                $"{normalizedMethodName}|arg:{argumentIndex}|count:{argumentCount}"),
+            assemblyPath);
+        if (_dotNetMethodParameterTypeEvidenceCache.TryGetValue(cacheKey, out var cached))
+        {
+            returnType = cached;
+            return !string.IsNullOrWhiteSpace(returnType);
+        }
+
+        if (TryReadDotNetMethodParameterTypeFromMetadata(
+                normalizedObjectType,
+                normalizedMethodName,
+                argumentCount,
+                argumentIndex,
+                out returnType))
+        {
+            _dotNetMethodParameterTypeEvidenceCache[cacheKey] = returnType;
+            return true;
+        }
+
+        if (!TryLoadClrTypeFromMappedReference(normalizedObjectType, out var clrType) || clrType is null)
+        {
+            _dotNetMethodParameterTypeEvidenceCache[cacheKey] = "";
+            return false;
+        }
+
+        const BindingFlags flags = BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.IgnoreCase;
+        var parameterTypes = clrType
+            .GetMethods(flags)
+            .Where(method =>
+                string.Equals(method.Name, normalizedMethodName, StringComparison.OrdinalIgnoreCase) &&
+                method.GetParameters().Length == argumentCount)
+            .Select(method => ReadClrMethodParameterTypeName(method.GetParameters()[argumentIndex].ParameterType))
+            .Where(type => !string.IsNullOrWhiteSpace(type))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        if (parameterTypes.Length != 1)
+        {
+            _dotNetMethodParameterTypeEvidenceCache[cacheKey] = "";
+            return false;
+        }
+
+        returnType = parameterTypes[0];
+        _dotNetMethodParameterTypeEvidenceCache[cacheKey] = returnType;
+        return true;
+    }
+
+    private static string ReadClrMethodParameterTypeName(Type parameterType)
+    {
+        var type = parameterType.IsByRef && parameterType.GetElementType() is { } elementType
+            ? elementType
+            : parameterType;
+
+        return TryMapClrEvidenceType(type, out var mapped)
+            ? mapped
+            : "object";
     }
 
     private static bool TryReadDotNetMethodReturnTypeFromMetadata(
@@ -616,6 +732,103 @@ internal static partial class ProjectGenerator
             cacheKey,
             _ => FindMappedAssemblyPathForDotNetTypeUncached(normalizedObjectType));
     }
+
+    private static bool TryReadDotNetMethodParameterTypeFromMetadata(
+        string objectType,
+        string methodName,
+        int argumentCount,
+        int argumentIndex,
+        out string returnType)
+    {
+        returnType = "";
+        var visitedTypes = new HashSet<string>(StringComparer.Ordinal);
+        return TryReadDotNetMethodParameterTypeFromMetadata(
+            objectType,
+            methodName,
+            argumentCount,
+            argumentIndex,
+            visitedTypes,
+            out returnType);
+    }
+
+    private static bool TryReadDotNetMethodParameterTypeFromMetadata(
+        string objectType,
+        string methodName,
+        int argumentCount,
+        int argumentIndex,
+        HashSet<string> visitedTypes,
+        out string returnType)
+    {
+        returnType = "";
+        if (!visitedTypes.Add(objectType))
+            return false;
+
+        var assemblyPath = FindMappedAssemblyPathForDotNetType(objectType);
+        if (string.IsNullOrWhiteSpace(assemblyPath) || !File.Exists(assemblyPath))
+            return false;
+
+        try
+        {
+            using var stream = File.OpenRead(assemblyPath);
+            using var peReader = new PEReader(stream);
+            if (!peReader.HasMetadata)
+                return false;
+
+            var reader = peReader.GetMetadataReader();
+            var provider = new DotNetMetadataTypeNameProvider();
+            foreach (var typeHandle in reader.TypeDefinitions)
+            {
+                var type = reader.GetTypeDefinition(typeHandle);
+                if (!MetadataTypeMatches(reader, typeHandle, type, objectType))
+                    continue;
+
+                var parameterTypes = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var methodHandle in type.GetMethods())
+                {
+                    var method = reader.GetMethodDefinition(methodHandle);
+                    if (!string.Equals(reader.GetString(method.Name), methodName, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    var signature = method.DecodeSignature(provider, null);
+                    if (signature.ParameterTypes.Length != argumentCount)
+                        continue;
+
+                    var mapped = MapMetadataMethodParameterType(signature.ParameterTypes[argumentIndex]);
+                    if (!string.IsNullOrWhiteSpace(mapped))
+                        parameterTypes.Add(mapped);
+                }
+
+                if (parameterTypes.Count == 1)
+                {
+                    returnType = parameterTypes.First();
+                    return true;
+                }
+
+                if (parameterTypes.Count > 1)
+                    return false;
+
+                var baseType = ReadMetadataBaseTypeName(reader, type.BaseType, provider);
+                if (!string.IsNullOrWhiteSpace(baseType) &&
+                    !string.Equals(baseType, "System.Object", StringComparison.Ordinal) &&
+                    TryReadDotNetMethodParameterTypeFromMetadata(baseType, methodName, argumentCount, argumentIndex, visitedTypes, out returnType))
+                    return true;
+
+                return false;
+            }
+
+            return false;
+        }
+        catch
+        {
+            returnType = "";
+            return false;
+        }
+    }
+
+    private static string MapMetadataMethodParameterType(string parameterType)
+        => TryMapClrEvidenceTypeName(parameterType, out var mapped)
+            ? mapped
+            : "object";
 
     private static string FindMappedAssemblyPathForDotNetTypeUncached(string objectType)
     {

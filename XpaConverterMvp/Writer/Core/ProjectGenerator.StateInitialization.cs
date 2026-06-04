@@ -11,6 +11,7 @@ internal static partial class ProjectGenerator
         ResetTypedExpressionTelemetryCounters();
         ResetXpaFunctionContractTelemetryCounters();
         ResetLegacyExpressionTelemetryCounters();
+        ResetExpressionEmissionAuditCounters();
 
         _targetComponent = request.TargetComponent;
         _solutionRoot = request.SolutionRoot;

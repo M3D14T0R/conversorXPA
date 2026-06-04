@@ -188,6 +188,22 @@ private static bool TryBuildDnRefEvaluateStatement(string exprCode, TaskSemantic
         originalArgs.Count != emittedArgs.Count)
         return false;
 
+    if (TryBuildDotNetByRefInteropWrapperStatement(
+            task,
+            originalArgs,
+            emittedFunctionName,
+            emittedArgs,
+            out statement))
+        return true;
+
+    if (TryBuildSingleStringDnRefInteropStatement(
+            task,
+            originalArgs,
+            emittedFunctionName,
+            emittedArgs,
+            out statement))
+        return true;
+
     var preamble = new List<string>();
     var callArgs = new List<string>(emittedArgs.Count);
     var epilogue = new List<string>();
@@ -214,11 +230,19 @@ private static bool TryBuildDnRefEvaluateStatement(string exprCode, TaskSemantic
         {
             preamble.Add($"var {tempName} = u.ByteArrayToText({emittedArg}).ToString();");
             epilogue.Add($"{emittedArg}.Value = u.CastToByteArray({tempName});");
+            TrackCriticalExternalCoercion(
+                "DotNetByRef",
+                nameof(TryBuildDnRefEvaluateStatement),
+                "dnref-blob-bridge",
+                $"arg={i} target={emittedArg}");
         }
         else if (string.Equals(targetInfo.AttrObj, "FIELD_ALPHA", StringComparison.OrdinalIgnoreCase) ||
                  string.Equals(targetInfo.ModelAttrObj, "FIELD_ALPHA", StringComparison.OrdinalIgnoreCase))
         {
-            preamble.Add($"var {tempName} = u.CastToText({emittedArg}).ToString();");
+            var initialText = emittedArg.EndsWith(".Value", StringComparison.Ordinal)
+                ? emittedArg
+                : $"((string){emittedArg})";
+            preamble.Add($"var {tempName} = {initialText} ?? \"\";");
             if (emittedArg.EndsWith(".Value", StringComparison.Ordinal))
                 epilogue.Add($"{emittedArg} = {tempName};");
             else
@@ -241,6 +265,248 @@ private static bool TryBuildDnRefEvaluateStatement(string exprCode, TaskSemantic
     lines.AddRange(epilogue);
     statement = string.Join(Environment.NewLine, lines);
     return true;
+}
+
+private static bool TryBuildDotNetByRefInteropWrapperStatement(
+    TaskSemantic task,
+    IReadOnlyList<string> originalArgs,
+    string emittedFunctionName,
+    IReadOnlyList<string> emittedArgs,
+    out string statement)
+{
+    statement = "";
+    if (!TryBuildDotNetByRefInteropWrapperExpression(
+            task,
+            originalArgs,
+            emittedFunctionName,
+            emittedArgs,
+            out var expression))
+        return false;
+
+    statement = $"{expression};";
+    return true;
+}
+
+private static bool TryBuildDotNetByRefInteropReturnAssignmentStatement(
+    string exprCode,
+    TaskSemantic task,
+    ExpressionEntrySemantic? expr,
+    string returnVariable,
+    string target,
+    string? xmlTrace,
+    out string statement)
+{
+    statement = "";
+    if (expr is null ||
+        string.IsNullOrWhiteSpace(expr.Syntax) ||
+        expr.Syntax.IndexOf("DNRef(", StringComparison.OrdinalIgnoreCase) < 0 ||
+        !TryParseFunctionCall(expr.Syntax.Trim(), out _, out var originalArgs) ||
+        !TryParseFunctionCall(exprCode.Trim(), out var emittedFunctionName, out var emittedArgs) ||
+        originalArgs.Count != emittedArgs.Count)
+    {
+        return false;
+    }
+
+    if (!TryBuildDotNetByRefInteropWrapperExpression(
+            task,
+            originalArgs,
+            emittedFunctionName,
+            emittedArgs,
+            out var expression))
+        return false;
+
+    statement = BuildReturnAssignmentExpression(returnVariable, target, expression, task, xmlTrace);
+    return true;
+}
+
+private static bool TryBuildDotNetByRefInteropWrapperExpression(
+    TaskSemantic task,
+    IReadOnlyList<string> originalArgs,
+    string emittedFunctionName,
+    IReadOnlyList<string> emittedArgs,
+    out string expression)
+{
+    expression = "";
+    if (!TryResolveDotNetByRefMethodContractForEmittedCall(
+            emittedFunctionName,
+            task,
+            emittedArgs.Count,
+            out var contract) ||
+        contract.Parameters.Count != emittedArgs.Count ||
+        !contract.Parameters.Any(parameter => parameter.IsByRef))
+    {
+        return false;
+    }
+
+    for (var i = 0; i < contract.Parameters.Count; i++)
+    {
+        if (!contract.Parameters[i].IsByRef)
+            continue;
+
+        var originalArg = originalArgs[i].Trim();
+        if (!TryResolveDnRefTargetArgument(task, originalArg, emittedArgs[i].Trim(), out _))
+            return false;
+    }
+
+    var dot = emittedFunctionName.LastIndexOf('.');
+    if (dot <= 0 || dot + 1 >= emittedFunctionName.Length)
+        return false;
+
+    var instance = emittedFunctionName[..dot].Trim();
+    var methodName = emittedFunctionName[(dot + 1)..].Trim();
+    if (string.IsNullOrWhiteSpace(instance) || string.IsNullOrWhiteSpace(methodName))
+        return false;
+
+    var args = new List<string>(emittedArgs.Count + 1) { instance };
+    for (var i = 0; i < emittedArgs.Count; i++)
+    {
+        if (contract.Parameters[i].IsByRef)
+        {
+            if (!TryResolveDnRefTargetArgument(task, originalArgs[i].Trim(), emittedArgs[i].Trim(), out var byRefTarget))
+                return false;
+            args.Add(byRefTarget);
+            continue;
+        }
+
+        args.Add(emittedArgs[i].Trim());
+    }
+
+    expression = $"DotNetByRefInterop.{methodName}({string.Join(", ", args)})";
+    return true;
+}
+
+private static bool TryResolveDnRefTargetArgument(TaskSemantic task, string originalArg, string emittedArg, out string target)
+{
+    target = "";
+    if (!TryParseFunctionCall(originalArg, out var originalArgFunctionName, out var originalArgArgs) ||
+        !string.Equals(originalArgFunctionName, "DNRef", StringComparison.OrdinalIgnoreCase) ||
+        originalArgArgs.Count != 1)
+        return false;
+
+    var emittedTarget = StripRedundantOuterParentheses((emittedArg ?? "").Trim());
+    if (!string.IsNullOrWhiteSpace(emittedTarget))
+    {
+        var emittedTargetInfo = ResolveTargetValueInfo(task, null, emittedTarget);
+        if (emittedTargetInfo.Resource is not null && !emittedTargetInfo.IsDotNet)
+        {
+            target = emittedTarget;
+            return true;
+        }
+    }
+
+    var originalTarget = originalArgArgs[0].Trim();
+    if (string.IsNullOrWhiteSpace(originalTarget))
+        return false;
+
+    var targetInfo = ResolveTargetValueInfo(task, null, originalTarget);
+    if (targetInfo.Resource is null || string.IsNullOrWhiteSpace(targetInfo.TargetMember))
+        return false;
+
+    if (IsSimpleIdentifierPath(originalTarget))
+    {
+        target = targetInfo.TargetMember;
+        return true;
+    }
+
+    if (originalTarget.StartsWith("_parent.", StringComparison.Ordinal) ||
+        originalTarget.StartsWith("Application.Instance.", StringComparison.Ordinal))
+    {
+        target = originalTarget.EndsWith(".Value", StringComparison.Ordinal)
+            ? originalTarget[..^".Value".Length]
+            : originalTarget;
+        return true;
+    }
+
+    return false;
+}
+
+private static bool TryBuildSingleStringDnRefInteropStatement(
+    TaskSemantic task,
+    IReadOnlyList<string> originalArgs,
+    string emittedFunctionName,
+    IReadOnlyList<string> emittedArgs,
+    out string statement)
+{
+    statement = "";
+    var dnRefIndex = -1;
+    for (var i = 0; i < originalArgs.Count; i++)
+    {
+        var originalArg = originalArgs[i].Trim();
+        if (!TryParseFunctionCall(originalArg, out var originalArgFunctionName, out var originalArgArgs) ||
+            !string.Equals(originalArgFunctionName, "DNRef", StringComparison.OrdinalIgnoreCase) ||
+            originalArgArgs.Count != 1)
+            continue;
+
+        if (dnRefIndex >= 0)
+            return false;
+        dnRefIndex = i;
+    }
+
+    if (dnRefIndex < 0)
+        return false;
+
+    var parameterIsOut = true;
+    if (TryResolveDotNetByRefMethodContractForEmittedCall(
+            emittedFunctionName,
+            task,
+            emittedArgs.Count,
+            out var contract))
+    {
+        if (contract.Parameters.Count != emittedArgs.Count)
+            return false;
+
+        var parameter = contract.Parameters[dnRefIndex];
+        if (!parameter.IsByRef ||
+            !string.Equals(parameter.ClrType, "string", StringComparison.Ordinal))
+            return false;
+        parameterIsOut = parameter.IsOut;
+    }
+
+    var target = emittedArgs[dnRefIndex].Trim();
+    var targetInfo = ResolveTargetValueInfo(task, null, target);
+    if (!targetInfo.IsBlob &&
+        !string.Equals(targetInfo.AttrObj, "FIELD_ALPHA", StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(targetInfo.ModelAttrObj, "FIELD_ALPHA", StringComparison.OrdinalIgnoreCase))
+        return false;
+
+    var tempName = $"__dnref_{dnRefIndex}";
+    var callArgs = emittedArgs.Select(arg => arg.Trim()).ToArray();
+    callArgs[dnRefIndex] = parameterIsOut ? $"out {tempName}" : $"ref {tempName}";
+
+    var helper = parameterIsOut ? "InvokeStringOut" : "InvokeStringRef";
+    var lambdaParameter = parameterIsOut ? $"out string {tempName}" : $"ref string {tempName}";
+    statement = $"DotNetByRefInterop.{helper}({target}, ({lambdaParameter}) => {emittedFunctionName}({string.Join(", ", callArgs)}));";
+    return true;
+}
+
+private static bool TryResolveDotNetByRefMethodContractForEmittedCall(
+    string emittedFunctionName,
+    TaskSemantic task,
+    int argumentCount,
+    out DotNetByRefMethodContract contract)
+{
+    contract = default!;
+    if (string.IsNullOrWhiteSpace(emittedFunctionName))
+        return false;
+
+    var dot = emittedFunctionName.LastIndexOf('.');
+    if (dot <= 0 || dot + 1 >= emittedFunctionName.Length)
+        return false;
+
+    var ownerPath = emittedFunctionName[..dot].Trim();
+    var methodName = emittedFunctionName[(dot + 1)..].Trim();
+    if (string.IsNullOrWhiteSpace(ownerPath) || string.IsNullOrWhiteSpace(methodName))
+        return false;
+
+    if (!TryReadDotNetMemberEvidence(ownerPath, task, out var objectType))
+    {
+        var resource = ResolveResourceByTargetPath(task, ownerPath, _allTasks ?? Array.Empty<TaskSemantic>());
+        if (resource is null || !IsDotNetTaskResource(resource))
+            return false;
+        objectType = NormalizeDotNetObjectType(resource.ObjectType ?? "");
+    }
+
+    return TryReadDotNetByRefMethodContract(objectType, methodName, argumentCount, out contract);
 }
 }
 

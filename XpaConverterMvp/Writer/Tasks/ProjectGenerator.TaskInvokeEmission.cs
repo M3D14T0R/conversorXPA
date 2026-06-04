@@ -162,7 +162,7 @@ internal static partial class ProjectGenerator
                     activeArgumentDefs.RemoveAt(0);
                 }
                 argValues = argValues.Take(parameters.Count).ToList();
-                argValues = ApplySnippetParameterSinks(argValues, parameters);
+                argValues = ApplySnippetParameterSinks(argValues, parameters, task);
                 for (var i = 0; i < argValues.Count && i < parameters.Count; i++)
                 {
                     if (!SnippetParameterRequiresRef(parameters[i]))
@@ -289,7 +289,7 @@ internal static partial class ProjectGenerator
             : callExpr;
     }
 
-    private static List<string> ApplySnippetParameterSinks(IReadOnlyList<string> argValues, IReadOnlyList<string> parameters)
+    private static List<string> ApplySnippetParameterSinks(IReadOnlyList<string> argValues, IReadOnlyList<string> parameters, TaskSemantic task)
     {
         var adjusted = argValues.ToList();
         for (var i = 0; i < adjusted.Count && i < parameters.Count; i++)
@@ -306,7 +306,8 @@ internal static partial class ProjectGenerator
                 value.StartsWith("u.CastToText(", StringComparison.Ordinal))
                 continue;
 
-            adjusted[i] = $"u.CastToText({adjusted[i]})";
+            if (TryEmitExpectedArgumentFromReliableEvidence(value, "Text", task, out var emitted))
+                adjusted[i] = emitted;
         }
 
         return adjusted;

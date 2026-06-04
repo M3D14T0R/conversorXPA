@@ -72,10 +72,19 @@ internal static partial class ProjectGenerator
         value = RenderDeclaredAssignmentBridge(value, resolvedColumnType);
         if (targetInfo.IsArray &&
             value.Trim().Equals("u.CastToByteArray(u.Null())", StringComparison.Ordinal))
+        {
+            var previousValue = value;
             value = "u.CastToTextArray(u.Null())";
+            TrackCriticalExternalCoercionIfBridgeChanged(
+                "Assignment",
+                "ArrayNullBridge",
+                previousValue,
+                value,
+                $"target={target} declaredColumnType={resolvedColumnType}");
+        }
         if (TryNormalizeBlobWrappedNewClrExpression(value, out var directClrAssignmentValue))
             value = directClrAssignmentValue;
-        value = NormalizeKnownTextSpanFunctionArgumentsForTask(value, task);
+        value = RenderStrictFunctionArgumentBridges(value, task);
         coerceStopwatch.Stop();
         ConversionTelemetry.LogDuration("DIRECTUPDATE", className, coerceStopwatch.Elapsed, $"section=\"after-coerce\" var={QuoteTelemetry(up.Variable ?? "?")}");
         if (coerceStopwatch.Elapsed.TotalMilliseconds >= 500)
@@ -416,7 +425,21 @@ internal static partial class ProjectGenerator
                 {
                     var targetInfo = ResolveTargetValueInfo(t, action.EvaluateReturnVariable!, target);
                     exprCode = ResolveExpressionCode(expressionId, t, dataObjects, CreateAssignmentEmissionContext(targetInfo, target));
-                    sb.AppendLine($"{pad}{BuildReturnAssignmentExpression(action.EvaluateReturnVariable!, target, exprCode, t, action.XmlTrace)}");
+                    if (TryBuildDotNetByRefInteropReturnAssignmentStatement(
+                            exprCode,
+                            t,
+                            evaluateExpressionEntry,
+                            action.EvaluateReturnVariable!,
+                            target,
+                            action.XmlTrace,
+                            out var byRefAssignment))
+                    {
+                        sb.AppendLine($"{pad}{byRefAssignment}");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"{pad}{BuildReturnAssignmentExpression(action.EvaluateReturnVariable!, target, exprCode, t, action.XmlTrace)}");
+                    }
                 }
                 else
                     sb.AppendLine($"{pad}// GAP: Evaluate return target not resolved ({action.EvaluateReturnVariable}). XML={action.XmlTrace ?? "?"}");

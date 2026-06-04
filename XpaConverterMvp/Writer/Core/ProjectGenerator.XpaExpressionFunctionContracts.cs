@@ -88,6 +88,8 @@ internal static partial class ProjectGenerator
             ["TOBOOL"] = "Bool",
             ["TOBYTEARRAY"] = "byte[]",
             ["RIGHTS"] = "Bool",
+            ["BOM"] = "Date",
+            ["EOM"] = "Date",
 
             ["DATAVIEWTODNDATATABLE"] = "System.Data.DataTable",
             ["DATAVIEWVARS"] = "Text[]",
@@ -111,6 +113,7 @@ internal static partial class ProjectGenerator
             ["JCALL"] = "object",
             ["JCALLSTATIC"] = "object",
             ["JAVACOMPAT.JGETSTATIC"] = "object",
+            ["SHAREDVALGET"] = "object",
             ["NULL"] = "object",
 
             ["DATAVIEWTOTEXT"] = "Bool",
@@ -179,7 +182,7 @@ internal static partial class ProjectGenerator
             ["RQREQINF"] = "Text",
             ["RQRTCTX"] = "Text",
             ["RQLOAD"] = "Text",
-            ["EDITGET"] = "Text",
+            ["EDITGET"] = "object",
             ["MARKEDTEXTGET"] = "Text",
             ["INIGET"] = "Text",
             ["INIGETLN"] = "Text",
@@ -546,31 +549,32 @@ internal static partial class ProjectGenerator
                                        argumentIndex == 0 => "Number",
             "DATAVIEWTODNDATATABLE" when usage == XpaFunctionArgumentContractUsage.SourceAnalysis &&
                                        argumentIndex is 1 or 2 => "Text",
-            "DATAVIEWTOTEXT" when usage == XpaFunctionArgumentContractUsage.SourceAnalysis &&
-                                  argumentIndex == 0 => "Number",
-            "DATAVIEWTOTEXT" when usage == XpaFunctionArgumentContractUsage.SourceAnalysis &&
-                                  argumentIndex >= 1 && argumentIndex <= 5 => "Text",
-            "DATAVIEWTOTEXT" when usage == XpaFunctionArgumentContractUsage.SourceAnalysis &&
-                                  argumentIndex == 6 => "Number",
+            "DATAVIEWTOTEXT" when argumentIndex == 0 =>
+                "Number",
+            "DATAVIEWTOTEXT" when argumentIndex >= 1 && argumentIndex <= 5 =>
+                "Text",
+            "DATAVIEWTOTEXT" when argumentIndex == 6 =>
+                "Number",
             "CNDRANGE" when usage == XpaFunctionArgumentContractUsage.SourceAnalysis &&
                             argumentIndex == 0 => "Bool",
-            "IF" when usage == XpaFunctionArgumentContractUsage.SourceAnalysis &&
-                      argumentIndex == 0 => "Bool",
-            "DATAVIEWTOHTML" when usage == XpaFunctionArgumentContractUsage.SourceAnalysis &&
-                                  argumentIndex == 0 => "Number",
-            "DATAVIEWTOHTML" when usage == XpaFunctionArgumentContractUsage.SourceAnalysis &&
-                                  argumentIndex >= 1 && argumentIndex <= 4 => "Text",
-            "DATAVIEWTOHTML" when usage == XpaFunctionArgumentContractUsage.SourceAnalysis &&
-                                  argumentIndex == 5 => "Number",
-            "DATAVIEWTOXML" when usage == XpaFunctionArgumentContractUsage.SourceAnalysis &&
-                                 argumentIndex == 0 => "Number",
-            "DATAVIEWTOXML" when usage == XpaFunctionArgumentContractUsage.SourceAnalysis &&
-                                 argumentIndex >= 1 && argumentIndex <= 5 => "Text",
-            "DATAVIEWTOXML" when usage == XpaFunctionArgumentContractUsage.SourceAnalysis &&
-                                 argumentIndex == 6 => "Number",
+            "IF" when argumentIndex == 0 => "Bool",
+            "DATAVIEWTOHTML" when argumentIndex == 0 =>
+                "Number",
+            "DATAVIEWTOHTML" when argumentIndex >= 1 && argumentIndex <= 4 =>
+                "Text",
+            "DATAVIEWTOHTML" when argumentIndex == 5 =>
+                "Number",
+            "DATAVIEWTOXML" when argumentIndex == 0 =>
+                "Number",
+            "DATAVIEWTOXML" when argumentIndex >= 1 && argumentIndex <= 5 =>
+                "Text",
+            "DATAVIEWTOXML" when argumentIndex == 6 =>
+                "Number",
             "NOT" when usage == XpaFunctionArgumentContractUsage.SourceAnalysis &&
                        argumentIndex == 0 => "Bool",
             "RIGHTS" when argumentIndex == 0 => "Text",
+            "INSTR" when argumentIndex is 0 or 1 => "Text",
+            "TRANSLATENR" when argumentIndex == 0 => "Text",
             "FILEEXIST" or "CLIENTFILEEXIST"
                 when usage == XpaFunctionArgumentContractUsage.SourceAnalysis &&
                      argumentIndex == 0 => "Text",
@@ -611,11 +615,18 @@ internal static partial class ProjectGenerator
             "XMLINSERT" when argumentIndex is 0 or 1 => "Number",
             "XMLINSERT" when argumentIndex >= 2 && argumentIndex <= 4 => "Text",
 
+            "JSONINSERT" or "JSONMODIFY" or "JSONDELETE" or "JSONEXIST" or "JSONGET" or "JSONCNT" or "JSONFIND"
+                when argumentIndex == 0 => "Number",
             "JSONINSERT" when argumentIndex is 1 or 2 => "Text",
             "JSONMODIFY" or "JSONDELETE" or "JSONEXIST" or "JSONGET" or "JSONCNT"
                 when argumentIndex == 1 => "Text",
             "JSONFIND" when argumentIndex is 1 or 2 => "Text",
             "JSONFIND" when argumentIndex == 4 => "Number",
+
+            "BUFSETALPHA" or "BUFSETNUM" or "BUFSETDATE" or "BUFSETTIME" or "BUFSETLOG" or
+            "BUFGETALPHA" or "BUFGETNUM" or "BUFGETDATE" or "BUFGETTIME" or "BUFGETLOG" or
+            "BUFSETBLOB" or "BUFGETBLOB" or "BUFSETVARIANT" or "BUFGETVARIANT"
+                when argumentIndex == 0 => "Number",
 
             "CIGAM.UTILS.CRYPTAAU2A.ENCRYPT" when argumentIndex == 0 => "Text",
             "CIGAM.UTILS.CRYPTAAU2A.ENCRYPT" when argumentIndex == 1 => "Number",

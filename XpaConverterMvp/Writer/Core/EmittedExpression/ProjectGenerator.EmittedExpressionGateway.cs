@@ -29,6 +29,16 @@ internal static partial class ProjectGenerator
         var cacheKey = CreateStrictEmissionCacheKey(cleanCode, task, context, expectedReturnType);
         if (StrictEmissionCache.TryGetValue(cacheKey, out var cached))
         {
+            TrackExpressionEmissionAuditCacheHit(context, expectedReturnType, cached.Success);
+            if (cached.Success)
+            {
+                TrackCriticalExternalCoercionIfBridgeChanged(
+                    "EmittedExpression",
+                    nameof(TryEmitThroughStrictEmittedExpression),
+                    cleanCode,
+                    cached.Code,
+                    string.Create(CultureInfo.InvariantCulture, $"cacheHit=true sink={context.SinkKind} expected={expectedReturnType} expr={TruncateTelemetryValue(cleanCode)}"));
+            }
             emittedCode = cached.Code;
             return cached.Success;
         }
@@ -42,11 +52,39 @@ internal static partial class ProjectGenerator
 
         if (!StrictEmittedExpressionEngine.TryEmitFromReliableEvidence(request, evidence, out var emitted))
         {
+            var hasReliableSource = StrictEmittedExpressionEngine.TrySelectReliableSourceType(evidence, out var selected) &&
+                                    selected.HasType;
+            var sourceReturnType = hasReliableSource ? selected.ReturnType : "";
+            var sourceKind = hasReliableSource ? selected.EvidenceKind.ToString() : "";
+            TrackExpressionEmissionAudit(
+                task,
+                context,
+                cleanCode,
+                expectedReturnType,
+                success: false,
+                sourceReturnType,
+                sourceKind,
+                ResolveStrictEmissionFailureReason(hasReliableSource, expectedReturnType, sourceReturnType));
             StrictEmissionCache.TryAdd(cacheKey, new StrictEmissionCacheEntry(false, ""));
             return false;
         }
 
         emittedCode = emitted.Code;
+        TrackCriticalExternalCoercionIfBridgeChanged(
+            "EmittedExpression",
+            nameof(TryEmitThroughStrictEmittedExpression),
+            cleanCode,
+            emittedCode,
+            string.Create(CultureInfo.InvariantCulture, $"sink={context.SinkKind} expected={expectedReturnType} source={emitted.ReturnType} sourceKind={emitted.EvidenceKind} expr={TruncateTelemetryValue(cleanCode)}"));
+        TrackExpressionEmissionAudit(
+            task,
+            context,
+            cleanCode,
+            expectedReturnType,
+            success: true,
+            emitted.ReturnType,
+            emitted.EvidenceKind.ToString(),
+            "");
         StrictEmissionCache.TryAdd(cacheKey, new StrictEmissionCacheEntry(true, emittedCode));
         return true;
     }
@@ -99,6 +137,12 @@ internal static partial class ProjectGenerator
                 ? default
                 : ExpectedTypeForReturnType(cachedReturnType);
 
+        if (IsCounterExpression(cleanCode))
+        {
+            _expectedTypeEvidenceCache[cacheKey] = "Number";
+            return ExpectedTypeForReturnType("Number");
+        }
+
         var evidence = BuildStrictEmittedExpressionEvidence(cleanCode, task, default);
         if (!StrictEmittedExpressionEngine.TrySelectReliableSourceType(evidence, out var selected) || !selected.HasType)
         {
@@ -149,6 +193,12 @@ internal static partial class ProjectGenerator
             return arithmeticRendered;
         }
 
+        if (TryRenderContractedComparisonOperandsFromEvidence(strippedCode, task, out var comparisonRendered))
+        {
+            changed = true;
+            return comparisonRendered;
+        }
+
         if (!TryParseFunctionCall(strippedCode, out var functionName, out var args) ||
             args.Count == 0)
         {
@@ -171,6 +221,17 @@ internal static partial class ProjectGenerator
             changed |= nestedChanged;
 
             if (CanApplyContractedFunctionArgument(functionName, i, args.Count) &&
+                TryReadDotNetMethodArgumentTypeEvidence(
+                    functionName,
+                    task,
+                    i,
+                    args.Count,
+                    out var expectedDotNetReturnType) &&
+                TryEmitExpectedArgumentFromReliableEvidence(renderedArg, expectedDotNetReturnType, task, out var contractedDotNetArg))
+            {
+                renderedArg = contractedDotNetArg;
+            }
+            else if (CanApplyContractedFunctionArgument(functionName, i, args.Count) &&
                 TryResolveXpaFunctionEmissionArgumentReturnTypeContract(
                     functionName,
                     i,
@@ -258,6 +319,32 @@ internal static partial class ProjectGenerator
         return string.Equals(arithmeticOperator, "+", StringComparison.Ordinal) &&
                (string.Equals(left, "Number", StringComparison.Ordinal) ||
                 string.Equals(right, "Number", StringComparison.Ordinal));
+    }
+
+    private static bool TryRenderContractedComparisonOperandsFromEvidence(
+        string code,
+        TaskSemantic task,
+        out string rendered)
+    {
+        rendered = code;
+        var comparison = SplitTopLevelComparisonExpression(code);
+        if (comparison is null)
+            return false;
+
+        var leftOriginal = comparison.Value.Left.Trim();
+        var rightOriginal = comparison.Value.Right.Trim();
+        var left = RenderContractedFunctionArgumentsFromEvidence(leftOriginal, task, out var leftChanged);
+        var right = RenderContractedFunctionArgumentsFromEvidence(rightOriginal, task, out var rightChanged);
+        var changed =
+            leftChanged ||
+            rightChanged ||
+            !string.Equals(left, leftOriginal, StringComparison.Ordinal) ||
+            !string.Equals(right, rightOriginal, StringComparison.Ordinal);
+        if (!changed)
+            return false;
+
+        rendered = $"{left} {comparison.Value.Operator} {right}";
+        return true;
     }
 
     private static bool CanApplyContractedFunctionArgument(string functionName, int argumentIndex, int argumentCount)
@@ -711,6 +798,9 @@ internal static partial class ProjectGenerator
         var originalCode = code.Trim();
         var strippedCode = StripRedundantOuterParentheses(originalCode);
 
+        if (TryRenderStrictArrayNullPredicate(strippedCode, task, out var arrayNullPredicate))
+            return arrayNullPredicate;
+
         if (TryRewriteStrictNestedNotComparisons(strippedCode, task, out var nestedNotComparisons))
             strippedCode = nestedNotComparisons;
 
@@ -774,6 +864,28 @@ internal static partial class ProjectGenerator
         return changed
             ? $"{functionName}({string.Join(", ", renderedArgs)})"
             : string.Equals(strippedCode, code.Trim(), StringComparison.Ordinal) ? code : strippedCode;
+    }
+
+    private static bool TryRenderStrictArrayNullPredicate(string code, TaskSemantic task, out string rendered)
+    {
+        rendered = "";
+        if (!TryParseFunctionCall(code, out var functionName, out var args) ||
+            args.Count != 1 ||
+            (!IsTopLevelCall(functionName, "u.IsNull") &&
+             !IsTopLevelCall(functionName, "IsNull")))
+        {
+            return false;
+        }
+
+        var argument = StripRedundantOuterParentheses(args[0].Trim());
+        if (!TryGetCurrentTaskResourceReturnType(task, argument, out var returnType) ||
+            !returnType.StartsWith("ArrayColumn<", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        rendered = $"({argument}.Value == null)";
+        return true;
     }
 
     private static bool TryGetAccessibleFunctionArgumentType(
@@ -856,6 +968,12 @@ internal static partial class ProjectGenerator
         rendered = trueIsNull
             ? $"(({condition}) ? (object){trueArg} : (object){typedArg})"
             : $"(({condition}) ? (object){typedArg} : (object){falseArg})";
+        TrackCriticalExternalCoercionIfBridgeChanged(
+            "EmittedExpression",
+            nameof(TryRenderStrictObjectConditionalNullBridge),
+            code,
+            rendered,
+            string.Create(CultureInfo.InvariantCulture, $"expected=object source=Time expr={TruncateTelemetryValue(code)}"));
         return true;
     }
 
@@ -904,6 +1022,8 @@ internal static partial class ProjectGenerator
             "GetVarName",
             args => RewriteStrictContractedFunctionCall("GetVarName", args, task));
 
+        rewritten = RewriteStrictAccessibleFunctionCalls(rewritten, task);
+
         rewritten = System.Text.RegularExpressions.Regex.Replace(
             rewritten,
             @"(?<prefix>GeneratedSnippets\.[A-Za-z0-9_\.]+\.func\s*\()(?<arg>u\.WinHWND\s*\([^()]*\))(?<suffix>\s*\))",
@@ -920,6 +1040,83 @@ internal static partial class ProjectGenerator
             System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
         return rewritten;
+    }
+
+    private static string RewriteStrictAccessibleFunctionCalls(string code, TaskSemantic task)
+    {
+        if (string.IsNullOrWhiteSpace(code))
+            return code;
+
+        var rewritten = code;
+        foreach (var functionName in ResolveStrictAccessibleFunctionCallNames(task))
+        {
+            if (rewritten.IndexOf(functionName, StringComparison.Ordinal) < 0)
+                continue;
+
+            rewritten = RewriteFunctionCalls(
+                rewritten,
+                functionName,
+                args => RewriteStrictAccessibleFunctionCall(functionName, args, task));
+        }
+
+        return rewritten;
+    }
+
+    private static IReadOnlyList<string> ResolveStrictAccessibleFunctionCallNames(TaskSemantic task)
+    {
+        var result = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        void Add(string? name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                return;
+            var trimmed = name.Trim();
+            if (seen.Add(trimmed))
+                result.Add(trimmed);
+        }
+
+        foreach (var function in task.FunctionOverridesSemantic)
+        {
+            Add(function.MethodName);
+            Add(function.Name);
+        }
+
+        foreach (var target in ResolveAccessibleApplicationFunctionTargets(task).Values)
+            Add(target);
+
+        foreach (var target in ResolveAccessibleParentFunctionTargets(task).Values)
+            Add(target);
+
+        return result;
+    }
+
+    private static string? RewriteStrictAccessibleFunctionCall(string functionName, List<string> args, TaskSemantic task)
+    {
+        if (!TryGetAccessibleFunctionContract(task, functionName, out var function, out _) ||
+            function.Parameters.Count == 0 ||
+            args.Count == 0)
+        {
+            return null;
+        }
+
+        var changed = false;
+        for (var i = 0; i < args.Count && i < function.Parameters.Count; i++)
+        {
+            var expectedReturnType = NormalizeReturnTypeToken(function.Parameters[i].ParameterType);
+            if (string.IsNullOrWhiteSpace(expectedReturnType))
+                continue;
+
+            var originalArg = args[i].Trim();
+            var renderedArg = RenderStrictFunctionArgumentBridges(originalArg, task);
+            if (TryRenderStrictExpectedArgument(renderedArg, expectedReturnType, task, out var bridgedArg))
+                renderedArg = bridgedArg;
+
+            args[i] = renderedArg;
+            changed |= !string.Equals(renderedArg, originalArg, StringComparison.Ordinal);
+        }
+
+        return changed ? $"{functionName}({string.Join(", ", args)})" : null;
     }
 
     private static string RewriteStrictContractedFunctionCall(string functionName, List<string> args, TaskSemantic task)
@@ -983,6 +1180,12 @@ internal static partial class ProjectGenerator
             return false;
 
         rendered = emitted.Code;
+        TrackCriticalExternalCoercionIfBridgeChanged(
+            "EmittedExpression",
+            nameof(TryRenderStrictEvidenceBridge),
+            code,
+            rendered,
+            string.Create(CultureInfo.InvariantCulture, $"source={sourceReturnType} expected={expectedReturnType} expr={TruncateTelemetryValue(code)}"));
         return true;
     }
 
@@ -1108,6 +1311,12 @@ internal static partial class ProjectGenerator
             return false;
 
         rendered = emitted.Code;
+        TrackCriticalExternalCoercionIfBridgeChanged(
+            "EmittedExpression",
+            nameof(TryRenderStrictExpectedArgument),
+            code,
+            rendered,
+            string.Create(CultureInfo.InvariantCulture, $"expected={expectedReturnType} source={sourceReturnType} expr={TruncateTelemetryValue(code)}"));
         return true;
     }
 
@@ -1163,11 +1372,17 @@ internal static partial class ProjectGenerator
             code.IndexOf(castFunction + "(", StringComparison.Ordinal) < 0)
             return code;
 
-        return RewriteFunctionCalls(code, castFunction, args =>
+        var rewritten = RewriteFunctionCalls(code, castFunction, args =>
             args.Count == 1 &&
             TryRenderStrictConditionalForExpected(args[0].Trim(), expectedReturnType, task, out var renderedConditional)
                 ? renderedConditional
                 : null);
+        return TrackCriticalExternalCoercionIfBridgeChanged(
+            "EmittedExpression",
+            nameof(RenderStrictConditionalInsideExpectedCast),
+            code,
+            rewritten,
+            string.Create(CultureInfo.InvariantCulture, $"expected={expectedReturnType} expr={TruncateTelemetryValue(code)}"));
     }
 
     private static bool IsExpectedStrictScalarCast(string functionName, string expectedReturnType)
@@ -1224,6 +1439,12 @@ internal static partial class ProjectGenerator
                     TryRenderStrictTextConditionalBranch(falseArg, task, out var textFalse))
                 {
                     rendered = $"u.CastToNumber({functionName}({args[0].Trim()}, {textTrue}, {textFalse}))";
+                    TrackCriticalExternalCoercionIfBridgeChanged(
+                        "EmittedExpression",
+                        nameof(TryRenderStrictConditionalForExpected),
+                        code,
+                        rendered,
+                        string.Create(CultureInfo.InvariantCulture, $"expected={expectedReturnType} expr={TruncateTelemetryValue(code)}"));
                     return true;
                 }
             }
@@ -1235,6 +1456,12 @@ internal static partial class ProjectGenerator
             TryRenderStrictTextConditionalBranch(falseArg, task, out var fallbackTextFalse))
         {
             rendered = $"u.CastToNumber({functionName}({args[0].Trim()}, {fallbackTextTrue}, {fallbackTextFalse}))";
+            TrackCriticalExternalCoercionIfBridgeChanged(
+                "EmittedExpression",
+                nameof(TryRenderStrictConditionalForExpected),
+                code,
+                rendered,
+                string.Create(CultureInfo.InvariantCulture, $"expected={expectedReturnType} expr={TruncateTelemetryValue(code)}"));
             return true;
         }
 
@@ -1254,6 +1481,12 @@ internal static partial class ProjectGenerator
             return false;
 
         rendered = $"{functionName}({args[0].Trim()}, {trueArg}, {falseArg})";
+        TrackCriticalExternalCoercionIfBridgeChanged(
+            "EmittedExpression",
+            nameof(TryRenderStrictConditionalForExpected),
+            code,
+            rendered,
+            string.Create(CultureInfo.InvariantCulture, $"expected={expectedReturnType} expr={TruncateTelemetryValue(code)}"));
         return true;
     }
 
@@ -1269,6 +1502,12 @@ internal static partial class ProjectGenerator
         }
 
         rendered = $"u.CastToText({code})";
+        TrackCriticalExternalCoercionIfBridgeChanged(
+            "EmittedExpression",
+            nameof(TryRenderStrictTextConditionalBranch),
+            code,
+            rendered,
+            string.Create(CultureInfo.InvariantCulture, $"expected=Text expr={TruncateTelemetryValue(code)}"));
         return true;
     }
 
@@ -1444,7 +1683,15 @@ internal static partial class ProjectGenerator
         if (string.IsNullOrWhiteSpace(code) || !IsSimpleIdentifierPath(code))
             return false;
 
-        var memberName = code.Trim();
+        var targetPath = code.Trim();
+        var resolvedResource = ResolveResourceByTargetPath(task, targetPath, _allTasks ?? Array.Empty<TaskSemantic>());
+        if (resolvedResource is not null)
+        {
+            var ownerTask = ResolveOwningTaskForResource(resolvedResource) ?? task;
+            return TryResolveTaskResourceStrictReturnType(resolvedResource, ownerTask, out returnType);
+        }
+
+        var memberName = targetPath;
         while (memberName.StartsWith("_parent.", StringComparison.Ordinal))
             memberName = memberName["_parent.".Length..];
 
@@ -1466,22 +1713,36 @@ internal static partial class ProjectGenerator
             if (!string.Equals(candidate, memberName, StringComparison.Ordinal))
                 continue;
 
-            var columnType = ResolveTaskResourceColumnType(resource, _allFieldModels, task);
-            if (columnType.StartsWith("ArrayColumn<", StringComparison.Ordinal))
-            {
-                returnType = columnType;
-                return true;
-            }
-
-            var attrObj = ResolveAttrObjForColumnType(columnType, _allFieldModels, task);
-            if (string.IsNullOrWhiteSpace(attrObj))
-                attrObj = ResolveEffectiveTaskResourceAttrObj(resource, task);
-
-            returnType = MapAttrObjToReturnType(attrObj);
-            return !string.IsNullOrWhiteSpace(returnType);
+            return TryResolveTaskResourceStrictReturnType(resource, task, out returnType);
         }
 
         return false;
+    }
+
+    private static bool TryResolveTaskResourceStrictReturnType(
+        TaskResourceColumnDef resource,
+        TaskSemantic ownerTask,
+        out string returnType)
+    {
+        var columnType = ResolveTaskResourceColumnType(resource, _allFieldModels, ownerTask);
+        if (IsDotNetTaskResource(resource))
+        {
+            returnType = "object";
+            return true;
+        }
+
+        if (columnType.StartsWith("ArrayColumn<", StringComparison.Ordinal))
+        {
+            returnType = columnType;
+            return true;
+        }
+
+        var attrObj = ResolveAttrObjForColumnType(columnType, _allFieldModels, ownerTask);
+        if (string.IsNullOrWhiteSpace(attrObj))
+            attrObj = ResolveEffectiveTaskResourceAttrObj(resource, ownerTask);
+
+        returnType = MapAttrObjToReturnType(attrObj);
+        return !string.IsNullOrWhiteSpace(returnType);
     }
 
     private static bool TrySetStrictReturnType(string value, out string returnType)

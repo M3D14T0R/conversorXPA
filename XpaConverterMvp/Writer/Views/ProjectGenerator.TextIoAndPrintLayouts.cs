@@ -391,6 +391,38 @@ internal static partial class ProjectGenerator
         return "_view" + suffix;
     }
 
+    private static string ReplaceBareIoReportPlaceholder(string expression, string replacement)
+    {
+        const string placeholder = "_ioReport";
+        if (string.IsNullOrWhiteSpace(expression) ||
+            string.IsNullOrWhiteSpace(replacement) ||
+            expression.IndexOf(placeholder, StringComparison.Ordinal) < 0)
+            return expression;
+
+        var sb = new StringBuilder(expression.Length + Math.Max(0, replacement.Length - placeholder.Length));
+        var index = 0;
+        while (index < expression.Length)
+        {
+            var found = expression.IndexOf(placeholder, index, StringComparison.Ordinal);
+            if (found < 0)
+            {
+                sb.Append(expression, index, expression.Length - index);
+                break;
+            }
+
+            var before = found > 0 ? expression[found - 1] : '\0';
+            var afterIndex = found + placeholder.Length;
+            var after = afterIndex < expression.Length ? expression[afterIndex] : '\0';
+            var alreadyQualified = before == '.' || char.IsLetterOrDigit(before) || before == '_';
+            var hasIdentifierSuffix = char.IsLetterOrDigit(after) || after == '_';
+            sb.Append(expression, index, found - index);
+            sb.Append(alreadyQualified || hasIdentifierSuffix ? placeholder : replacement);
+            index = afterIndex;
+        }
+
+        return sb.ToString();
+    }
+
     private static bool HasPrintGroupIo(TaskSemantic t)
     {
         return t.Layout.PrintGroupIos.Count > 0;
@@ -564,7 +596,7 @@ internal static partial class ProjectGenerator
 
     private static void EmitFormIoWrite(StringBuilder sb, TaskFormIoDef io, string writeCall, TaskSemantic t, IReadOnlyList<DataObjectDef> dataObjects, string pad)
     {
-        var resolvedWriteCall = writeCall.Replace("_ioReport", ResolveTextIoStreamVariableForIo(t, io), StringComparison.Ordinal);
+        var resolvedWriteCall = ReplaceBareIoReportPlaceholder(writeCall, ResolveTextIoStreamVariableForIo(t, io));
         if (io.FormEntryIndex.HasValue && resolvedWriteCall.Contains("_layout.", StringComparison.Ordinal))
             resolvedWriteCall = resolvedWriteCall.Replace("_layout.", ResolveTextIoLayoutVariableName(t, io.FormEntryIndex.Value) + ".", StringComparison.Ordinal);
         if (resolvedWriteCall.Contains("_ioPrint", StringComparison.Ordinal))
@@ -682,7 +714,7 @@ internal static partial class ProjectGenerator
 
     private static void EmitFormIoRead(StringBuilder sb, TaskFormIoDef io, string readCall, TaskSemantic t, IReadOnlyList<DataObjectDef> dataObjects, string pad)
     {
-        readCall = readCall.Replace("_ioReport", ResolveTextIoStreamVariableForIo(t, io), StringComparison.Ordinal);
+        readCall = ReplaceBareIoReportPlaceholder(readCall, ResolveTextIoStreamVariableForIo(t, io));
         if (io.FormEntryIndex.HasValue && readCall.Contains("_layout.", StringComparison.Ordinal))
             readCall = readCall.Replace("_layout.", ResolveTextIoLayoutVariableName(t, io.FormEntryIndex.Value) + ".", StringComparison.Ordinal);
         var cond = io.ConditionExpressionId.HasValue

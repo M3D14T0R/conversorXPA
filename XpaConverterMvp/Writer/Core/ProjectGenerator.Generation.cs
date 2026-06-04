@@ -62,6 +62,7 @@ internal static partial class ProjectGenerator
         EmitGeneratedTaskOutputs(request.Parsed, scope, generatedTasks, outputLayout, request.AppNamespace, request.ParallelTaskGeneration, request.IncrementalOutput);
 
         LogTypedExpressionTelemetrySummary();
+        LogExpressionEmissionAuditSummary();
         LogLegacyExpressionTelemetrySummary();
         LogXpaFunctionContractTelemetrySummary();
         LogProgress($"Stage: generate complete -> {request.AppNamespace}");

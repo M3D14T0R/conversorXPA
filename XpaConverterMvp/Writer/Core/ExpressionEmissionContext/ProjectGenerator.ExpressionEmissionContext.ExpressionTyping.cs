@@ -180,7 +180,8 @@ internal static partial class ProjectGenerator
 
         var trimmed = StripRedundantOuterParentheses(expression.Trim());
         if (string.Equals(normalizedExpected, "Number", StringComparison.Ordinal) &&
-            (string.Equals(trimmed, "u.LoopCounter()", StringComparison.Ordinal) ||
+            (string.Equals(trimmed, "Counter", StringComparison.Ordinal) ||
+             string.Equals(trimmed, "u.LoopCounter()", StringComparison.Ordinal) ||
              trimmed.StartsWith("u.StrTokenCnt(", StringComparison.Ordinal)))
             return true;
         if (string.Equals(normalizedExpected, "Text", StringComparison.Ordinal) &&
@@ -241,6 +242,12 @@ internal static partial class ProjectGenerator
         }
 
         if (IsNumericLiteralExpressionCentral(trimmed))
+        {
+            returnType = "Number";
+            return true;
+        }
+
+        if (IsCounterExpression(trimmed))
         {
             returnType = "Number";
             return true;
@@ -328,6 +335,21 @@ internal static partial class ProjectGenerator
 
         if (TryParseFunctionCall(trimmed, out var functionName, out var args))
         {
+            if (task is not null &&
+                TryGetAccessibleFunctionContract(task, functionName, out var functionContract, out _) &&
+                !string.IsNullOrWhiteSpace(functionContract.ReturnType))
+            {
+                returnType = functionContract.ReturnType;
+                return true;
+            }
+
+            if (TryGetComponentFunctionCallContract(functionName, out var componentContract) &&
+                !string.IsNullOrWhiteSpace(componentContract.ReturnType))
+            {
+                returnType = componentContract.ReturnType;
+                return true;
+            }
+
             if (task is not null &&
                 TryResolveSourceDotNetMethodCallReturnType(
                     functionName,
@@ -482,8 +504,7 @@ internal static partial class ProjectGenerator
         var rawTrimmed = StripRedundantOuterParentheses(expression.Trim());
         if (IsKnownExpressionReturnTypeCompatible(rawTrimmed, expectedReturnType, task))
             return rawTrimmed;
-        var actualReturnTypeKnownWithoutLegacy =
-            TryResolveKnownExpressionReturnTypeWithoutLegacy(task, rawTrimmed, out _);
+        _ = TryResolveKnownExpressionReturnTypeWithoutLegacy(task, rawTrimmed, out _);
 
         if (TryNormalizeTemporalScalarExpectedExpressionWithoutLegacy(
                 rawTrimmed,
@@ -492,13 +513,6 @@ internal static partial class ProjectGenerator
                 out var temporalScalar))
             return temporalScalar;
 
-        if (!actualReturnTypeKnownWithoutLegacy)
-        {
-            TrackLegacyExpressionTreatment(
-                "NormalizeType",
-                nameof(NormalizeExpressionForExpectedScalarReturnTypeUsingResolvedTypeCentral),
-                string.Create(System.Globalization.CultureInfo.InvariantCulture, $"expected={expectedReturnType} expr={rawTrimmed} task={(task is null ? "<none>" : task.Ordinal.ToString(System.Globalization.CultureInfo.InvariantCulture))}"));
-        }
         if (TrySplitLeadingOpaqueInlineComment(rawTrimmed, out var leadingComment, out var uncommented))
         {
             var rewritten = NormalizeExpressionForExpectedScalarReturnTypeUsingResolvedTypeCentral(
@@ -658,7 +672,7 @@ internal static partial class ProjectGenerator
 
             var declaredReturnType = NormalizeReturnTypeToken(ResolveExpressionReturnType(null, trimmed, task));
             if (string.Equals(GetValueReturnType(declaredReturnType), expectedReturnType, StringComparison.Ordinal))
-                return NormalizeExpressionForDeclaredReturnTypeCentral(trimmed, expectedReturnType, null);
+                return NormalizeExpressionForDeclaredReturnTypeCentral(trimmed, expectedReturnType, null, task);
         }
 
         if (task is not null &&
@@ -687,7 +701,7 @@ internal static partial class ProjectGenerator
             if (string.Equals(resolvedReturnType, "Date", StringComparison.Ordinal) ||
                 string.Equals(resolvedReturnType, "Time", StringComparison.Ordinal))
             {
-                var normalizedTemporal = NormalizeExpressionForDeclaredReturnTypeCentral(trimmed, resolvedReturnType, null);
+                var normalizedTemporal = NormalizeExpressionForDeclaredReturnTypeCentral(trimmed, resolvedReturnType, null, task);
                 return $"u.ToNumber({normalizedTemporal})";
             }
         }
@@ -710,7 +724,7 @@ internal static partial class ProjectGenerator
 
             var innerResolved = ResolveExpressionTypeFromEvidence(task, inner);
             if (string.Equals(GetValueReturnType(innerResolved.ReturnType), "Time", StringComparison.Ordinal))
-                return NormalizeExpressionForDeclaredReturnTypeCentral(inner, "Time", null);
+                return NormalizeExpressionForDeclaredReturnTypeCentral(inner, "Time", null, task);
         }
 
         if (resolved.IsResolved &&
@@ -728,7 +742,7 @@ internal static partial class ProjectGenerator
 
         if (resolved.IsResolved &&
             string.Equals(GetValueReturnType(resolved.ReturnType), expectedReturnType, StringComparison.Ordinal))
-            return NormalizeExpressionForDeclaredReturnTypeCentral(trimmed, expectedReturnType, null);
+            return NormalizeExpressionForDeclaredReturnTypeCentral(trimmed, expectedReturnType, null, task);
 
         if (task is not null)
         {
@@ -1002,7 +1016,7 @@ internal static partial class ProjectGenerator
             !string.Equals(valueReturnType, "Time", StringComparison.Ordinal))
             return expression;
 
-        return $"u.ToNumber({NormalizeExpressionForDeclaredReturnTypeCentral(expression, valueReturnType, null)})";
+        return $"u.ToNumber({NormalizeExpressionForDeclaredReturnTypeCentral(expression, valueReturnType, null, task)})";
     }
 
     private static string NormalizeTemporalOperandForNumericArithmetic(string normalized, string original, TaskSemantic? task)

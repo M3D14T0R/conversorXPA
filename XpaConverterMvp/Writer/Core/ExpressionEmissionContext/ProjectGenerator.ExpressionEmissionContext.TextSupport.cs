@@ -66,7 +66,7 @@ internal static partial class ProjectGenerator
         {
             dstrArgs[0] = EnsureDateCallArgumentCentral(
                 StripExpectedAttributeCastWrappers(
-                    NormalizeDateConditionalExpression(dstrArgs[0].Trim()),
+                    dstrArgs[0].Trim(),
                     "FIELD_DATE"));
             if (dstrArgs.Count > 1)
                 dstrArgs[1] = NormalizeTextSinkArgumentCentral(dstrArgs[1].Trim());
@@ -76,7 +76,11 @@ internal static partial class ProjectGenerator
             TryParseFunctionCall(trimmed, out var tstrName, out var tstrArgs) &&
             tstrArgs.Count >= 1)
         {
-            tstrArgs[0] = NormalizeTimeFormattingArgumentCentral(tstrArgs[0].Trim());
+            tstrArgs[0] = EmitScalarArgumentFromEvidence(
+                StripExpectedAttributeCastWrappers(
+                    tstrArgs[0].Trim(),
+                    "FIELD_TIME"),
+                "Time");
             if (tstrArgs.Count > 1)
                 tstrArgs[1] = NormalizeTextSinkArgumentCentral(tstrArgs[1].Trim());
             return $"{tstrName}({string.Join(", ", tstrArgs)})";

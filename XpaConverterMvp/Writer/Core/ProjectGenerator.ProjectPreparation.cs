@@ -41,8 +41,7 @@ internal static partial class ProjectGenerator
             WriteHandlingGuiCompatAsset(outputLayout.OutputRoot, appNamespace);
         if (UsesExternalTypeCompat(parsed))
             WriteExternalTypeCompatAsset(outputLayout.OutputRoot, appNamespace);
-        if (UsesDotNetByRefInterop(parsed))
-            WriteDotNetByRefInteropAsset(outputLayout.OutputRoot, appNamespace, parsed);
+        WriteDotNetByRefInteropAsset(outputLayout.OutputRoot, appNamespace, parsed);
         if (!scope.TaskScopedGeneration && UsesPublicComponentFunctions(parsed))
             WriteComponentFunctionsAsset(outputLayout.OutputRoot, appNamespace, parsed);
         if (UsesComponentFunctionCompat(sharedAssetsSource))
