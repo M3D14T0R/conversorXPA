@@ -34,10 +34,25 @@ internal static partial class ProjectGenerator
             .Select(kv => (Component: kv.Key, Manifest: ProjectManifest.LoadForSource(kv.Value)))
             .Where(x => x.Manifest is not null)
             .ToDictionary(x => x.Component, x => x.Manifest!, StringComparer.OrdinalIgnoreCase);
-        _componentFunctionSourceByName = request.Parsed.ComponentFunctions
+        _externalManifestColumnAttrObjIndex = BuildExternalManifestColumnAttrObjIndex();
+        var componentFunctionSourceByName = request.Parsed.ComponentFunctions
             .Where(x => !string.IsNullOrWhiteSpace(x.Name) && !string.IsNullOrWhiteSpace(x.ComponentName))
             .GroupBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.First().ComponentName, StringComparer.OrdinalIgnoreCase);
+        foreach (var manifestEntry in _projectReferenceManifests)
+        {
+            foreach (var functionName in manifestEntry.Value.Functions.Keys)
+            {
+                if (string.IsNullOrWhiteSpace(functionName) ||
+                    ReservedRuntimeFunctionNames.Contains(functionName))
+                {
+                    continue;
+                }
+
+                componentFunctionSourceByName.TryAdd(functionName, manifestEntry.Key);
+            }
+        }
+        _componentFunctionSourceByName = componentFunctionSourceByName;
         _componentFunctionReturnTypeByName = BuildComponentFunctionReturnTypeMap(request.Parsed);
         _externalMagicComponentNames = request.Parsed.ExternalMagicComponents
             .Select(x => x.Name)
@@ -57,7 +72,7 @@ internal static partial class ProjectGenerator
             kv => new Dictionary<string, string>(kv.Value, StringComparer.OrdinalIgnoreCase));
         _dataObjectsByOrdinal = request.Parsed.DataObjects.ToDictionary(d => d.Ordinal);
         _allFieldModels = request.Parsed.FieldModels;
-        _fieldModelTypeNameByOrdinal = new Dictionary<int, string>();
+        _fieldModelTypeNameByOrdinal = BuildFieldModelTypeNameMap(_allFieldModels);
         _dataSourceTypeByObjectOrdinal = request.Parsed.DataObjects
             .ToDictionary(d => d.Ordinal, d => $"typeof({ResolveEntityTypeReferenceForRegistry(d)})");
         _allTasks = request.Parsed.Tasks;
@@ -75,10 +90,15 @@ internal static partial class ProjectGenerator
             .Where(t => !t.ParentOrdinal.HasValue)
             .OrderBy(t => t.Ordinal)
             .ToList();
+        BuildTaskClassNameIndexes(request.Parsed.Tasks);
         _taskClassNameByOrdinal = new Dictionary<int, string>();
         _taskClassNameResolutionInProgress = new HashSet<int>();
         _taskTypeReferenceByOrdinal = new Dictionary<int, string>();
         _resourceMemberNameCache = new Dictionary<string, string>(StringComparer.Ordinal);
+        _resourceMemberNameByTaskOrdinal = new Dictionary<int, Dictionary<int, string>>();
+        _resourceMemberNameCacheBuiltTaskOrdinals = new HashSet<int>();
+        _taskResourceByMemberNameCache = new Dictionary<int, Dictionary<string, TaskResourceColumnDef>>();
+        _reservedTaskMemberNameCache = new Dictionary<int, HashSet<string>>();
         _loadedSourceComponents = request.Parsed.Tasks
             .Select(t => t.SourceComponent)
             .Where(c => !string.IsNullOrWhiteSpace(c))
@@ -125,6 +145,7 @@ internal static partial class ProjectGenerator
         _numericTextResourceOverrideCache = new Dictionary<string, bool>(StringComparer.Ordinal);
         _logicalBlobResourceOverrideCache = new Dictionary<string, bool>(StringComparer.Ordinal);
         _preparedRunArgumentsCache = new Dictionary<string, string>(StringComparer.Ordinal);
+        _nonInputArgumentBindingCache = new Dictionary<string, string>(StringComparer.Ordinal);
         _observedTaskParameterEvidenceCache = new Dictionary<int, IReadOnlyList<Dictionary<string, int>>>();
         _observedTaskParameterEvidenceInProgress = new HashSet<int>();
         _taskParametersCache = new Dictionary<int, List<(string ColumnMember, string ParameterType, string ParameterName, string ParameterDirection)>>();

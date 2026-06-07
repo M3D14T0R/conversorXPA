@@ -3469,9 +3469,115 @@ internal static partial class ProjectGenerator
 
     private static string? ResolveModelColumnAttrObj(TaskSemantic task, string target)
     {
-        return TryResolveDataViewMemberColumn(task, target, out _, out var column)
-            ? ResolveEffectiveDataColumnAttrObj(column)
+        if (TryResolveDataViewMemberColumn(task, target, out _, out var column))
+            return ResolveEffectiveDataColumnAttrObj(column);
+
+        return ResolveExternalManifestColumnAttrObj(target);
+    }
+
+    private static string? ResolveExternalManifestColumnAttrObj(string target)
+    {
+        if (string.IsNullOrWhiteSpace(target))
+            return null;
+
+        var targetPath = target.Trim();
+        if (targetPath.EndsWith(".Value", StringComparison.Ordinal))
+            targetPath = targetPath[..^".Value".Length];
+
+        var segments = targetPath.Split('.', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length < 2)
+            return null;
+
+        var owner = segments[^2];
+        var member = segments[^1];
+        if (string.IsNullOrWhiteSpace(owner) || string.IsNullOrWhiteSpace(member))
+            return null;
+
+        var index = _externalManifestColumnAttrObjIndex;
+        if (index is null || index.Count == 0)
+            return null;
+
+        return index.TryGetValue(BuildDataViewMemberColumnKey(owner, member), out var attrObj)
+            ? attrObj
             : null;
+    }
+
+    private static IReadOnlyDictionary<string, string> BuildExternalManifestColumnAttrObjIndex()
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (_projectReferenceManifests.Count == 0)
+            return result;
+
+        foreach (var manifest in _projectReferenceManifests.Values)
+        {
+            foreach (var dataObject in manifest.DataObjectDetails)
+            {
+                var owners = BuildExternalManifestDataObjectOwnerAliases(manifest, dataObject);
+                if (owners.Count == 0)
+                    continue;
+
+                foreach (var column in dataObject.Columns)
+                {
+                    var attrObj = NormalizeAttrObjKind(column.AttrObj);
+                    if (string.IsNullOrWhiteSpace(attrObj))
+                        attrObj = NormalizeAttrObjKind(column.Attribute ?? "");
+                    if (string.IsNullOrWhiteSpace(attrObj))
+                        continue;
+
+                    var members = BuildExternalManifestColumnMemberAliases(column);
+                    if (members.Count == 0)
+                        continue;
+
+                    foreach (var owner in owners)
+                    foreach (var member in members)
+                        result.TryAdd(BuildDataViewMemberColumnKey(owner, member), attrObj);
+                }
+            }
+        }
+
+        return result;
+    }
+
+    private static HashSet<string> BuildExternalManifestDataObjectOwnerAliases(ProjectManifest manifest, ProjectManifestDataObject dataObject)
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        AddAlias(dataObject.Name);
+        AddAlias(dataObject.PublicName);
+        AddAlias(dataObject.PhysicalName);
+        if (manifest.DataObjectsByIndex.TryGetValue(dataObject.ObjectIndex, out var generatedName))
+            AddAlias(generatedName);
+
+        return result;
+
+        void AddAlias(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return;
+
+            var trimmed = value.Trim();
+            result.Add(trimmed);
+            result.Add(ToPascalIdentifier(trimmed));
+        }
+    }
+
+    private static HashSet<string> BuildExternalManifestColumnMemberAliases(ProjectManifestDataColumn column)
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        AddAlias(column.Name);
+        AddAlias(column.DbColumnName);
+        AddAlias(column.FieldPhysicalName);
+        return result;
+
+        void AddAlias(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return;
+
+            var trimmed = value.Trim();
+            result.Add(trimmed);
+            result.Add(ToPascalIdentifier(trimmed));
+        }
     }
 
     private static string ResolveEffectiveDataColumnAttrObj(DataColumnDef column)
@@ -4669,7 +4775,6 @@ internal static partial class ProjectGenerator
         translated = RewriteAncestorResourceMemberReferences(translated, task);
         translated = RewriteTextSinkCallsCentral(translated);
         translated = NormalizeNumericOperands(translated);
-        translated = RenderStrictFunctionArgumentBridges(translated, task);
         translated = RewriteSimpleBlobNullComparisons(translated, task);
         translated = RewriteSharedValGetComparisonOperands(translated);
         translated = RewriteSharedValGetByAttribute(attr, translated);
@@ -5649,20 +5754,58 @@ internal static partial class ProjectGenerator
         string code,
         TaskSemantic task,
         ExpressionEmissionContext context)
-    {
-        if (string.IsNullOrWhiteSpace(code))
-            return code;
+        => EmitExpressionForContext(
+            CreateContextualEmittedExpression(code, null, task, Array.Empty<DataObjectDef>(), context, evidenceKind: "ad-hoc-string"),
+            task,
+            context).Code;
 
-        var normalized = code.Trim();
-        if (TryEmitThroughStrictEmittedExpression(normalized, task, context, out var strictEmitted))
-            return strictEmitted;
+    private static EmittedExpression EmitExpressionForContext(
+        EmittedExpression expression,
+        TaskSemantic task,
+        ExpressionEmissionContext context)
+    {
+        if (string.IsNullOrWhiteSpace(expression.Code))
+            return expression;
+
+        var normalized = expression.Code.Trim();
+        var expectedReturnType = NormalizeReturnTypeToken(ResolveReturnTypeForExpectedContext(context.Expected));
+        if (TryEmitThroughStrictEmittedExpressionTyped(normalized, task, context, out var strictEmitted))
+        {
+            var effectiveReturnType = !string.IsNullOrWhiteSpace(expectedReturnType)
+                ? expectedReturnType
+                : strictEmitted.ReturnType;
+            if (string.IsNullOrWhiteSpace(effectiveReturnType))
+                effectiveReturnType = expression.EffectiveReturnType;
+            if (string.IsNullOrWhiteSpace(effectiveReturnType))
+                effectiveReturnType = expression.SourceReturnType;
+            if (string.IsNullOrWhiteSpace(effectiveReturnType))
+                effectiveReturnType = expression.IntrinsicReturnType;
+
+            return expression with
+            {
+                Code = strictEmitted.Code,
+                EffectiveReturnType = NormalizeReturnTypeToken(effectiveReturnType),
+                EffectiveXpaType = XpaTypeEngine.MapExpectedToXpaType(effectiveReturnType),
+                HasEffectiveType = !string.IsNullOrWhiteSpace(effectiveReturnType),
+                SinkKind = context.SinkKind.ToString(),
+                ExpectedReturnType = expectedReturnType,
+                EvidenceKind = strictEmitted.EvidenceKind.ToString(),
+                EvidenceSourceKey = strictEmitted.EvidenceSourceKey
+            };
+        }
 
         ConversionTelemetry.Log(
             "EMITTED_EXPR_UNRESOLVED",
             string.Create(
                 CultureInfo.InvariantCulture,
                 $"task={task.Ordinal} sink={context.SinkKind} expected={QuoteTelemetry(ResolveReturnTypeForExpectedContext(context.Expected))} expr={QuoteTelemetry(TruncateTelemetryValue(normalized))}"));
-        return normalized;
+        return expression with
+        {
+            Code = normalized,
+            SinkKind = context.SinkKind.ToString(),
+            ExpectedReturnType = expectedReturnType,
+            FailureReason = "strict-emitted-expression-unresolved"
+        };
     }
 
     private static string GetExpressionContextTargetMemberCacheKey(ExpressionEmissionContext context)
@@ -6284,6 +6427,9 @@ internal static partial class ProjectGenerator
         infoType = "";
         if (string.IsNullOrWhiteSpace(value))
             return false;
+
+        if (TryGetWholeCSharpStringLiteral(value.Trim(), out var literalCode))
+            value = ExtractWholeCSharpStringLiteralContent(literalCode);
 
         var parts = value.Split(',');
         if (parts.Length != 2)
@@ -7147,6 +7293,17 @@ internal static partial class ProjectGenerator
         var topLevelCall = TryGetTopLevelFunctionName(trimmed);
         if (IsKnownTextProducingFunction(topLevelCall))
             return true;
+
+        if (TryParseFunctionCall(trimmed, out var functionName, out _) &&
+            IsParentQualifiedFunctionName(functionName) &&
+            TryGetUniqueFunctionContractByLeaf(functionName, out var parentFunction) &&
+            string.Equals(
+                GetValueReturnType(NormalizeReturnTypeToken(parentFunction.ReturnType)),
+                "Text",
+                StringComparison.Ordinal))
+        {
+            return true;
+        }
 
         if (IsTextualConditionalExpression(trimmed))
             return true;

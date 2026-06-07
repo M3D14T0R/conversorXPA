@@ -19,10 +19,46 @@ internal static partial class ProjectGenerator
         if (formEntry.Form is not null && !string.IsNullOrWhiteSpace(formEntry.Form.FormName))
         {
             var ownerTaskName = ToTaskClassName(ResolveViewOwnerTask(t, allTasks).Description);
-            var candidate = ownerTaskName + ToPascalIdentifier(formEntry.Form.FormName);
+            var formName = ToPascalIdentifier(formEntry.Form.FormName);
+            var candidate = ownerTaskName + formName;
+            if (HasMultiFormViewClassNameCollision(t, formEntry, candidate, allTasks))
+                candidate = ownerTaskName + ResolveTaskClassName(t, allTasks) + formName;
             return EnsureUniqueMultiFormViewClassName(t, candidate, allTasks);
         }
         return ResolveViewClassName(t, allTasks);
+    }
+
+    private static bool HasMultiFormViewClassNameCollision(
+        TaskSemantic ownerTask,
+        TaskFormEntryDef ownerFormEntry,
+        string candidate,
+        IReadOnlyList<TaskSemantic> allTasks)
+    {
+        if (string.IsNullOrWhiteSpace(candidate))
+            return false;
+
+        foreach (var task in allTasks)
+        {
+            foreach (var formEntry in task.FormEntries)
+            {
+                if (ReferenceEquals(task, ownerTask) && formEntry.Index == ownerFormEntry.Index)
+                    continue;
+                if (!string.Equals(formEntry.Model, "FORM_GUI0", StringComparison.OrdinalIgnoreCase) ||
+                    formEntry.Form is null ||
+                    string.IsNullOrWhiteSpace(formEntry.Form.FormName))
+                    continue;
+                if (task.View.SelectedFormEntry?.Index == formEntry.Index &&
+                    !string.IsNullOrWhiteSpace(task.View.ClassName))
+                    continue;
+
+                var ownerTaskName = ToTaskClassName(ResolveViewOwnerTask(task, allTasks).Description);
+                var otherCandidate = ownerTaskName + ToPascalIdentifier(formEntry.Form.FormName);
+                if (string.Equals(candidate, otherCandidate, StringComparison.Ordinal))
+                    return true;
+            }
+        }
+
+        return false;
     }
 
     private static string EnsureUniqueMultiFormViewClassName(TaskSemantic ownerTask, string candidate, IReadOnlyList<TaskSemantic> allTasks)
@@ -131,6 +167,16 @@ internal static partial class ProjectGenerator
         if (char.IsDigit(id[0]))
             id = "_" + id;
         return id;
+    }
+
+    private static string ResolvePrinterIdentifier(string raw)
+    {
+        var normalized = (raw ?? "").Trim();
+        var printerMatch = Regex.Match(normalized, @"^PRINTER(?<number>\d+)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (printerMatch.Success)
+            return "Printer" + printerMatch.Groups["number"].Value;
+
+        return ToPascalIdentifier(normalized);
     }
 
     private static string ToCamelIdentifier(string raw)

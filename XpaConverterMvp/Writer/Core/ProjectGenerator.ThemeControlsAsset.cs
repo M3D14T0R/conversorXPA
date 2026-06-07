@@ -58,6 +58,10 @@ internal static partial class ProjectGenerator
                 sb.AppendLine("        LoadPathOrHtml(target);");
                 sb.AppendLine("    }");
                 sb.AppendLine();
+                sb.AppendLine("    public void ShowPrintPreviewDialog()");
+                sb.AppendLine("    {");
+                sb.AppendLine("    }");
+                sb.AppendLine();
                 sb.AppendLine("    void LoadPathOrHtml(string target)");
                 sb.AppendLine("    {");
                 sb.AppendLine("        if (string.IsNullOrWhiteSpace(target))");

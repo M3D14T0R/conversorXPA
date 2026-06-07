@@ -359,7 +359,13 @@ internal static partial class ProjectGenerator
                 resolveExprMs += sw.ElapsedMilliseconds;
                 if (!string.IsNullOrWhiteSpace(refExpr))
                 {
-                    var isDotNetResourceSelect = rcForSelect is not null && IsDotNetTaskResource(rcForSelect);
+                    var dotNetResourceMember = rcForSelect is not null && IsDotNetTaskResource(rcForSelect)
+                        ? ResolveTaskResourceMemberName(t, rcForSelect)
+                        : "";
+                    var isDotNetResourceSelect =
+                        string.Equals(sel.Type, "V", StringComparison.OrdinalIgnoreCase) &&
+                        !string.IsNullOrWhiteSpace(dotNetResourceMember) &&
+                        string.Equals(refExpr, dotNetResourceMember, StringComparison.Ordinal);
                     if (rcForSelect?.ClearsInheritedExpandEvent == true)
                     {
                         var resourceMemberName = ResolveTaskResourceMemberName(t, rcForSelect);

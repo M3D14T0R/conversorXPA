@@ -20,16 +20,10 @@ internal static partial class ProjectGenerator
             return value;
         }
 
-        var parentModelBinding = ResolveParentModelBindingByControlHint(c, task, allTasks, dataObjects);
-        if ((string.Equals(c.Model, "CTRL_GUI0_IMAGE", StringComparison.OrdinalIgnoreCase) ||
-             string.Equals(c.Model, "CTRL_GUI1_IMAGE", StringComparison.OrdinalIgnoreCase)) &&
-            !string.IsNullOrWhiteSpace(parentModelBinding))
-        {
-            var normalizedBinding = PrefixControllerReferencesForView(parentModelBinding, task, dataObjects);
-            if (normalizedBinding.StartsWith("_controller.", StringComparison.Ordinal))
-                normalizedBinding = normalizedBinding["_controller.".Length..];
-            return Cache(normalizedBinding);
-        }
+        var allowParentHintBinding = AllowsViewControlParentHintBinding(c);
+        var parentModelBinding = allowParentHintBinding
+            ? ResolveParentModelBindingByControlHint(c, task, allTasks, dataObjects)
+            : "";
 
         if (!string.IsNullOrWhiteSpace(c.DataColumn))
         {
@@ -54,7 +48,7 @@ internal static partial class ProjectGenerator
                 return Cache(normalizedOrdinalBinding);
             }
         }
-        if (!string.IsNullOrWhiteSpace(parentModelBinding))
+        if (allowParentHintBinding && !string.IsNullOrWhiteSpace(parentModelBinding))
         {
             var normalizedBinding = PrefixControllerReferencesForView(parentModelBinding, task, dataObjects);
             if (normalizedBinding.StartsWith("_controller.", StringComparison.Ordinal))
@@ -64,6 +58,12 @@ internal static partial class ProjectGenerator
         if (c.DataExpressionId.HasValue)
             return Cache("");
         return Cache("");
+    }
+
+    private static bool AllowsViewControlParentHintBinding(TaskFormControlDef c)
+    {
+        return !string.Equals(c.Model, "CTRL_GUI0_IMAGE", StringComparison.OrdinalIgnoreCase) &&
+               !string.Equals(c.Model, "CTRL_GUI1_IMAGE", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool TryResolvePushButtonControlResourceBinding(TaskFormControlDef c, TaskSemantic task, out string binding)

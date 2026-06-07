@@ -23,8 +23,11 @@ internal static partial class ProjectGenerator
                 !string.Equals(functionName, "Level", StringComparison.OrdinalIgnoreCase))
                 return xpaTarget;
 
+            if (string.Equals(functionName, "ImageReload", StringComparison.OrdinalIgnoreCase))
+                return "ViewCompat.ImageReload";
+
             if (userMethodsMap.TryGetValue(functionName, out var canonicalUserMethod))
-                return $"u.{canonicalUserMethod}";
+                return QualifyUserMethodInvocationTarget(canonicalUserMethod);
 
             if (accessibleParentFunctions.TryGetValue(functionName, out var parentTarget))
                 return parentTarget;
@@ -42,7 +45,7 @@ internal static partial class ProjectGenerator
         {
             if (localFunctionNames.Contains(functionName))
                 return null;
-            return userMethodsMap.TryGetValue(functionName, out var canonical) ? $"u.{canonical}" : null;
+            return userMethodsMap.TryGetValue(functionName, out var canonical) ? QualifyUserMethodInvocationTarget(canonical) : null;
         });
 
         expr = RewriteBareFunctionInvocations(expr, functionName =>
@@ -54,10 +57,7 @@ internal static partial class ProjectGenerator
             if (!_componentFunctionReturnTypeByName.ContainsKey(functionName))
                 return null;
             var methodName = ToCodeIdentifierPreservingCase(functionName);
-            var componentName = _componentFunctionSourceByName.TryGetValue(functionName, out var component)
-                ? component
-                : "?";
-            return $"/* GAP: Component function {Escape(componentName)}.{Escape(functionName)} not resolved */ ComponentFunctionCompat.{methodName}";
+            return $"ComponentFunctionCompat.{methodName}";
         });
 
         return expr;

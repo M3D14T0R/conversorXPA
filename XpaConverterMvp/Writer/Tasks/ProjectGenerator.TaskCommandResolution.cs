@@ -59,6 +59,21 @@ internal static partial class ProjectGenerator
             if (appTask is not null && appTask.EventsSemantic.DescriptionByOrdinal.TryGetValue(eventObj, out var appDescription))
                 return "Application." + ResolveTaskCommandIdentifier(appTask, appDescription, preserveCase: true);
         }
+        if (eventParent.HasValue && task.ParentOrdinal.HasValue)
+        {
+            var relativePrefix = "_parent.";
+            var currentTask = GetTaskByOrdinal(task.ParentOrdinal, _allTasks ?? Array.Empty<TaskSemantic>());
+            while (currentTask is not null)
+            {
+                if (currentTask.EventsSemantic.DescriptionByOrdinal.TryGetValue(eventObj, out var parentDescription))
+                    return relativePrefix + ResolveTaskCommandIdentifier(currentTask, parentDescription, preserveCase: true);
+
+                relativePrefix += "_parent.";
+                if (!currentTask.ParentOrdinal.HasValue)
+                    break;
+                currentTask = GetTaskByOrdinal(currentTask.ParentOrdinal, _allTasks ?? Array.Empty<TaskSemantic>());
+            }
+        }
         if (task.EventsSemantic.DescriptionByOrdinal.TryGetValue(eventObj, out var description))
             return ResolveTaskCommandIdentifier(task, description, preserveCase: true);
         return "";
@@ -74,6 +89,22 @@ internal static partial class ProjectGenerator
             var appTask = _allTasks?.FirstOrDefault(x => x.MainProgram) ?? _allTasks?.FirstOrDefault(x => x.ParentOrdinal is null);
             if (appTask is not null && appTask.EventsSemantic.ItemsByOrdinal.TryGetValue(eventObj, out var appEvent))
                 return appEvent.Parameters.Count;
+            return null;
+        }
+
+        if (raise.EventParent.HasValue && task.ParentOrdinal.HasValue)
+        {
+            var currentTask = GetTaskByOrdinal(task.ParentOrdinal, _allTasks ?? Array.Empty<TaskSemantic>());
+            while (currentTask is not null)
+            {
+                if (currentTask.EventsSemantic.ItemsByOrdinal.TryGetValue(eventObj, out var parentEvent))
+                    return parentEvent.Parameters.Count;
+
+                if (!currentTask.ParentOrdinal.HasValue)
+                    break;
+                currentTask = GetTaskByOrdinal(currentTask.ParentOrdinal, _allTasks ?? Array.Empty<TaskSemantic>());
+            }
+
             return null;
         }
 
@@ -94,6 +125,22 @@ internal static partial class ProjectGenerator
             var appTask = _allTasks?.FirstOrDefault(x => x.MainProgram) ?? _allTasks?.FirstOrDefault(x => x.ParentOrdinal is null);
             if (appTask is not null && appTask.EventsSemantic.ItemsByOrdinal.TryGetValue(eventObj, out var appEvent))
                 parameters = appEvent.Parameters;
+        }
+        else if (raise.EventParent.HasValue && task.ParentOrdinal.HasValue)
+        {
+            var currentTask = GetTaskByOrdinal(task.ParentOrdinal, _allTasks ?? Array.Empty<TaskSemantic>());
+            while (currentTask is not null)
+            {
+                if (currentTask.EventsSemantic.ItemsByOrdinal.TryGetValue(eventObj, out var parentEvent))
+                {
+                    parameters = parentEvent.Parameters;
+                    break;
+                }
+
+                if (!currentTask.ParentOrdinal.HasValue)
+                    break;
+                currentTask = GetTaskByOrdinal(currentTask.ParentOrdinal, _allTasks ?? Array.Empty<TaskSemantic>());
+            }
         }
         else if (task.EventsSemantic.ItemsByOrdinal.TryGetValue(eventObj, out var taskEvent))
         {

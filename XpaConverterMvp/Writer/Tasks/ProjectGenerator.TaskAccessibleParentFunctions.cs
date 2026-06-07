@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 
 namespace XpaConverterMvp;
@@ -64,7 +65,9 @@ internal static partial class ProjectGenerator
                     continue;
 
                 var target = prefix + candidate.MethodName;
-                if (FunctionContractMatches(candidate, trimmed, target))
+                if (FunctionContractMatches(candidate, trimmed, target) ||
+                    IsParentQualifiedFunctionName(trimmed) &&
+                    FunctionContractLeafMatches(candidate, trimmed))
                 {
                     function = candidate;
                     targetName = target;
@@ -74,6 +77,13 @@ internal static partial class ProjectGenerator
 
             parentOrdinal = parentTask.ParentOrdinal;
             depth++;
+        }
+
+        if (IsParentQualifiedFunctionName(trimmed) &&
+            TryGetUniqueFunctionContractByLeaf(trimmed, out function))
+        {
+            targetName = trimmed;
+            return true;
         }
 
         return false;
@@ -87,6 +97,59 @@ internal static partial class ProjectGenerator
         return string.Equals(requestedName, function.Name, StringComparison.OrdinalIgnoreCase) ||
                string.Equals(requestedName, function.MethodName, StringComparison.OrdinalIgnoreCase) ||
                string.Equals(requestedName, emittedTarget, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsParentQualifiedFunctionName(string requestedName)
+        => requestedName.StartsWith("_parent.", StringComparison.Ordinal);
+
+    private static bool FunctionContractLeafMatches(FunctionOverrideSemantic function, string requestedName)
+    {
+        if (string.IsNullOrWhiteSpace(function.Name) || string.IsNullOrWhiteSpace(function.MethodName))
+            return false;
+
+        var leafStart = requestedName.LastIndexOf('.') + 1;
+        if (leafStart <= 0 || leafStart >= requestedName.Length)
+            return false;
+
+        var leafName = requestedName[leafStart..];
+        return string.Equals(leafName, function.Name, StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(leafName, function.MethodName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool TryGetUniqueFunctionContractByLeaf(
+        string requestedName,
+        out FunctionOverrideSemantic function)
+    {
+        function = null!;
+        if (_allTasks is null)
+            return false;
+
+        var leafStart = requestedName.LastIndexOf('.') + 1;
+        if (leafStart <= 0 || leafStart >= requestedName.Length)
+            return false;
+
+        var leafName = requestedName[leafStart..];
+        var matches = _allTasks
+            .SelectMany(t => t.FunctionOverridesSemantic)
+            .Where(fn =>
+                string.Equals(fn.Name, leafName, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(fn.MethodName, leafName, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (matches.Count == 0)
+            return false;
+
+        var distinctSignatures = matches
+            .Select(fn => string.Create(
+                CultureInfo.InvariantCulture,
+                $"{NormalizeReturnTypeToken(fn.ReturnType)}({string.Join(",", fn.Parameters.Select(p => NormalizeReturnTypeToken(p.ParameterType)))})"))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(2)
+            .ToList();
+        if (distinctSignatures.Count != 1)
+            return false;
+
+        function = matches[0];
+        return true;
     }
 
     private static Dictionary<string, string> ResolveAccessibleApplicationFunctionTargets(TaskSemantic task)

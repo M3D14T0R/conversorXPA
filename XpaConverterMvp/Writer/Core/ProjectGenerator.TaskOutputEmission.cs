@@ -33,8 +33,7 @@ internal static partial class ProjectGenerator
             if (parallelTaskGeneration && skeletonTasks.Count > 1)
             {
                 var scheduledTasks = ScheduleParallelSkeletonTasks(skeletonTasks, generatedTasks);
-                var effectiveDegree = ResolveParallelSkeletonTaskDegree(scheduledTasks, Environment.ProcessorCount);
-                LogProgress($"Stage: scoped task skeletons parallel -> enabled degree={effectiveDegree} requested={Environment.ProcessorCount} scheduled=largest-first");
+                LogProgress($"Stage: scoped task skeletons parallel -> enabled {FormatParallelDegreePlan(scheduledTasks, Environment.ProcessorCount)}");
                 LogProgress($"Stage: scoped task skeletons parallel schedule head -> {FormatParallelScheduleHead(scheduledTasks)}");
                 RunParallelSkeletonTaskQueue(
                     scheduledTasks,

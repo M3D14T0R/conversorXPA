@@ -95,7 +95,20 @@ internal static partial class ProjectGenerator
         var normalizedFunction = NormalizeXpaFunctionContractName(functionName);
         if (string.IsNullOrWhiteSpace(normalizedFunction) ||
             IsUnsafeLegacyFunctionReturnContract(normalizedFunction))
+        {
+            if (IsJavaGetStaticFunctionName(normalizedFunction) &&
+                TryResolveKnownXpaFunctionReturnType(functionName, args, out var javaStaticReturnType))
+            {
+                javaStaticReturnType = NormalizeReturnTypeToken(javaStaticReturnType);
+                if (IsSafeLegacyContractReturnType(javaStaticReturnType))
+                {
+                    returnType = javaStaticReturnType;
+                    return true;
+                }
+            }
+
             return false;
+        }
 
         if (!TryResolveKnownXpaFunctionReturnType(functionName, args, out var contractedReturnType))
             return false;
@@ -125,7 +138,7 @@ internal static partial class ProjectGenerator
            string.Equals(normalizedFunction, "JGET", StringComparison.Ordinal) ||
            string.Equals(normalizedFunction, "JCALL", StringComparison.Ordinal) ||
            string.Equals(normalizedFunction, "JCALLSTATIC", StringComparison.Ordinal) ||
-           string.Equals(normalizedFunction, "JAVACOMPAT.JGETSTATIC", StringComparison.Ordinal) ||
+           IsJavaGetStaticFunctionName(normalizedFunction) ||
            string.Equals(normalizedFunction, "XMLGET", StringComparison.Ordinal) ||
            string.Equals(normalizedFunction, "JSONGET", StringComparison.Ordinal) ||
            string.Equals(normalizedFunction, "NULL", StringComparison.Ordinal);

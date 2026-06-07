@@ -26,7 +26,8 @@ internal static partial class ProjectGenerator
             return false;
 
         return syntax.IndexOf("Cigam.Utils.Upgrade.Mail.", StringComparison.OrdinalIgnoreCase) >= 0
-            || syntax.IndexOf("Cigam.WebServices.Apis.Upgrade.", StringComparison.OrdinalIgnoreCase) >= 0;
+            || syntax.IndexOf("Cigam.WebServices.Apis.Upgrade.", StringComparison.OrdinalIgnoreCase) >= 0
+            || syntax.IndexOf("Cigam.Utils.BarCode.QRCode.", StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     private static bool UsesComponentFunctionCompat(ProjectSemantic parsed)
@@ -250,6 +251,17 @@ internal static partial class ProjectGenerator
 
                         usageHints.Add("Text");
                     }
+
+                    if (ComponentFunctionHasNumericSourceUsage(syntax, functionName))
+                    {
+                        if (!usageHintsByFunction.TryGetValue(functionName, out var usageHints))
+                        {
+                            usageHints = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                            usageHintsByFunction[functionName] = usageHints;
+                        }
+
+                        usageHints.Add("Number");
+                    }
                 }
             }
         }
@@ -263,19 +275,14 @@ internal static partial class ProjectGenerator
                 continue;
             }
 
-            var forceBool =
-                functionName.StartsWith("RuntimeIs", StringComparison.OrdinalIgnoreCase) ||
-                functionName.StartsWith("Is", StringComparison.OrdinalIgnoreCase) ||
-                functionName.StartsWith("Chk", StringComparison.OrdinalIgnoreCase) ||
-                functionName.StartsWith("Verifica", StringComparison.OrdinalIgnoreCase);
-            if (forceBool)
-            {
-                result[functionName] = "Bool";
-                continue;
-            }
-
             if (usageHintsByFunction.TryGetValue(functionName, out var usageHints))
             {
+                if (usageHints.Contains("Number"))
+                {
+                    result[functionName] = "Number";
+                    continue;
+                }
+
                 if (usageHints.Contains("Text"))
                 {
                     result[functionName] = "Text";
@@ -303,10 +310,220 @@ internal static partial class ProjectGenerator
                 continue;
             }
 
+            if (ShouldDefaultComponentFunctionReturnToBool(functionName))
+            {
+                result[functionName] = "Bool";
+                continue;
+            }
+
             result[functionName] = "Text";
         }
         return result;
     }
+
+    private static bool ShouldDefaultComponentFunctionReturnToBool(string functionName)
+        => functionName.StartsWith("RuntimeIs", StringComparison.OrdinalIgnoreCase) ||
+           functionName.StartsWith("Is", StringComparison.OrdinalIgnoreCase) ||
+           functionName.StartsWith("Chk", StringComparison.OrdinalIgnoreCase) ||
+           functionName.StartsWith("Verifica", StringComparison.OrdinalIgnoreCase);
+
+    private static bool ComponentFunctionHasNumericSourceUsage(string sourceSyntax, string functionName)
+    {
+        if (string.IsNullOrWhiteSpace(sourceSyntax) || string.IsNullOrWhiteSpace(functionName))
+            return false;
+
+        var searchIndex = 0;
+        while (searchIndex < sourceSyntax.Length)
+        {
+            var callIndex = IndexOfSourceFunctionName(sourceSyntax, functionName, searchIndex);
+            if (callIndex < 0)
+                return false;
+
+            var openParen = callIndex + functionName.Length;
+            while (openParen < sourceSyntax.Length && char.IsWhiteSpace(sourceSyntax[openParen]))
+                openParen++;
+            if (openParen >= sourceSyntax.Length || sourceSyntax[openParen] != '(')
+            {
+                searchIndex = callIndex + functionName.Length;
+                continue;
+            }
+
+            if (!TryFindMatchingSourceParenthesis(sourceSyntax, openParen, out var closeParen))
+                return false;
+
+            if (HasNumericComparisonAfterSourceCall(sourceSyntax, closeParen + 1) ||
+                HasNumericComparisonBeforeSourceCall(sourceSyntax, callIndex))
+            {
+                return true;
+            }
+
+            searchIndex = closeParen + 1;
+        }
+
+        return false;
+    }
+
+    private static int IndexOfSourceFunctionName(string sourceSyntax, string functionName, int startIndex)
+    {
+        var index = sourceSyntax.IndexOf(functionName, startIndex, StringComparison.OrdinalIgnoreCase);
+        while (index >= 0)
+        {
+            var before = index == 0 ? '\0' : sourceSyntax[index - 1];
+            var afterIndex = index + functionName.Length;
+            var after = afterIndex >= sourceSyntax.Length ? '\0' : sourceSyntax[afterIndex];
+            if (!IsSourceIdentifierPart(before) && !IsSourceIdentifierPart(after) && after != '.')
+                return index;
+
+            index = sourceSyntax.IndexOf(functionName, index + functionName.Length, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return -1;
+    }
+
+    private static bool TryFindMatchingSourceParenthesis(string text, int openParenIndex, out int closeParenIndex)
+    {
+        closeParenIndex = -1;
+        var depth = 0;
+        for (var i = openParenIndex; i < text.Length; i++)
+        {
+            if (IsQuotedSegmentStart(text, i))
+            {
+                if (!TryReadQuotedSegmentEnd(text, i, out var quoteEnd))
+                    return false;
+                i = quoteEnd;
+                continue;
+            }
+
+            var ch = text[i];
+            if (ch == '(')
+            {
+                depth++;
+                continue;
+            }
+
+            if (ch != ')')
+                continue;
+
+            depth--;
+            if (depth == 0)
+            {
+                closeParenIndex = i;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool HasNumericComparisonAfterSourceCall(string sourceSyntax, int startIndex)
+    {
+        var index = SkipSourceWhiteSpace(sourceSyntax, startIndex);
+        if (!TryReadSourceComparisonOperator(sourceSyntax, index, out _, out var operatorLength))
+            return false;
+
+        return IsSourceNumericLiteralAt(sourceSyntax, SkipSourceWhiteSpace(sourceSyntax, index + operatorLength), scanBackwards: false);
+    }
+
+    private static bool HasNumericComparisonBeforeSourceCall(string sourceSyntax, int callIndex)
+    {
+        var index = callIndex - 1;
+        while (index >= 0 && char.IsWhiteSpace(sourceSyntax[index]))
+            index--;
+        if (index < 0)
+            return false;
+
+        var operatorEnd = index + 1;
+        var operatorStart = operatorEnd - 1;
+        if (operatorStart > 0)
+        {
+            var maybeTwo = sourceSyntax.Substring(operatorStart - 1, 2);
+            if (IsSourceComparisonOperator(maybeTwo))
+                operatorStart--;
+        }
+
+        var op = sourceSyntax[operatorStart..operatorEnd];
+        if (!IsSourceComparisonOperator(op))
+            return false;
+
+        return IsSourceNumericLiteralAt(sourceSyntax, operatorStart - 1, scanBackwards: true);
+    }
+
+    private static int SkipSourceWhiteSpace(string value, int index)
+    {
+        while (index < value.Length && char.IsWhiteSpace(value[index]))
+            index++;
+        return index;
+    }
+
+    private static bool TryReadSourceComparisonOperator(string value, int index, out string op, out int length)
+    {
+        op = "";
+        length = 0;
+        if (index >= value.Length)
+            return false;
+
+        foreach (var candidate in new[] { "<>", ">=", "<=", "=", ">", "<" })
+        {
+            if (!value.AsSpan(index).StartsWith(candidate.AsSpan(), StringComparison.Ordinal))
+                continue;
+
+            op = candidate;
+            length = candidate.Length;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsSourceComparisonOperator(string op)
+        => string.Equals(op, "=", StringComparison.Ordinal) ||
+           string.Equals(op, "<>", StringComparison.Ordinal) ||
+           string.Equals(op, ">=", StringComparison.Ordinal) ||
+           string.Equals(op, "<=", StringComparison.Ordinal) ||
+           string.Equals(op, ">", StringComparison.Ordinal) ||
+           string.Equals(op, "<", StringComparison.Ordinal);
+
+    private static bool IsSourceNumericLiteralAt(string value, int index, bool scanBackwards)
+    {
+        if (!scanBackwards)
+        {
+            if (index < value.Length && (value[index] == '+' || value[index] == '-'))
+                index++;
+            var digitStart = index;
+            while (index < value.Length && char.IsDigit(value[index]))
+                index++;
+            if (index < value.Length && value[index] == '.')
+            {
+                index++;
+                while (index < value.Length && char.IsDigit(value[index]))
+                    index++;
+            }
+
+            return index > digitStart && (index >= value.Length || !IsSourceIdentifierPart(value[index]));
+        }
+
+        while (index >= 0 && char.IsWhiteSpace(value[index]))
+            index--;
+        if (index < 0)
+            return false;
+
+        var end = index;
+        while (index >= 0 && char.IsDigit(value[index]))
+            index--;
+        if (index >= 0 && value[index] == '.')
+        {
+            index--;
+            while (index >= 0 && char.IsDigit(value[index]))
+                index--;
+        }
+        if (index >= 0 && (value[index] == '+' || value[index] == '-'))
+            index--;
+
+        return end > index && (index < 0 || !IsSourceIdentifierPart(value[index]));
+    }
+
+    private static bool IsSourceIdentifierPart(char ch)
+        => char.IsLetterOrDigit(ch) || ch == '_';
 
     private static Dictionary<string, string> BuildComponentFunctionCompatReturnTypeMap(ProjectSemantic parsed)
     {
@@ -355,13 +572,7 @@ internal static partial class ProjectGenerator
         foreach (var functionName in returnTypeMap.Keys.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
         {
             var methodName = ToCodeIdentifierPreservingCase(functionName);
-            var returnType =
-                functionName.StartsWith("RuntimeIs", StringComparison.OrdinalIgnoreCase) ||
-                functionName.StartsWith("Is", StringComparison.OrdinalIgnoreCase) ||
-                functionName.StartsWith("Chk", StringComparison.OrdinalIgnoreCase) ||
-                functionName.StartsWith("Verifica", StringComparison.OrdinalIgnoreCase)
-                    ? "Bool"
-                    : returnTypeMap[functionName];
+            var returnType = returnTypeMap[functionName];
             var defaultValue = GetComponentFunctionDefaultValueExpression(returnType);
             var componentName = _componentFunctionSourceByName.TryGetValue(functionName, out var component)
                 ? component
@@ -436,7 +647,9 @@ internal static partial class ProjectGenerator
         sb.AppendLine("using System;");
         sb.AppendLine("using System.Diagnostics;");
         sb.AppendLine("using System.Dynamic;");
+        sb.AppendLine("using System.IO;");
         sb.AppendLine("using System.Linq;");
+        sb.AppendLine("using System.Reflection;");
         sb.AppendLine();
         sb.AppendLine($"namespace {appNamespace};");
         sb.AppendLine();
@@ -451,6 +664,15 @@ internal static partial class ProjectGenerator
         sb.AppendLine("        return new MissingExternalDynamic(typeName);");
         sb.AppendLine("    }");
         sb.AppendLine();
+        sb.AppendLine("    internal static object InvokeStatic(string typeName, string methodName, params object[] args)");
+        sb.AppendLine("    {");
+        sb.AppendLine("        if (TryInvokeStaticReal(typeName, methodName, args, out var result))");
+        sb.AppendLine("            return result;");
+        sb.AppendLine();
+        sb.AppendLine("        Debug.WriteLine($\"GAP: External static method {typeName}.{methodName} not resolved\");");
+        sb.AppendLine("        return null;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
         sb.AppendLine("    static bool TryCreateReal(string typeName, object[] args, out object instance)");
         sb.AppendLine("    {");
         sb.AppendLine("        instance = null;");
@@ -460,8 +682,7 @@ internal static partial class ProjectGenerator
         sb.AppendLine("        if (typeName.IndexOf(\"(\", StringComparison.Ordinal) >= 0)");
         sb.AppendLine("            return false;");
         sb.AppendLine();
-        sb.AppendLine("        var runtimeType = Type.GetType(typeName, throwOnError: false);");
-        sb.AppendLine("        if (runtimeType is null)");
+        sb.AppendLine("        if (!TryResolveRuntimeType(typeName, out var runtimeType))");
         sb.AppendLine("            return false;");
         sb.AppendLine();
         sb.AppendLine("        try");
@@ -473,6 +694,88 @@ internal static partial class ProjectGenerator
         sb.AppendLine("        {");
         sb.AppendLine("            return false;");
         sb.AppendLine("        }");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    static bool TryInvokeStaticReal(string typeName, string methodName, object[] args, out object result)");
+        sb.AppendLine("    {");
+        sb.AppendLine("        result = null;");
+        sb.AppendLine("        if (string.IsNullOrWhiteSpace(typeName) || string.IsNullOrWhiteSpace(methodName))");
+        sb.AppendLine("            return false;");
+        sb.AppendLine("        if (!TryResolveRuntimeType(typeName, out var runtimeType))");
+        sb.AppendLine("            return false;");
+        sb.AppendLine();
+        sb.AppendLine("        foreach (var method in runtimeType.GetMethods(BindingFlags.Public | BindingFlags.Static))");
+        sb.AppendLine("        {");
+        sb.AppendLine("            if (!string.Equals(method.Name, methodName, StringComparison.OrdinalIgnoreCase))");
+        sb.AppendLine("                continue;");
+        sb.AppendLine("            var parameters = method.GetParameters();");
+        sb.AppendLine("            if (parameters.Length != args.Length)");
+        sb.AppendLine("                continue;");
+        sb.AppendLine("            try");
+        sb.AppendLine("            {");
+        sb.AppendLine("                var converted = ConvertArguments(args, parameters);");
+        sb.AppendLine("                result = method.Invoke(null, converted);");
+        sb.AppendLine("                return true;");
+        sb.AppendLine("            }");
+        sb.AppendLine("            catch");
+        sb.AppendLine("            {");
+        sb.AppendLine("            }");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine("        return false;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    static bool TryResolveRuntimeType(string typeName, out Type runtimeType)");
+        sb.AppendLine("    {");
+        sb.AppendLine("        runtimeType = Type.GetType(typeName, throwOnError: false);");
+        sb.AppendLine("        if (runtimeType is not null)");
+        sb.AppendLine("            return true;");
+        sb.AppendLine();
+        sb.AppendLine("        runtimeType = AppDomain.CurrentDomain.GetAssemblies()");
+        sb.AppendLine("            .Select(a => a.GetType(typeName, throwOnError: false))");
+        sb.AppendLine("            .FirstOrDefault(t => t is not null);");
+        sb.AppendLine("        if (runtimeType is not null)");
+        sb.AppendLine("            return true;");
+        sb.AppendLine();
+        sb.AppendLine("        foreach (var file in Directory.EnumerateFiles(AppDomain.CurrentDomain.BaseDirectory, \"*.dll\"))");
+        sb.AppendLine("        {");
+        sb.AppendLine("            try");
+        sb.AppendLine("            {");
+        sb.AppendLine("                var assembly = Assembly.LoadFrom(file);");
+        sb.AppendLine("                runtimeType = assembly.GetType(typeName, throwOnError: false);");
+        sb.AppendLine("                if (runtimeType is not null)");
+        sb.AppendLine("                    return true;");
+        sb.AppendLine("            }");
+        sb.AppendLine("            catch");
+        sb.AppendLine("            {");
+        sb.AppendLine("            }");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine("        return false;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    static object[] ConvertArguments(object[] args, ParameterInfo[] parameters)");
+        sb.AppendLine("    {");
+        sb.AppendLine("        var converted = new object[args.Length];");
+        sb.AppendLine("        for (var i = 0; i < args.Length; i++)");
+        sb.AppendLine("            converted[i] = ConvertArgument(args[i], parameters[i].ParameterType);");
+        sb.AppendLine("        return converted;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    static object ConvertArgument(object arg, Type targetType)");
+        sb.AppendLine("    {");
+        sb.AppendLine("        if (arg is null)");
+        sb.AppendLine("            return targetType.IsValueType && Nullable.GetUnderlyingType(targetType) is null ? Activator.CreateInstance(targetType) : null;");
+        sb.AppendLine("        if (targetType.IsInstanceOfType(arg))");
+        sb.AppendLine("            return arg;");
+        sb.AppendLine("        var nullable = Nullable.GetUnderlyingType(targetType);");
+        sb.AppendLine("        if (nullable is not null)");
+        sb.AppendLine("            targetType = nullable;");
+        sb.AppendLine("        if (targetType == typeof(string))");
+        sb.AppendLine("            return arg.ToString();");
+        sb.AppendLine("        if (targetType.IsEnum)");
+        sb.AppendLine("            return Enum.Parse(targetType, arg.ToString(), ignoreCase: true);");
+        sb.AppendLine("        return Convert.ChangeType(arg, targetType);");
         sb.AppendLine("    }");
         sb.AppendLine();
         sb.AppendLine("    sealed class MissingExternalDynamic : DynamicObject");

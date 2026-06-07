@@ -163,7 +163,20 @@ private static bool TryRenderEvaluateAssignmentStatement(string exprCode, TaskSe
         target.EndsWith(".Data", StringComparison.Ordinal))
         return false;
 
-    var targetInfo = ResolveTargetValueInfo(task, target, target);
+    return TryRenderColumnAssignmentStatement(task, target, assignment.Value.Right.Trim(), out statement);
+}
+
+private static bool TryRenderColumnAssignmentStatement(TaskSemantic task, string target, string value, out string statement)
+{
+    statement = "";
+    if (string.IsNullOrWhiteSpace(target) ||
+        string.IsNullOrWhiteSpace(value) ||
+        target.EndsWith(".Value", StringComparison.Ordinal) ||
+        target.EndsWith(".Text", StringComparison.Ordinal) ||
+        target.EndsWith(".Data", StringComparison.Ordinal))
+        return false;
+
+    var targetInfo = ResolveTargetValueInfo(task, null, target);
     var hasColumnEvidence =
         targetInfo.Resource is not null ||
         !string.IsNullOrWhiteSpace(targetInfo.AttrObj) ||
@@ -171,7 +184,12 @@ private static bool TryRenderEvaluateAssignmentStatement(string exprCode, TaskSe
     if (!hasColumnEvidence || targetInfo.IsDotNet)
         return false;
 
-    statement = $"{target}.Value = {assignment.Value.Right.Trim()};";
+    statement = BuildUpdateAssignment(
+        new TaskUpdateDef(target, "", null, false, false, null, null, null, false, null),
+        target,
+        value.Trim(),
+        task,
+        preferValueForResourceAssignments: true);
     return true;
 }
 

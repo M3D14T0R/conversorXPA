@@ -456,6 +456,12 @@ internal static partial class ProjectGenerator
                     AppendRuntimeControllerBindingStatement(controllerBindingStatements, $"{varName}.Data = {checkBoxDataExpr};");
                     didBindData = true;
                 }
+                else if (!string.IsNullOrWhiteSpace(dataExpr) && IsViewImageControl(c))
+                {
+                    var imageDataExpr = NormalizeImageDirectDataAssignmentExpression($"_controller.{dataExpr}", t, tasks);
+                    AppendRuntimeControllerBindingStatement(controllerBindingStatements, $"{varName}.Data = {imageDataExpr};");
+                    didBindData = true;
+                }
                 else if (!string.IsNullOrWhiteSpace(dataExpr) && SupportsDirectViewDataAssignment(c))
                 {
                     AppendRuntimeControllerBindingStatement(controllerBindingStatements, $"{varName}.Data = _controller.{dataExpr};");

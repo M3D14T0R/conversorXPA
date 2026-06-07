@@ -1413,8 +1413,9 @@ internal static class SemanticBuilder
         var parent = task.ParentOrdinal.HasValue
             ? allTasks.FirstOrDefault(t => t.Ordinal == task.ParentOrdinal.Value)
             : null;
+        var visited = new HashSet<int>();
         var depth = 1;
-        while (parent is not null && depth <= 4)
+        while (parent is not null && visited.Add(parent.Ordinal))
         {
             var prefix = string.Concat(Enumerable.Repeat("_parent.", depth));
             foreach (var kv in parent.SelectsSemantic.NameToExpression.OrderByDescending(k => k.Key.Length))

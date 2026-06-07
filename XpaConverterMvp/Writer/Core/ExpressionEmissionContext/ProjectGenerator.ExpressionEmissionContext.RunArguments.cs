@@ -604,9 +604,8 @@ internal static partial class ProjectGenerator
         return parameters
             .Select(p => ResolveSnippetParameterClrType(p, "") switch
             {
-                "string" or "System.String" => "Text",
                 "System.IntPtr" or "IntPtr" => "System.IntPtr",
-                _ => ""
+                var clrType => MapSnippetClrTypeToExpressionReturnType(clrType)
             })
             .ToList();
     }

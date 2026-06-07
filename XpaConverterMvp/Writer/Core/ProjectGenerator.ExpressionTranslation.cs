@@ -100,23 +100,6 @@ internal static partial class ProjectGenerator
 
     private static string BuildBindValueSuffix(string bindExpr, TaskSemantic? task = null)
     {
-        if (task is not null)
-        {
-            bindExpr = RenderStrictFunctionArgumentBridges(bindExpr, task);
-            if (bindExpr.Contains("u.CastToText(", StringComparison.Ordinal))
-                bindExpr = RenderStrictConditionalInsideExpectedCast(bindExpr, "Text", task);
-            if (bindExpr.Contains("u.CastToNumber(", StringComparison.Ordinal))
-                bindExpr = RenderStrictConditionalInsideExpectedCast(bindExpr, "Number", task);
-            if (bindExpr.Contains("u.CastToDate(", StringComparison.Ordinal))
-                bindExpr = RenderStrictConditionalInsideExpectedCast(bindExpr, "Date", task);
-            if (bindExpr.Contains("u.CastToTime(", StringComparison.Ordinal))
-                bindExpr = RenderStrictConditionalInsideExpectedCast(bindExpr, "Time", task);
-            if (bindExpr.Contains("u.CastToBool(", StringComparison.Ordinal))
-                bindExpr = RenderStrictConditionalInsideExpectedCast(bindExpr, "Bool", task);
-            if (bindExpr.Contains("u.CastToByteArray(", StringComparison.Ordinal))
-                bindExpr = RenderStrictConditionalInsideExpectedCast(bindExpr, "byte[]", task);
-        }
-
         if (LooksLikeTaskRunConstruction(bindExpr))
             return $".BindValueToColumnChange(() => {bindExpr})";
         var simpleMember = IsSimpleMemberPath(bindExpr);
@@ -331,8 +314,12 @@ internal static partial class ProjectGenerator
         expr = NormalizeMalformedNotFunctionCalls(expr);
         expr = ApplyExpressionLiteralNormalization(expr, dataObjects, expressionAttr);
         expr = RenderRegisteredExpressionCalculation(expr);
+        if (TryTranslateExternalStaticDotNetMethodCall(expr.Trim(), task, dataObjects, out var externalStaticCall))
+            return externalStaticCall;
         expr = ApplyXpaFunctionMap(expr, task, expressionAttr);
-        expr = RenderStrictFunctionArgumentBridges(expr, task);
+        var expectedReturnType = ResolveSimpleReturnTypeForExpressionAttribute(expressionAttr);
+        if (TryTranslateWholeKnownSourceFunctionCall(expr, task, dataObjects, out var typedSourceExpression, expectedReturnType))
+            expr = typedSourceExpression.Code;
         expr = RenderArrayIsNullCallsFromEvidence(expr, task);
         expr = ApplyXpaNumericOperators(expr);
         expr = ApplyXpaLikeOperators(expr);
@@ -733,8 +720,8 @@ internal static partial class ProjectGenerator
             return cached;
 
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        AddResourceKeys(task, "", includeSlotAliases: true, slotAliasBase: 3);
         AddSelectKeys(task, "");
+        AddResourceKeys(task, "", includeSlotAliases: true, slotAliasBase: 3);
 
         void AddResourceKeys(TaskSemantic owner, string prefix, bool includeSlotAliases, int slotAliasBase, int maxSlotAliasLength = int.MaxValue)
         {
@@ -791,16 +778,16 @@ internal static partial class ProjectGenerator
 
                 depth++;
                 var prefix = string.Concat(Enumerable.Repeat("_parent.", depth));
-                AddResourceKeys(parentTask, prefix, includeSlotAliases: true, slotAliasBase: 3);
                 AddSelectKeys(parentTask, prefix);
+                AddResourceKeys(parentTask, prefix, includeSlotAliases: true, slotAliasBase: 3);
                 parentOrdinal = parentTask.ParentOrdinal;
             }
 
             var appTask = _allTasks.FirstOrDefault(x => x.MainProgram) ?? _allTasks.FirstOrDefault(x => x.ParentOrdinal is null);
             if (appTask is not null && !ReferenceEquals(appTask, task))
             {
-                AddResourceKeys(appTask, "Application.Instance.", includeSlotAliases: true, slotAliasBase: 1, maxSlotAliasLength: 1);
                 AddSelectKeys(appTask, "Application.Instance.");
+                AddResourceKeys(appTask, "Application.Instance.", includeSlotAliases: true, slotAliasBase: 1, maxSlotAliasLength: 1);
             }
         }
 

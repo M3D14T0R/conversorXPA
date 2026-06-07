@@ -118,7 +118,8 @@ internal static partial class ProjectGenerator
 
         if (invoke.OperationType == ".")
         {
-            var functionName = string.IsNullOrWhiteSpace(invoke.FunctionName) ? "func" : invoke.FunctionName!;
+            var requestedFunctionName = string.IsNullOrWhiteSpace(invoke.FunctionName) ? "func" : invoke.FunctionName!;
+            var functionName = ResolveSnippetCallableFunctionName(invoke.SnippetCode, requestedFunctionName);
             var snippetClass = ResolveSnippetClassName(task, invoke, _allTasks ?? Array.Empty<TaskSemantic>());
             var snippetQualifiedClass = $"{BuildSnippetNamespace(snippetClass)}.{snippetClass}";
             var activeArgumentDefs = invoke.ArgumentDefs?

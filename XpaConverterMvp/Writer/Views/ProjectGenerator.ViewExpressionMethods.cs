@@ -125,6 +125,16 @@ internal static partial class ProjectGenerator
                 returnTypeStopwatch.Stop();
                 resolveReturnTypeElapsed += returnTypeStopwatch.Elapsed;
 
+                if (string.Equals(ScalarReturnType(CanonicalReturnType(returnType)), "Text", StringComparison.Ordinal))
+                {
+                    var normalizeReturnStopwatch = Stopwatch.StartNew();
+                    var bridgedCode = RenderStrictFunctionArgumentBridges(code, task);
+                    normalizeReturnStopwatch.Stop();
+                    normalizeReturnElapsed += normalizeReturnStopwatch.Elapsed;
+                    if (!string.Equals(bridgedCode, code, StringComparison.Ordinal))
+                        code = bridgedCode;
+                }
+
                 RegisterTypedExpressionReturnType(task, $"Exp_{id}()", returnType);
                 expressionBlock.AppendLine($"    internal {returnType} Exp_{id}() => {code};");
                 expressionBlock.AppendLine();

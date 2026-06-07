@@ -189,7 +189,7 @@ internal static partial class ProjectGenerator
                     : null;
                 var ioProps = $"Name = \"{Escape(ioName)}\", PrintPreview = {printPreview}";
                 if (!string.IsNullOrWhiteSpace(taskIo.Machine))
-                    ioProps += $", PrinterName = Shared.Printing.Printers.{ToPascalIdentifier(taskIo.Machine!)}.PrinterName";
+                    ioProps += $", PrinterName = Shared.Printing.Printers.{ResolvePrinterIdentifier(taskIo.Machine!)}.PrinterName";
                 if (taskIo.Pdf == true)
                     ioProps += ", Pdf = true";
                 if (!string.IsNullOrWhiteSpace(ctorArg))
@@ -240,7 +240,7 @@ internal static partial class ProjectGenerator
                     else if (string.Equals(stream.StreamType, "TextPrinterWriter", StringComparison.OrdinalIgnoreCase))
                     {
                         var printerProp = !string.IsNullOrWhiteSpace(ioDef?.Machine)
-                            ? $", Printer = Shared.Printing.Printers.{ToPascalIdentifier(ioDef.Machine!)}"
+                            ? $", Printer = Shared.Printing.Printers.{ResolvePrinterIdentifier(ioDef.Machine!)}"
                             : "";
                         sb.AppendLine($"        {stream.VariableName} = new ENV.Printing.TextPrinterWriter({ioExpr}) {{ Name = \"{Escape(ioName)}\", IgnoreNewPage = true{printerProp} }};");
                     }

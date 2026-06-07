@@ -46,16 +46,30 @@ internal static partial class ProjectGenerator
         bool HasIntrinsicType,
         bool HasEffectiveType,
         bool UsedFallbackInference,
-        bool CanEmitAsStatement = false)
+        bool CanEmitAsStatement = false,
+        string SourceSyntax = "",
+        string SourceReturnType = "",
+        int ExpressionOrdinal = 0,
+        string SinkKind = "",
+        string ExpectedReturnType = "",
+        string EvidenceKind = "",
+        string EvidenceSourceKey = "",
+        string FailureReason = "")
     {
         internal string PreferredReturnType => HasEffectiveType ? EffectiveReturnType : IntrinsicReturnType;
+        internal bool HasSourceReturnType => !string.IsNullOrWhiteSpace(SourceReturnType);
+        internal bool HasExpressionOrdinal => ExpressionOrdinal > 0;
     }
 
     private readonly record struct SourceTranslatedExpression(
         string Code,
-        string SourceReturnType)
+        string SourceReturnType,
+        string SourceSyntax = "",
+        int ExpressionOrdinal = 0,
+        string EvidenceKind = "")
     {
         internal bool HasSourceReturnType => !string.IsNullOrWhiteSpace(SourceReturnType);
+        internal bool HasSourceSyntax => !string.IsNullOrWhiteSpace(SourceSyntax);
     }
 
     internal readonly record struct SourceFunctionCallTypeInfo(
@@ -67,20 +81,36 @@ internal static partial class ProjectGenerator
         internal bool HasReturnType => !string.IsNullOrWhiteSpace(ReturnType);
     }
 
+    private readonly record struct SourceFunctionArgumentExpression(
+        string Code,
+        string SourceReturnType,
+        string EffectiveReturnType,
+        string ExpectedReturnType,
+        string EvidenceKind)
+    {
+        internal string PreferredReturnType => !string.IsNullOrWhiteSpace(EffectiveReturnType)
+            ? EffectiveReturnType
+            : SourceReturnType;
+    }
+
     private static string ResolveExpressionCode(string? expressionId, TaskSemantic task, IReadOnlyList<DataObjectDef> dataObjects)
+        => ResolveExpression(expressionId, task, dataObjects).Code;
+
+    private static EmittedExpression ResolveExpression(string? expressionId, TaskSemantic task, IReadOnlyList<DataObjectDef> dataObjects)
     {
         if (!int.TryParse(expressionId, out var n))
-            return "";
+            return default;
         var cacheKey = task.Ordinal.ToString(CultureInfo.InvariantCulture) + "|" + n.ToString(CultureInfo.InvariantCulture);
-        if (_expressionCodeCache.TryGetValue(cacheKey, out var cached))
-            return cached;
         if (!task.ExpressionsSemantic.EntriesByOrdinal.TryGetValue(n, out var expr))
         {
             _expressionCodeCache[cacheKey] = "";
-            return "";
+            return default;
         }
-        var resolved = ResolveExpressionEntryCode(expr, task, dataObjects);
-        _expressionCodeCache[cacheKey] = resolved;
+        if (_expressionCodeCache.TryGetValue(cacheKey, out var cached))
+            return CreateContextualEmittedExpression(cached, expr, task, dataObjects, default, evidenceKind: "expression-cache");
+
+        var resolved = ResolveExpressionEntry(expr, task, dataObjects);
+        _expressionCodeCache[cacheKey] = resolved.Code;
         return resolved;
     }
 
@@ -104,6 +134,14 @@ internal static partial class ProjectGenerator
         IReadOnlyList<DataObjectDef> dataObjects,
         ExpectedTypeContext expected,
         ExpressionEmissionContext context)
+        => ResolveExpression(expressionId, task, dataObjects, expected, context).Code;
+
+    private static EmittedExpression ResolveExpression(
+        string? expressionId,
+        TaskSemantic task,
+        IReadOnlyList<DataObjectDef> dataObjects,
+        ExpectedTypeContext expected,
+        ExpressionEmissionContext context)
     {
         if ((context.SinkKind == ExpressionSinkKind.Default || context.SinkKind == ExpressionSinkKind.ExpectedValue) &&
             !context.Expected.HasExpectation &&
@@ -116,9 +154,16 @@ internal static partial class ProjectGenerator
         {
             if (ShouldUseTypedExpressionEntryResolution(context))
             {
-                var typedResolved = ResolveTypedExpressionEntryCode(contextExpr, task, dataObjects, context).Code;
+                var typedResolved = ResolveTypedExpressionEntryCode(contextExpr, task, dataObjects, context);
                 if (context.SinkKind == ExpressionSinkKind.BooleanCondition)
-                    typedResolved = NormalizeStatementBooleanConditionSyntax(typedResolved);
+                    typedResolved = typedResolved with
+                    {
+                        Code = NormalizeStatementBooleanConditionSyntax(typedResolved.Code),
+                        EffectiveReturnType = "Bool",
+                        EffectiveXpaType = XpaType.Bool,
+                        HasEffectiveType = true
+                    };
+                RegisterContextualExpressionReturnType(task, typedResolved.Code, context);
                 return typedResolved;
             }
 
@@ -129,16 +174,66 @@ internal static partial class ProjectGenerator
                 if (context.SinkKind == ExpressionSinkKind.BooleanCondition)
                     contextualResolved = NormalizeStatementBooleanConditionSyntax(contextualResolved);
                 RegisterContextualExpressionReturnType(task, contextualResolved, context);
-                return contextualResolved;
+                return CreateContextualEmittedExpression(contextualResolved, contextExpr, task, dataObjects, context);
             }
         }
 
-        var resolved = ResolveExpressionCode(expressionId, task, dataObjects);
+        var fallbackExpr = int.TryParse(expressionId, out var fallbackOrdinal) &&
+                           task.ExpressionsSemantic.EntriesByOrdinal.TryGetValue(fallbackOrdinal, out var fallbackEntry)
+            ? fallbackEntry
+            : null;
+        var resolved = ResolveExpression(expressionId, task, dataObjects);
+        if (string.IsNullOrWhiteSpace(resolved.Code))
+            resolved = CreateContextualEmittedExpression("", fallbackExpr, task, dataObjects, context, evidenceKind: "empty");
         var emitted = EmitExpressionForContext(resolved, task, context);
         if (context.SinkKind == ExpressionSinkKind.BooleanCondition)
-            emitted = NormalizeStatementBooleanConditionSyntax(emitted);
-        RegisterContextualExpressionReturnType(task, emitted, context);
+            emitted = emitted with
+            {
+                Code = NormalizeStatementBooleanConditionSyntax(emitted.Code),
+                EffectiveReturnType = "Bool",
+                EffectiveXpaType = XpaType.Bool,
+                HasEffectiveType = true
+            };
+        RegisterContextualExpressionReturnType(task, emitted.Code, context);
         return emitted;
+    }
+
+    private static EmittedExpression CreateContextualEmittedExpression(
+        string code,
+        ExpressionEntrySemantic? expr,
+        TaskSemantic task,
+        IReadOnlyList<DataObjectDef> dataObjects,
+        ExpressionEmissionContext context,
+        string? sourceReturnType = null,
+        bool usedFallbackInference = false,
+        bool canEmitAsStatement = false,
+        string evidenceKind = "")
+    {
+        var intrinsicReturnType = NormalizeReturnTypeToken(sourceReturnType ?? "");
+        if (string.IsNullOrWhiteSpace(intrinsicReturnType))
+            intrinsicReturnType = NormalizeReturnTypeToken(ResolveSourceReturnTypeForExpressionEntry(expr, task, dataObjects));
+        if (string.IsNullOrWhiteSpace(intrinsicReturnType))
+            intrinsicReturnType = NormalizeReturnTypeToken(ResolveIntrinsicReturnTypeForExpressionEntry(expr));
+
+        var expectedReturnType = NormalizeReturnTypeToken(ResolveReturnTypeForExpectedContext(context.Expected));
+        var effectiveReturnType = intrinsicReturnType;
+
+        return new EmittedExpression(
+            code,
+            intrinsicReturnType,
+            XpaTypeEngine.MapExpectedToXpaType(intrinsicReturnType),
+            effectiveReturnType,
+            XpaTypeEngine.MapExpectedToXpaType(effectiveReturnType),
+            !string.IsNullOrWhiteSpace(intrinsicReturnType),
+            !string.IsNullOrWhiteSpace(effectiveReturnType),
+            usedFallbackInference,
+            canEmitAsStatement,
+            expr is null ? "" : ResolveExpressionEntrySourceSyntax(expr),
+            intrinsicReturnType,
+            expr?.Ordinal ?? 0,
+            context.SinkKind.ToString(),
+            expectedReturnType,
+            evidenceKind);
     }
 
     private static string ResolveInitialKeyExpressionCode(
@@ -157,13 +252,16 @@ internal static partial class ProjectGenerator
     }
 
     private static string ResolveExpressionEntryCode(ExpressionEntrySemantic? expr, TaskSemantic task, IReadOnlyList<DataObjectDef> dataObjects)
+        => ResolveExpressionEntry(expr, task, dataObjects).Code;
+
+    private static EmittedExpression ResolveExpressionEntry(ExpressionEntrySemantic? expr, TaskSemantic task, IReadOnlyList<DataObjectDef> dataObjects)
     {
         if (expr is null || string.IsNullOrWhiteSpace(expr.Syntax))
-            return "";
+            return default;
         var sharedKey = string.Create(
             CultureInfo.InvariantCulture,
             $"{task.Ordinal}|{expr.Attribute}|{expr.IsStringLiteral}|{expr.Syntax}|{expr.LiteralNormalizedSyntax}");
-        string CacheAndRegister(SourceTranslatedExpression translated)
+        EmittedExpression CacheAndRegister(SourceTranslatedExpression translated)
         {
             var value = translated.Code;
             _sharedExpressionEntryCodeCache[sharedKey] = value;
@@ -173,7 +271,7 @@ internal static partial class ProjectGenerator
                 translated.HasSourceReturnType
                     ? translated.SourceReturnType
                     : ResolveIntrinsicReturnTypeForExpressionEntry(expr));
-            return value;
+            return CreateEmittedExpressionFromSourceTranslated(translated, expr, task, dataObjects, default);
         }
 
         if (_sharedExpressionEntryCodeCache.TryGetValue(sharedKey, out var sharedCached))
@@ -185,11 +283,38 @@ internal static partial class ProjectGenerator
                 !string.IsNullOrWhiteSpace(sourceReturnType)
                     ? sourceReturnType
                     : ResolveIntrinsicReturnTypeForExpressionEntry(expr));
-            return sharedCached;
+            return CreateContextualEmittedExpression(sharedCached, expr, task, dataObjects, default, sourceReturnType, evidenceKind: "shared-expression-cache");
         }
 
         return CacheAndRegister(TranslateExpressionEntryFromSource(expr, task, dataObjects, normalizeAttribute: true));
     }
+
+    private static EmittedExpression CreateEmittedExpressionFromSourceTranslated(
+        SourceTranslatedExpression translated,
+        ExpressionEntrySemantic? expr,
+        TaskSemantic task,
+        IReadOnlyList<DataObjectDef> dataObjects,
+        ExpressionEmissionContext context)
+        => CreateContextualEmittedExpression(
+            translated.Code,
+            expr,
+            task,
+            dataObjects,
+            context,
+            translated.SourceReturnType,
+            evidenceKind: string.IsNullOrWhiteSpace(translated.EvidenceKind) ? "source-translated" : translated.EvidenceKind);
+
+    private static SourceTranslatedExpression CreateSourceTranslatedExpression(
+        ExpressionEntrySemantic expr,
+        string code,
+        string sourceReturnType,
+        string evidenceKind)
+        => new(
+            code,
+            NormalizeReturnTypeToken(sourceReturnType),
+            ResolveExpressionEntrySourceSyntax(expr),
+            expr.Ordinal,
+            evidenceKind);
 
     private static string ResolveRawExpressionEntryCode(
         ExpressionEntrySemantic expr,
@@ -226,6 +351,51 @@ internal static partial class ProjectGenerator
         return TranslateExpressionEntryFromSource(expr, task, dataObjects, normalizeAttribute: false).Code;
     }
 
+    private static ExpressionEntrySemantic CreateSyntheticExpressionEntry(
+        string sourceSyntax,
+        string? attribute,
+        int ordinal = 0)
+    {
+        var syntax = WebUtility.HtmlDecode(sourceSyntax ?? "").Trim();
+        var attr = attribute?.Trim() ?? "";
+        return new ExpressionEntrySemantic(
+            ordinal,
+            syntax,
+            syntax,
+            attr,
+            syntax,
+            TryParseWholeXpaSingleQuotedLiteral(syntax, out _),
+            ContainsSourceToken(syntax, "EOP"),
+            ContainsSourceToken(syntax, "IOCurr"),
+            ContainsSourceToken(syntax, "Page"),
+            ContainsSourceToken(syntax, "Line"),
+            ContainsSourceToken(syntax, "Str("),
+            null);
+    }
+
+    private static string ResolveSourceFragmentCode(
+        string sourceSyntax,
+        TaskSemantic task,
+        IReadOnlyList<DataObjectDef> dataObjects,
+        ExpressionEmissionContext context,
+        string? attribute = null)
+    {
+        if (string.IsNullOrWhiteSpace(sourceSyntax))
+            return "";
+
+        var expectedReturnType = NormalizeReturnTypeToken(ResolveReturnTypeForExpectedContext(context.Expected));
+        var effectiveAttribute = !string.IsNullOrWhiteSpace(attribute)
+            ? attribute
+            : MapReturnTypeToSourceExpressionAttribute(expectedReturnType);
+        var synthetic = CreateSyntheticExpressionEntry(sourceSyntax, effectiveAttribute);
+        return ResolveTypedExpressionEntryCode(synthetic, task, dataObjects, context).Code;
+    }
+
+    private static bool ContainsSourceToken(string syntax, string token)
+        => !string.IsNullOrWhiteSpace(syntax) &&
+           !string.IsNullOrWhiteSpace(token) &&
+           syntax.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0;
+
     private static SourceTranslatedExpression TranslateExpressionEntryFromSource(
         ExpressionEntrySemantic expr,
         TaskSemantic task,
@@ -246,7 +416,7 @@ internal static partial class ProjectGenerator
                 dataObjects,
                 out var varIndexCode))
         {
-            return new(varIndexCode, "Number");
+            return CreateSourceTranslatedExpression(expr, varIndexCode, "Number", "var-index-literal");
         }
 
         if (TryEmitRightLiteralNumberFromSourceEvidence(
@@ -255,7 +425,7 @@ internal static partial class ProjectGenerator
                 contextualExpectedReturnType,
                 out var rightLiteralNumber))
         {
-            return new(rightLiteralNumber, "Number");
+            return CreateSourceTranslatedExpression(expr, rightLiteralNumber, "Number", "right-literal-number");
         }
 
         if (expr.IsStringLiteral)
@@ -263,7 +433,7 @@ internal static partial class ProjectGenerator
             translated = TryResolveXpaLogicalLiteralCode(expr.Syntax, out var logicalLiteralCode)
                 ? logicalLiteralCode
                 : ResolveStringLiteralExpressionCode(expr);
-            return new(translated, inferSourceReturnType && !string.IsNullOrWhiteSpace(sourceReturnType) ? sourceReturnType : "Text");
+            return CreateSourceTranslatedExpression(expr, translated, inferSourceReturnType && !string.IsNullOrWhiteSpace(sourceReturnType) ? sourceReturnType : "Text", "string-literal");
         }
 
         var unsupportedEnvironmentFallback = TryTranslateUnsupportedEnvironmentExpression(expr);
@@ -273,7 +443,7 @@ internal static partial class ProjectGenerator
             translated = normalizeAttribute
                 ? NormalizeExpressionByAttribute(task, expr.Attribute, translated)
                 : translated;
-            return new(translated, sourceReturnType);
+            return CreateSourceTranslatedExpression(expr, translated, sourceReturnType, "unsupported-environment");
         }
 
         var varDbNameCode = TryResolveVarDbNameExpression(expr.Syntax, task, dataObjects);
@@ -283,7 +453,7 @@ internal static partial class ProjectGenerator
             translated = normalizeAttribute
                 ? NormalizeExpressionByAttribute(task, expr.Attribute, translated)
                 : translated;
-            return new(translated, sourceReturnType);
+            return CreateSourceTranslatedExpression(expr, translated, sourceReturnType, "var-db-name");
         }
 
         var special = TryTranslateWholeExpressionSemantically(expr, task);
@@ -293,7 +463,7 @@ internal static partial class ProjectGenerator
             translated = normalizeAttribute
                 ? NormalizeExpressionByAttribute(task, expr.Attribute, translated)
                 : translated;
-            return new(translated, sourceReturnType);
+            return CreateSourceTranslatedExpression(expr, translated, sourceReturnType, "semantic-whole-expression");
         }
 
         var expressionAttributeReturnType = ResolveSimpleReturnTypeForExpressionAttribute(expr.Attribute);
@@ -312,7 +482,15 @@ internal static partial class ProjectGenerator
             translated = sourceFunctionTranslated.Code;
             if (normalizeAttribute && !SourceReturnTypeMatchesExpressionAttribute(sourceFunctionTranslated.SourceReturnType, expr.Attribute))
                 translated = NormalizeExpressionByAttribute(task, expr.Attribute, translated);
-            return sourceFunctionTranslated with { Code = translated };
+            return sourceFunctionTranslated with
+            {
+                Code = translated,
+                SourceSyntax = ResolveExpressionEntrySourceSyntax(expr),
+                ExpressionOrdinal = expr.Ordinal,
+                EvidenceKind = string.IsNullOrWhiteSpace(sourceFunctionTranslated.EvidenceKind)
+                    ? "source-function"
+                    : sourceFunctionTranslated.EvidenceKind
+            };
         }
 
         var sourceArithmeticExpectedReturnType = !string.IsNullOrWhiteSpace(expressionAttributeReturnType)
@@ -332,7 +510,15 @@ internal static partial class ProjectGenerator
             translated = sourceArithmeticTranslated.Code;
             if (normalizeAttribute && !SourceReturnTypeMatchesExpressionAttribute(sourceArithmeticTranslated.SourceReturnType, expr.Attribute))
                 translated = NormalizeExpressionByAttribute(task, expr.Attribute, translated);
-            return sourceArithmeticTranslated with { Code = translated };
+            return sourceArithmeticTranslated with
+            {
+                Code = translated,
+                SourceSyntax = ResolveExpressionEntrySourceSyntax(expr),
+                ExpressionOrdinal = expr.Ordinal,
+                EvidenceKind = string.IsNullOrWhiteSpace(sourceArithmeticTranslated.EvidenceKind)
+                    ? "source-arithmetic"
+                    : sourceArithmeticTranslated.EvidenceKind
+            };
         }
 
         translated = NormalizeDateConstructorMappings(TranslateXpaExpressionToCSharp(ResolveExpressionEntrySourceSyntax(expr), task, dataObjects, expr.Attribute));
@@ -348,7 +534,7 @@ internal static partial class ProjectGenerator
         if (normalizeAttribute)
             translated = NormalizeExpressionByAttribute(task, expr.Attribute, translated);
 
-        return new(translated, sourceReturnType);
+        return CreateSourceTranslatedExpression(expr, translated, sourceReturnType, "translated-expression");
     }
 
     private static bool IsSafeTypedSourceArithmeticExpressionEntry(ExpressionEntrySemantic expr, string sourceReturnType)
@@ -397,24 +583,47 @@ internal static partial class ProjectGenerator
         IReadOnlyList<DataObjectDef> dataObjects,
         ExpectedTypeContext expected,
         ExpressionEmissionContext context)
+        => ResolveExpressionEntry(expr, task, dataObjects, expected, context).Code;
+
+    private static EmittedExpression ResolveExpressionEntry(
+        ExpressionEntrySemantic? expr,
+        TaskSemantic task,
+        IReadOnlyList<DataObjectDef> dataObjects,
+        ExpectedTypeContext expected,
+        ExpressionEmissionContext context)
     {
         if ((context.SinkKind == ExpressionSinkKind.Default || context.SinkKind == ExpressionSinkKind.ExpectedValue) &&
             !context.Expected.HasExpectation &&
             expected.HasExpectation)
             context = CreateExpectedEmissionContext(expected);
 
+        if (expr is not null && ShouldUseTypedExpressionEntryResolution(context))
+        {
+            var typed = ResolveTypedExpressionEntryCode(expr, task, dataObjects, expected, context);
+            if (context.SinkKind == ExpressionSinkKind.BooleanCondition)
+                typed = typed with
+                {
+                    Code = NormalizeStatementBooleanConditionSyntax(typed.Code),
+                    EffectiveReturnType = "Bool",
+                    EffectiveXpaType = XpaType.Bool,
+                    HasEffectiveType = true
+                };
+            RegisterContextualExpressionReturnType(task, typed.Code, context);
+            return typed;
+        }
+
         if (expr is not null && ShouldPreferContextualRawResolution(expr, context))
         {
             var rawResolved = ResolveRawExpressionEntryCode(expr, task, dataObjects, expr.Ordinal);
             var emitted = EmitExpressionForContext(rawResolved, task, context);
             RegisterContextualExpressionReturnType(task, emitted, context);
-            return emitted;
+            return CreateContextualEmittedExpression(emitted, expr, task, dataObjects, context);
         }
 
         var resolved = ResolveExpressionEntryCode(expr, task, dataObjects);
         var contextual = EmitExpressionForContext(resolved, task, context);
         RegisterContextualExpressionReturnType(task, contextual, context);
-        return contextual;
+        return CreateContextualEmittedExpression(contextual, expr, task, dataObjects, context);
     }
 
     private static EmittedExpression ResolveTypedExpressionEntryCode(
@@ -467,7 +676,13 @@ internal static partial class ProjectGenerator
                 HasIntrinsicType: true,
                 HasEffectiveType: true,
                 UsedFallbackInference: false,
-                CanEmitAsStatement: false);
+                CanEmitAsStatement: false,
+                SourceSyntax: booleanSourceSyntax,
+                SourceReturnType: "Bool",
+                ExpressionOrdinal: expr.Ordinal,
+                SinkKind: context.SinkKind.ToString(),
+                ExpectedReturnType: ResolveReturnTypeForExpectedContext(context.Expected),
+                EvidenceKind: "source-boolean");
             _typedExpressionEntryCodeCache[cacheKey] = typedBoolean;
             Interlocked.Increment(ref _typedExpressionIntrinsicKnownCount);
             Interlocked.Increment(ref _typedExpressionEffectiveKnownCount);
@@ -517,7 +732,13 @@ internal static partial class ProjectGenerator
             !string.IsNullOrWhiteSpace(intrinsicReturnType),
             !string.IsNullOrWhiteSpace(effectiveReturnType),
             usedFallbackInference,
-            CanEmitExpressionEntryAsStatement(expr, task, dataObjects));
+            CanEmitExpressionEntryAsStatement(expr, task, dataObjects),
+            expr is null ? "" : ResolveExpressionEntrySourceSyntax(expr),
+            sourceReturnType,
+            expr?.Ordinal ?? 0,
+            context.SinkKind.ToString(),
+            ResolveReturnTypeForExpectedContext(context.Expected),
+            string.IsNullOrWhiteSpace(blobObjectReturnType) ? "source-expression" : "blob-object-view");
 
         _typedExpressionEntryCodeCache[cacheKey] = typed;
         if (typed.HasIntrinsicType)
@@ -585,7 +806,13 @@ internal static partial class ProjectGenerator
             !string.IsNullOrWhiteSpace(intrinsicReturnType),
             true,
             UsedFallbackInference: false,
-            CanEmitAsStatement: CanEmitExpressionEntryAsStatement(expr, task, dataObjects));
+            CanEmitAsStatement: CanEmitExpressionEntryAsStatement(expr, task, dataObjects),
+            SourceSyntax: ResolveExpressionEntrySourceSyntax(expr),
+            SourceReturnType: intrinsicReturnType,
+            ExpressionOrdinal: expr.Ordinal,
+            SinkKind: context.SinkKind.ToString(),
+            ExpectedReturnType: expectedReturnType,
+            EvidenceKind: "expected-dominant");
         return true;
     }
 
@@ -634,7 +861,7 @@ internal static partial class ProjectGenerator
         {
             var emittedBoolean = NormalizeStatementBooleanConditionSyntax(booleanCode);
             RegisterContextualExpressionReturnType(task, emittedBoolean, context);
-            return new(emittedBoolean, "Bool");
+            return CreateSourceTranslatedExpression(expr, emittedBoolean, "Bool", "source-boolean");
         }
 
         var translated = TranslateExpressionEntryFromSource(
@@ -647,20 +874,30 @@ internal static partial class ProjectGenerator
             TryResolveTranslatedSourceBindingReturnType(translated.Code, task, out var translatedSourceReturnType) &&
             !string.IsNullOrWhiteSpace(translatedSourceReturnType))
             translated = translated with { SourceReturnType = translatedSourceReturnType };
-        var emitted = TryEmitSourceTranslatedExpressionForKnownContext(translated, task, context, out var typedEmitted)
+        var emitted = TryEmitSourceTranslatedExpressionForKnownContext(translated, expr, task, dataObjects, context, out var typedEmitted)
             ? typedEmitted
-            : EmitExpressionForContext(translated.Code, task, context);
-        RegisterContextualExpressionReturnType(task, emitted, context);
-        return translated with { Code = emitted };
+            : EmitExpressionForContext(
+                CreateEmittedExpressionFromSourceTranslated(translated, expr, task, dataObjects, context),
+                task,
+                context);
+        RegisterContextualExpressionReturnType(task, emitted.Code, context);
+        return translated with
+        {
+            Code = emitted.Code,
+            SourceReturnType = emitted.HasSourceReturnType ? emitted.SourceReturnType : translated.SourceReturnType,
+            EvidenceKind = string.IsNullOrWhiteSpace(emitted.EvidenceKind) ? translated.EvidenceKind : emitted.EvidenceKind
+        };
     }
 
     private static bool TryEmitSourceTranslatedExpressionForKnownContext(
         SourceTranslatedExpression translated,
+        ExpressionEntrySemantic expr,
         TaskSemantic task,
+        IReadOnlyList<DataObjectDef> dataObjects,
         ExpressionEmissionContext context,
-        out string emitted)
+        out EmittedExpression emitted)
     {
-        emitted = "";
+        emitted = default;
         if (string.IsNullOrWhiteSpace(translated.Code) ||
             string.IsNullOrWhiteSpace(translated.SourceReturnType) ||
             !context.Expected.HasExpectation)
@@ -678,14 +915,28 @@ internal static partial class ProjectGenerator
         if (sourceXpaType == XpaType.Unknown || expectedXpaType == XpaType.Unknown)
             return false;
 
-        emitted = EmitFromReliableTypeEvidence(translated.Code.Trim(), translated.SourceReturnType, expectedReturnType, "source-translated");
+        var emittedCode = EmitFromReliableTypeEvidence(translated.Code.Trim(), translated.SourceReturnType, expectedReturnType, "source-translated");
         if (!SourceReturnTypeMatchesExpected(translated.SourceReturnType, expectedReturnType) &&
-            string.Equals(emitted, translated.Code.Trim(), StringComparison.Ordinal))
+            string.Equals(emittedCode, translated.Code.Trim(), StringComparison.Ordinal))
             return false;
         if (context.SinkKind == ExpressionSinkKind.BooleanCondition)
-            emitted = NormalizeStatementBooleanConditionSyntax(emitted);
+            emittedCode = NormalizeStatementBooleanConditionSyntax(emittedCode);
 
-        RegisterTypedExpressionReturnType(task, emitted, expectedReturnType);
+        emitted = CreateContextualEmittedExpression(
+            emittedCode,
+            expr,
+            task,
+            dataObjects,
+            context,
+            translated.SourceReturnType,
+            evidenceKind: string.IsNullOrWhiteSpace(translated.EvidenceKind) ? "source-translated-context" : translated.EvidenceKind) with
+        {
+            EffectiveReturnType = expectedReturnType,
+            EffectiveXpaType = XpaTypeEngine.MapExpectedToXpaType(expectedReturnType),
+            HasEffectiveType = true,
+            ExpectedReturnType = expectedReturnType
+        };
+        RegisterTypedExpressionReturnType(task, emitted.Code, expectedReturnType);
         return true;
     }
 
@@ -767,7 +1018,7 @@ internal static partial class ProjectGenerator
         if (string.IsNullOrWhiteSpace(targetFunctionName))
             return false;
 
-        var rewrittenArgs = new List<string>(args.Count);
+        var rewrittenArgs = new List<SourceFunctionArgumentExpression>(args.Count);
         for (var i = 0; i < args.Count; i++)
         {
             var expectedArgType = i < info.ExpectedArgumentReturnTypes.Length
@@ -795,8 +1046,29 @@ internal static partial class ProjectGenerator
                 TryResolveXpaFunctionSourceArgumentReturnTypeContract(functionName, i, args.Count, out var contractArgType))
                 expectedArgType = NormalizeReturnTypeToken(contractArgType);
 
-            string rewrittenArg;
-            if (string.Equals(normalizedFunction, "STR", StringComparison.Ordinal) &&
+            SourceFunctionArgumentExpression rewrittenArg;
+            if (string.Equals(normalizedFunction, "IF", StringComparison.Ordinal) &&
+                i == 0 &&
+                args.Count >= 3 &&
+                !string.IsNullOrWhiteSpace(returnType) &&
+                TryTranslateSourceIfBranchComparisonCondition(
+                    args[0],
+                    args[1],
+                    args[2],
+                    returnType,
+                    task,
+                    dataObjects,
+                    out var ifConditionCode,
+                    preferApplicationDatabaseBinding))
+            {
+                rewrittenArg = new SourceFunctionArgumentExpression(
+                    ifConditionCode,
+                    "Bool",
+                    "Bool",
+                    "Bool",
+                    "source-if-branch-comparison-condition");
+            }
+            else if (string.Equals(normalizedFunction, "STR", StringComparison.Ordinal) &&
                 i == 0 &&
                 string.Equals(NormalizeReturnTypeToken(expectedArgType), "Number", StringComparison.Ordinal) &&
                 TryTranslateWholeKnownSourceFunctionCall(
@@ -809,11 +1081,18 @@ internal static partial class ProjectGenerator
                     preferApplicationDatabaseBinding) &&
                 SourceReturnTypeMatchesExpected(numericSourceFunction.SourceReturnType, expectedArgType))
             {
-                rewrittenArg = numericSourceFunction.Code;
+                rewrittenArg = new SourceFunctionArgumentExpression(
+                    numericSourceFunction.Code,
+                    numericSourceFunction.SourceReturnType,
+                    numericSourceFunction.SourceReturnType,
+                    expectedArgType,
+                    string.IsNullOrWhiteSpace(numericSourceFunction.EvidenceKind)
+                        ? "source-function-argument"
+                        : numericSourceFunction.EvidenceKind);
             }
             else
             {
-                rewrittenArg = TranslateSourceFunctionArgument(
+                rewrittenArg = TranslateSourceFunctionArgumentExpression(
                     args[i],
                     expectedArgType,
                     task,
@@ -825,20 +1104,154 @@ internal static partial class ProjectGenerator
             if (string.Equals(normalizedFunction, "IF", StringComparison.Ordinal) &&
                 i is 1 or 2 &&
                 !string.IsNullOrWhiteSpace(returnType))
-                rewrittenArg = NormalizeExpressionForExpectedScalarReturnTypeUsingResolvedTypeCentral(rewrittenArg, returnType, task);
+                rewrittenArg = CoerceSourceFunctionArgumentExpressionForExpected(rewrittenArg, returnType);
 
             rewrittenArgs.Add(rewrittenArg);
         }
 
-        var code = isCaseFunction && BuildTypeValuedCaseExpression(rewrittenArgs, out var typeCaseCode)
+        if (string.IsNullOrWhiteSpace(returnType))
+            returnType = InferSourceFunctionReturnTypeFromTypedArguments(normalizedFunction, rewrittenArgs);
+
+        var rewrittenArgCodes = rewrittenArgs.Select(static arg => arg.Code).ToArray();
+        var code = isCaseFunction && BuildTypeValuedCaseExpression(rewrittenArgCodes, out var typeCaseCode)
             ? typeCaseCode
-            : $"{targetFunctionName}({string.Join(", ", rewrittenArgs)})";
+            : $"{targetFunctionName}({string.Join(", ", rewrittenArgCodes)})";
         if (!hasTaskFunctionContract && !hasComponentFunctionContract)
             code = MaterializeTypedSourceFunctionReturn(normalizedFunction, code, returnType);
         code = NormalizeDateConstructorMappings(NormalizeVarSetValueExpressions(code));
         code = CollapseRedundantScalarCastWrappersDeep(code);
-        translated = new(code, returnType);
+        translated = new(code, returnType, decoded, 0, "source-function");
         return true;
+    }
+
+    private static SourceFunctionArgumentExpression TranslateSourceFunctionArgumentExpression(
+        string argSyntax,
+        string expectedReturnType,
+        TaskSemantic task,
+        IReadOnlyList<DataObjectDef> dataObjects,
+        int depth,
+        bool preferApplicationDatabaseBinding = false)
+    {
+        var normalizedExpected = NormalizeReturnTypeToken(expectedReturnType);
+        var sourceReturnType = NormalizeReturnTypeToken(ResolveSourceExpressionReturnType(argSyntax, task, dataObjects, depth + 1));
+        var code = TranslateSourceFunctionArgument(
+            argSyntax,
+            normalizedExpected,
+            task,
+            dataObjects,
+            depth,
+            preferApplicationDatabaseBinding);
+
+        if (string.IsNullOrWhiteSpace(sourceReturnType) &&
+            TryResolveTranslatedSourceBindingReturnType(code, task, out var translatedReturnType))
+            sourceReturnType = NormalizeReturnTypeToken(translatedReturnType);
+
+        var effectiveReturnType = sourceReturnType;
+        if (!string.IsNullOrWhiteSpace(normalizedExpected) &&
+            !string.IsNullOrWhiteSpace(sourceReturnType) &&
+            SourceReturnTypeMatchesExpected(sourceReturnType, normalizedExpected))
+            effectiveReturnType = normalizedExpected;
+        else if (!string.IsNullOrWhiteSpace(normalizedExpected) &&
+                 !string.IsNullOrWhiteSpace(sourceReturnType) &&
+                 CanCoerceSourceFunctionArgument(sourceReturnType, normalizedExpected))
+            effectiveReturnType = normalizedExpected;
+        else if (string.IsNullOrWhiteSpace(effectiveReturnType) &&
+                 !string.IsNullOrWhiteSpace(normalizedExpected))
+            effectiveReturnType = normalizedExpected;
+
+        return new SourceFunctionArgumentExpression(
+            code.Trim(),
+            sourceReturnType,
+            NormalizeReturnTypeToken(effectiveReturnType),
+            normalizedExpected,
+            "source-function-argument");
+    }
+
+    private static SourceFunctionArgumentExpression CoerceSourceFunctionArgumentExpressionForExpected(
+        SourceFunctionArgumentExpression argument,
+        string expectedReturnType)
+    {
+        var normalizedExpected = NormalizeReturnTypeToken(expectedReturnType);
+        if (string.IsNullOrWhiteSpace(argument.Code) ||
+            string.IsNullOrWhiteSpace(normalizedExpected))
+            return argument;
+
+        var sourceReturnType = !string.IsNullOrWhiteSpace(argument.SourceReturnType)
+            ? argument.SourceReturnType
+            : argument.EffectiveReturnType;
+        if (string.IsNullOrWhiteSpace(sourceReturnType) ||
+            SourceReturnTypeMatchesExpected(sourceReturnType, normalizedExpected) ||
+            !CanCoerceSourceFunctionArgument(sourceReturnType, normalizedExpected))
+        {
+            return argument with
+            {
+                ExpectedReturnType = normalizedExpected,
+                EffectiveReturnType = SourceReturnTypeMatchesExpected(argument.EffectiveReturnType, normalizedExpected)
+                    ? normalizedExpected
+                    : argument.EffectiveReturnType
+            };
+        }
+
+        var coerced = EmitFromReliableTypeEvidence(
+            argument.Code,
+            sourceReturnType,
+            normalizedExpected,
+            "source-function-argument");
+        return argument with
+        {
+            Code = coerced.Trim(),
+            ExpectedReturnType = normalizedExpected,
+            EffectiveReturnType = normalizedExpected,
+            EvidenceKind = "source-function-argument-coerced"
+        };
+    }
+
+    private static bool CanCoerceSourceFunctionArgument(string sourceReturnType, string expectedReturnType)
+    {
+        var sourceXpaType = XpaTypeEngine.MapExpectedToXpaType(GetValueReturnType(NormalizeReturnTypeToken(sourceReturnType)));
+        var expectedXpaType = XpaTypeEngine.MapExpectedToXpaType(GetValueReturnType(NormalizeReturnTypeToken(expectedReturnType)));
+        return sourceXpaType != XpaType.Unknown &&
+               expectedXpaType != XpaType.Unknown &&
+               XpaTypeEngine.CanCoerce(sourceXpaType, expectedXpaType);
+    }
+
+    private static string InferSourceFunctionReturnTypeFromTypedArguments(
+        string normalizedFunction,
+        IReadOnlyList<SourceFunctionArgumentExpression> args)
+    {
+        if (string.Equals(normalizedFunction, "IF", StringComparison.Ordinal) &&
+            args.Count >= 3)
+            return UnifySourceReturnTypes(args[1].PreferredReturnType, args[2].PreferredReturnType);
+
+        if ((string.Equals(normalizedFunction, "CASE", StringComparison.Ordinal) ||
+             string.Equals(normalizedFunction, "CASEUNTYPED", StringComparison.Ordinal)) &&
+            args.Count >= 3)
+        {
+            var returnType = "";
+            for (var i = 2; i < args.Count; i += 2)
+            {
+                var candidate = args[i].PreferredReturnType;
+                returnType = string.IsNullOrWhiteSpace(returnType)
+                    ? candidate
+                    : UnifySourceReturnTypes(returnType, candidate);
+            }
+
+            if (args.Count % 2 == 0)
+            {
+                var defaultCandidate = args[^1].PreferredReturnType;
+                returnType = string.IsNullOrWhiteSpace(returnType)
+                    ? defaultCandidate
+                    : UnifySourceReturnTypes(returnType, defaultCandidate);
+            }
+
+            return NormalizeReturnTypeToken(returnType);
+        }
+
+        if (string.Equals(normalizedFunction, "CNDRANGE", StringComparison.Ordinal) &&
+            args.Count >= 2)
+            return NormalizeReturnTypeToken(args[1].PreferredReturnType);
+
+        return "";
     }
 
     private static bool TryEmitRightLiteralNumberFromSourceEvidence(
@@ -986,6 +1399,7 @@ internal static partial class ProjectGenerator
            string.Equals(normalizedFunction, "CALLDLLF", StringComparison.Ordinal) ||
            string.Equals(normalizedFunction, "VARIANTGET", StringComparison.Ordinal) ||
            string.Equals(normalizedFunction, "VECGET", StringComparison.Ordinal) ||
+           IsJavaGetStaticFunctionName(normalizedFunction) ||
            string.Equals(normalizedFunction, "NULL", StringComparison.Ordinal);
 
     private static bool IsTypedSourceFunctionCandidate(string normalizedFunction)
@@ -1007,7 +1421,18 @@ internal static partial class ProjectGenerator
            string.Equals(normalizedFunction, "STR", StringComparison.Ordinal) ||
            string.Equals(normalizedFunction, "DSTR", StringComparison.Ordinal) ||
            string.Equals(normalizedFunction, "TSTR", StringComparison.Ordinal) ||
+           string.Equals(normalizedFunction, "ABS", StringComparison.Ordinal) ||
+           string.Equals(normalizedFunction, "ACOS", StringComparison.Ordinal) ||
+           string.Equals(normalizedFunction, "ASIN", StringComparison.Ordinal) ||
+           string.Equals(normalizedFunction, "ATAN", StringComparison.Ordinal) ||
+           string.Equals(normalizedFunction, "COS", StringComparison.Ordinal) ||
+           string.Equals(normalizedFunction, "EXP", StringComparison.Ordinal) ||
            string.Equals(normalizedFunction, "FIX", StringComparison.Ordinal) ||
+           string.Equals(normalizedFunction, "LOG", StringComparison.Ordinal) ||
+           string.Equals(normalizedFunction, "MOD", StringComparison.Ordinal) ||
+           string.Equals(normalizedFunction, "ROUND", StringComparison.Ordinal) ||
+           string.Equals(normalizedFunction, "SIN", StringComparison.Ordinal) ||
+           string.Equals(normalizedFunction, "TAN", StringComparison.Ordinal) ||
            string.Equals(normalizedFunction, "LEN", StringComparison.Ordinal) ||
            string.Equals(normalizedFunction, "INSTR", StringComparison.Ordinal) ||
            string.Equals(normalizedFunction, "STRTOKEN", StringComparison.Ordinal) ||
@@ -1060,6 +1485,7 @@ internal static partial class ProjectGenerator
             string.Equals(normalizedFunction, "LOCATEADD", StringComparison.Ordinal) ||
             string.Equals(normalizedFunction, "FILEEXIST", StringComparison.Ordinal) ||
            string.Equals(normalizedFunction, "CLIENTFILEEXIST", StringComparison.Ordinal) ||
+           string.Equals(normalizedFunction, "IMAGERELOAD", StringComparison.Ordinal) ||
            string.Equals(normalizedFunction, "DNEXCEPTIONOCCURRED", StringComparison.Ordinal) ||
            string.Equals(normalizedFunction, "IN", StringComparison.Ordinal) ||
            string.Equals(normalizedFunction, "FILEINFO", StringComparison.Ordinal) ||
@@ -2049,7 +2475,7 @@ internal static partial class ProjectGenerator
             rightSourceType = "Time";
         }
         else if (string.Equals(normalizedExpectedReturnType, "Number", StringComparison.Ordinal) ||
-            arithmetic.Value.Operator is "*" or "/" or "%")
+            arithmetic.Value.Operator is "*" or "/" or "%" or "^")
         {
             leftSourceType = "Number";
             rightSourceType = "Number";
@@ -2061,10 +2487,21 @@ internal static partial class ProjectGenerator
         }
         if (ShouldPreferDateDifferenceRightOperand(arithmetic.Value.Operator, arithmetic.Value.Right, leftSourceType, rightSourceType, normalizedExpectedReturnType))
             rightSourceType = "Date";
-        var leftCode = TranslateSourceFunctionArgument(arithmetic.Value.Left, leftSourceType, task, dataObjects, depth + 1, preferApplicationDatabaseBinding);
-        var rightCode = TranslateSourceFunctionArgument(arithmetic.Value.Right, rightSourceType, task, dataObjects, depth + 1, preferApplicationDatabaseBinding);
+        var leftOperand = TranslateSourceFunctionArgumentExpression(arithmetic.Value.Left, leftSourceType, task, dataObjects, depth + 1, preferApplicationDatabaseBinding);
+        var rightOperand = TranslateSourceFunctionArgumentExpression(arithmetic.Value.Right, rightSourceType, task, dataObjects, depth + 1, preferApplicationDatabaseBinding);
+        var leftCode = leftOperand.Code;
+        var rightCode = rightOperand.Code;
         if (string.IsNullOrWhiteSpace(leftCode) || string.IsNullOrWhiteSpace(rightCode))
             return false;
+
+        if (string.IsNullOrWhiteSpace(originalLeftSourceType))
+            originalLeftSourceType = NormalizeReturnTypeToken(leftOperand.SourceReturnType);
+        if (string.IsNullOrWhiteSpace(originalRightSourceType))
+            originalRightSourceType = NormalizeReturnTypeToken(rightOperand.SourceReturnType);
+        if (string.IsNullOrWhiteSpace(leftSourceType))
+            leftSourceType = NormalizeReturnTypeToken(leftOperand.PreferredReturnType);
+        if (string.IsNullOrWhiteSpace(rightSourceType))
+            rightSourceType = NormalizeReturnTypeToken(rightOperand.PreferredReturnType);
 
         if (ShouldMaterializeSourceArithmeticOperandsAsNumber(arithmetic.Value.Operator, normalizedExpectedReturnType))
         {
@@ -2095,9 +2532,11 @@ internal static partial class ProjectGenerator
         var sourceType = materializeTimeDifferenceAsNumber
             ? "Number"
             : ResolveSourceExpressionReturnType(syntax, task, dataObjects, depth + 1);
+        if (ShouldMaterializeSourceArithmeticOperandsAsNumber(arithmetic.Value.Operator, normalizedExpectedReturnType))
+            sourceType = "Number";
         if (string.IsNullOrWhiteSpace(sourceType) &&
             (string.Equals(normalizedExpectedReturnType, "Number", StringComparison.Ordinal) ||
-             arithmetic.Value.Operator is "*" or "/" or "%"))
+             arithmetic.Value.Operator is "*" or "/" or "%" or "^"))
             sourceType = "Number";
         if (string.IsNullOrWhiteSpace(sourceType) &&
             string.Equals(normalizedExpectedReturnType, "Time", StringComparison.Ordinal) &&
@@ -2111,10 +2550,19 @@ internal static partial class ProjectGenerator
             sourceType = "Number";
         if (string.Equals(arithmetic.Value.Operator, "&", StringComparison.Ordinal))
             sourceType = "Text";
-        var codeOperator = string.Equals(arithmetic.Value.Operator, "&", StringComparison.Ordinal) ? "+" : arithmetic.Value.Operator;
-        leftCode = PreserveSourceArithmeticOperandGrouping(leftCode, arithmetic.Value.Left, arithmetic.Value.Operator, isRightOperand: false);
-        rightCode = PreserveSourceArithmeticOperandGrouping(rightCode, arithmetic.Value.Right, arithmetic.Value.Operator, isRightOperand: true);
-        var code = $"{leftCode} {codeOperator} {rightCode}";
+        string code;
+        if (string.Equals(arithmetic.Value.Operator, "^", StringComparison.Ordinal))
+        {
+            code = $"u.Pow({leftCode}, {rightCode})";
+            sourceType = "Number";
+        }
+        else
+        {
+            var codeOperator = string.Equals(arithmetic.Value.Operator, "&", StringComparison.Ordinal) ? "+" : arithmetic.Value.Operator;
+            leftCode = PreserveSourceArithmeticOperandGrouping(leftCode, arithmetic.Value.Left, arithmetic.Value.Operator, isRightOperand: false);
+            rightCode = PreserveSourceArithmeticOperandGrouping(rightCode, arithmetic.Value.Right, arithmetic.Value.Operator, isRightOperand: true);
+            code = $"{leftCode} {codeOperator} {rightCode}";
+        }
         if (ShouldMaterializeDateArithmeticResult(arithmetic.Value.Operator, leftSourceType, rightSourceType, normalizedExpectedReturnType))
         {
             code = EmitFromReliableTypeEvidence(code, "Number", "Date", "source-arithmetic");
@@ -2133,7 +2581,7 @@ internal static partial class ProjectGenerator
             sourceType = "Time";
         }
 
-        translated = new(code, sourceType);
+        translated = new(code, sourceType, syntax, 0, "source-arithmetic");
         return true;
     }
 
@@ -2165,13 +2613,14 @@ internal static partial class ProjectGenerator
     private static int SourceArithmeticOperatorPrecedence(string op)
         => op switch
         {
+            "^" => 3,
             "*" or "/" or "%" => 2,
             "+" or "-" or "&" => 1,
             _ => 0
         };
 
     private static bool ShouldMaterializeSourceArithmeticOperandsAsNumber(string op, string expectedReturnType)
-        => op is "*" or "/" or "%" ||
+        => op is "*" or "/" or "%" or "^" ||
            string.Equals(NormalizeReturnTypeToken(expectedReturnType), "Number", StringComparison.Ordinal);
 
     private static bool ShouldMaterializeDateArithmeticResult(
@@ -2232,7 +2681,6 @@ internal static partial class ProjectGenerator
         var normalizedRightType = NormalizeReturnTypeToken(rightSourceType);
         return string.IsNullOrWhiteSpace(normalizedRightType) ||
                string.Equals(normalizedRightType, "object", StringComparison.Ordinal) ||
-               string.Equals(normalizedRightType, "Number", StringComparison.Ordinal) ||
                string.Equals(normalizedRightType, "Date", StringComparison.Ordinal);
     }
 
@@ -2290,6 +2738,9 @@ internal static partial class ProjectGenerator
             return true;
         }
 
+        if (TryTranslateExternalStaticDotNetMethodCall(trimmed, task, dataObjects, out code))
+            return true;
+
         if (TryParseFunctionCall(trimmed, out var functionName, out var args) &&
             TryResolveSourceDotNetMethodCallReturnType(functionName, args.Count, task, dataObjects, out _) &&
             TryResolveSourceDotNetMemberAccess(functionName, task, dataObjects, out var translatedMemberAccess, out _, out _))
@@ -2302,6 +2753,37 @@ internal static partial class ProjectGenerator
         }
 
         return false;
+    }
+
+    private static bool TryTranslateExternalStaticDotNetMethodCall(
+        string syntax,
+        TaskSemantic task,
+        IReadOnlyList<DataObjectDef> dataObjects,
+        out string code)
+    {
+        code = "";
+        if (!TryParseFunctionCall(syntax, out var functionName, out var args))
+            return false;
+
+        var normalizedFunctionName = StripDotNetQualifierOutsideQuotes(functionName).Trim();
+        const string qrCodeType = "Cigam.Utils.BarCode.QRCode";
+        const string qrCodePrefix = qrCodeType + ".";
+        if (!normalizedFunctionName.StartsWith(qrCodePrefix, StringComparison.Ordinal))
+            return false;
+
+        var methodName = normalizedFunctionName[qrCodePrefix.Length..].Trim();
+        if (string.IsNullOrWhiteSpace(methodName) || !IsSimpleIdentifierPath(methodName))
+            return false;
+
+        var translatedArgs = args
+            .Select(arg => StripDotNetQualifierOutsideQuotes(NormalizeDateConstructorMappings(TranslateXpaExpressionToCSharp(arg.Trim(), task, dataObjects))))
+            .Select(arg => NormalizeVarSetValueExpressions(arg).Trim())
+            .ToArray();
+        var argumentList = translatedArgs.Length == 0
+            ? ""
+            : ", " + string.Join(", ", translatedArgs);
+        code = $"ExternalTypeCompat.InvokeStatic(\"{Escape(qrCodeType)}\", \"{Escape(methodName)}\"{argumentList})";
+        return true;
     }
 
     private static bool TryTranslateSourceBooleanExpression(
@@ -2540,7 +3022,8 @@ internal static partial class ProjectGenerator
         TaskSemantic task,
         IReadOnlyList<DataObjectDef> dataObjects,
         out string code,
-        bool preferApplicationDatabaseBinding = false)
+        bool preferApplicationDatabaseBinding = false,
+        string? operandExpectedReturnTypeHint = null)
     {
         code = "";
         if (!TrySplitTopLevelXpaComparisonExpression(syntax, out var left, out var comparisonOperator, out var right))
@@ -2583,7 +3066,12 @@ internal static partial class ProjectGenerator
             if (!string.IsNullOrWhiteSpace(rightDatabaseExpectedType))
                 rightApplicationExpectedType = rightDatabaseExpectedType;
         }
-        var dominantExpectedType = string.IsNullOrWhiteSpace(matchedExpectedType)
+        var hintedExpectedType = NormalizeReturnTypeToken(operandExpectedReturnTypeHint);
+        if (!IsSourceScalarReturnType(hintedExpectedType))
+            hintedExpectedType = "";
+        var dominantExpectedType = !string.IsNullOrWhiteSpace(hintedExpectedType)
+            ? hintedExpectedType
+            : string.IsNullOrWhiteSpace(matchedExpectedType)
             ? ResolveDominantComparisonExpectedReturnType(left, leftType, right, rightType)
             : "";
         var leftExpectedType = !string.IsNullOrWhiteSpace(leftApplicationExpectedType)
@@ -2600,14 +3088,92 @@ internal static partial class ProjectGenerator
             : !string.IsNullOrWhiteSpace(matchedExpectedType)
                 ? matchedExpectedType
                 : ResolveCounterpartComparisonExpectedReturnType(right, rightType, leftType, task, dataObjects);
-        var leftCode = TranslateSourceBooleanScalarOperand(left, task, dataObjects, leftExpectedType, preferApplicationDatabaseBinding);
-        var rightCode = TranslateSourceBooleanScalarOperand(right, task, dataObjects, rightExpectedType, preferApplicationDatabaseBinding);
+        var leftOperand = TranslateSourceBooleanScalarOperandExpression(left, task, dataObjects, leftExpectedType, preferApplicationDatabaseBinding);
+        var rightOperand = TranslateSourceBooleanScalarOperandExpression(right, task, dataObjects, rightExpectedType, preferApplicationDatabaseBinding);
+        var leftCode = leftOperand.Code;
+        var rightCode = rightOperand.Code;
         code = $"{leftCode} {comparisonOperator} {rightCode}";
         code = CollapseRedundantScalarCastWrappersDeep(code);
         return true;
     }
 
+    private static bool TryTranslateSourceIfBranchComparisonCondition(
+        string conditionSyntax,
+        string trueBranchSyntax,
+        string falseBranchSyntax,
+        string branchReturnType,
+        TaskSemantic task,
+        IReadOnlyList<DataObjectDef> dataObjects,
+        out string code,
+        bool preferApplicationDatabaseBinding = false)
+    {
+        code = "";
+        var expected = NormalizeReturnTypeToken(branchReturnType);
+        if (!IsSourceScalarReturnType(expected) ||
+            !TrySplitTopLevelXpaComparisonExpression(conditionSyntax, out var left, out _, out var right))
+        {
+            return false;
+        }
+
+        var leftMatchesTrue = SourceSyntaxEquivalent(left, trueBranchSyntax);
+        var rightMatchesFalse = SourceSyntaxEquivalent(right, falseBranchSyntax);
+        var leftMatchesFalse = SourceSyntaxEquivalent(left, falseBranchSyntax);
+        var rightMatchesTrue = SourceSyntaxEquivalent(right, trueBranchSyntax);
+        if ((!leftMatchesTrue || !rightMatchesFalse) &&
+            (!leftMatchesFalse || !rightMatchesTrue))
+        {
+            return false;
+        }
+
+        return TryTranslateSourceComparisonExpression(
+            conditionSyntax,
+            task,
+            dataObjects,
+            out code,
+            preferApplicationDatabaseBinding,
+            expected);
+    }
+
+    private static bool SourceSyntaxEquivalent(string left, string right)
+        => string.Equals(
+            NormalizeSourceSyntaxForEquivalence(left),
+            NormalizeSourceSyntaxForEquivalence(right),
+            StringComparison.OrdinalIgnoreCase);
+
+    private static string NormalizeSourceSyntaxForEquivalence(string syntax)
+    {
+        var value = StripRedundantOuterParentheses(CompleteSourceGrouping(WebUtility.HtmlDecode(syntax ?? "").Trim()));
+        if (string.IsNullOrWhiteSpace(value))
+            return "";
+
+        var sb = new StringBuilder(value.Length);
+        for (var i = 0; i < value.Length; i++)
+        {
+            if (IsQuotedSegmentStart(value, i))
+            {
+                if (!TryReadQuotedSegmentEnd(value, i, out var quoteEnd))
+                    return value;
+                sb.Append(value, i, quoteEnd - i + 1);
+                i = quoteEnd;
+                continue;
+            }
+
+            if (!char.IsWhiteSpace(value[i]))
+                sb.Append(value[i]);
+        }
+
+        return sb.ToString();
+    }
+
     private static string TranslateSourceBooleanScalarOperand(
+        string syntax,
+        TaskSemantic task,
+        IReadOnlyList<DataObjectDef> dataObjects,
+        string expectedReturnType = "",
+        bool preferApplicationDatabaseBinding = false)
+        => TranslateSourceBooleanScalarOperandExpression(syntax, task, dataObjects, expectedReturnType, preferApplicationDatabaseBinding).Code;
+
+    private static SourceFunctionArgumentExpression TranslateSourceBooleanScalarOperandExpression(
         string syntax,
         TaskSemantic task,
         IReadOnlyList<DataObjectDef> dataObjects,
@@ -2642,15 +3208,35 @@ internal static partial class ProjectGenerator
         }
 
         if (!string.IsNullOrWhiteSpace(normalizedExpectedReturnType))
-            return TranslateSourceFunctionArgument(syntax, normalizedExpectedReturnType, task, dataObjects, 0, preferApplicationDatabaseBinding).Trim();
+            return TranslateSourceFunctionArgumentExpression(syntax, normalizedExpectedReturnType, task, dataObjects, 0, preferApplicationDatabaseBinding);
 
         if (TryTranslateWholeKnownSourceFunctionCall(syntax, task, dataObjects, out var sourceFunctionTranslated, preferApplicationDatabaseBinding: preferApplicationDatabaseBinding))
-            return sourceFunctionTranslated.Code.Trim();
+        {
+            var sourceReturnType = NormalizeReturnTypeToken(sourceFunctionTranslated.SourceReturnType);
+            return new SourceFunctionArgumentExpression(
+                sourceFunctionTranslated.Code.Trim(),
+                sourceReturnType,
+                sourceReturnType,
+                "",
+                string.IsNullOrWhiteSpace(sourceFunctionTranslated.EvidenceKind)
+                    ? "source-comparison-function-operand"
+                    : sourceFunctionTranslated.EvidenceKind);
+        }
 
         var translated = NormalizeDateConstructorMappings(TranslateXpaExpressionToCSharp(syntax.Trim(), task, dataObjects));
         translated = NormalizeVarSetValueExpressions(translated);
         translated = StripRedundantOuterParentheses(translated.Trim());
-        return translated.Trim();
+        var sourceType = NormalizeReturnTypeToken(ResolveSourceExpressionReturnType(syntax, task, dataObjects, 0));
+        if (string.IsNullOrWhiteSpace(sourceType) &&
+            TryResolveTranslatedSourceBindingReturnType(translated, task, out var translatedReturnType))
+            sourceType = NormalizeReturnTypeToken(translatedReturnType);
+
+        return new SourceFunctionArgumentExpression(
+            translated.Trim(),
+            sourceType,
+            sourceType,
+            "",
+            "source-comparison-operand");
     }
 
     private static bool TryResolveDeclaredSourceBindingReturnTypeForToken(
@@ -2785,6 +3371,10 @@ internal static partial class ProjectGenerator
 
         if (IsSourceTimeLiteral(leftSyntax) || IsSourceTimeLiteral(rightSyntax))
             return "Time";
+
+        if (((left is "Number" && (rightIsDate || rightIsTime) && !IsSourceEmptyLiteralLike(leftSyntax)) ||
+             (right is "Number" && (leftIsDate || leftIsTime) && !IsSourceEmptyLiteralLike(rightSyntax))))
+            return "Number";
 
         return "";
     }
@@ -3806,10 +4396,10 @@ internal static partial class ProjectGenerator
             right is XpaType.Text or XpaType.Blob)
             return false;
 
-        if (arithmeticOperator is not ("+" or "-" or "*" or "/" or "%"))
+        if (arithmeticOperator is not ("+" or "-" or "*" or "/" or "%" or "^"))
             return false;
 
-        if (arithmeticOperator is "*" or "/" or "%")
+        if (arithmeticOperator is "*" or "/" or "%" or "^")
             return IsNumericOperatorSourceType(left) &&
                    IsNumericOperatorSourceType(right);
 
@@ -4069,7 +4659,7 @@ internal static partial class ProjectGenerator
                 continue;
             }
 
-            if (depth != 0 || ch is not ('+' or '-' or '*' or '/' or '%' or '&'))
+            if (depth != 0 || ch is not ('+' or '-' or '*' or '/' or '%' or '&' or '^'))
                 continue;
 
             if (ch is '+' or '-')

@@ -441,7 +441,8 @@ private static bool MatchesWholeWord(string text, int startIndex, string word, o
     var prev = startIndex > 0 ? text[startIndex - 1] : '\0';
     var nextIndex = startIndex + word.Length;
     var next = nextIndex < text.Length ? text[nextIndex] : '\0';
-    if ((char.IsLetterOrDigit(prev) || prev == '_') || (char.IsLetterOrDigit(next) || next == '_'))
+    if ((char.IsLetterOrDigit(prev) || prev == '_' || prev == '.') ||
+        (char.IsLetterOrDigit(next) || next == '_' || next == '.'))
         return false;
 
     endIndex = nextIndex;

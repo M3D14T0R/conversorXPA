@@ -39,6 +39,8 @@ internal static partial class ProjectGenerator
             WriteXmlCompatAsset(outputLayout.OutputRoot, appNamespace);
         if (UsesHandlingGuiCompat(parsed))
             WriteHandlingGuiCompatAsset(outputLayout.OutputRoot, appNamespace);
+        if (UsesViewCompat(parsed))
+            WriteViewCompatAsset(outputLayout.OutputRoot, appNamespace);
         if (UsesExternalTypeCompat(parsed))
             WriteExternalTypeCompatAsset(outputLayout.OutputRoot, appNamespace);
         WriteDotNetByRefInteropAsset(outputLayout.OutputRoot, appNamespace, parsed);
@@ -72,8 +74,7 @@ internal static partial class ProjectGenerator
             if (parallelTaskGeneration && skeletonTasks.Count > 1)
             {
                 var scheduledTasks = ScheduleParallelSkeletonTasks(skeletonTasks, parsed.Tasks);
-                var effectiveDegree = ResolveParallelSkeletonTaskDegree(scheduledTasks, Environment.ProcessorCount);
-                LogProgress($"Stage: task skeletons parallel -> enabled degree={effectiveDegree} requested={Environment.ProcessorCount} scheduled=largest-first");
+                LogProgress($"Stage: task skeletons parallel -> enabled {FormatParallelDegreePlan(scheduledTasks, Environment.ProcessorCount)}");
                 LogProgress($"Stage: task skeletons parallel schedule head -> {FormatParallelScheduleHead(scheduledTasks)}");
                 RunParallelSkeletonTaskQueue(
                     scheduledTasks,

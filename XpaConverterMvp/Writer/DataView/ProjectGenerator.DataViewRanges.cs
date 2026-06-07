@@ -105,10 +105,10 @@ internal static partial class ProjectGenerator
                 s.RangeMax.HasValue &&
                 s.RangeMin.Value == s.RangeMax.Value &&
                 TryResolveExpressionAsStringLiteralCode(t, s.RangeMin.Value, dataObjects, out _);
-            var cndRangeExpr = isDirectLiteralRange ? "" : ResolveCndRangeExpressionForSelect(s, t, dataObjects);
+            var cndRangeExpr = isDirectLiteralRange ? "" : ResolveCndRangeExpressionForSelect(s, fromCol, t, dataObjects);
             if (!string.IsNullOrWhiteSpace(cndRangeExpr))
             {
-                sb.AppendLine($"        Where.Add({cndRangeExpr.Replace("__FROMCOL__", fromCol)});");
+                sb.AppendLine($"        Where.Add({cndRangeExpr});");
                 emittedRangeWhere = true;
                 continue;
             }
@@ -386,9 +386,9 @@ internal static partial class ProjectGenerator
             select.RangeMax.HasValue &&
             select.RangeMin.Value == select.RangeMax.Value &&
             TryResolveExpressionAsStringLiteralCode(task, select.RangeMin.Value, dataObjects, out _);
-        var cndRangeExpr = isDirectLiteralRange ? "" : ResolveCndRangeExpressionForSelect(select, task, dataObjects);
+        var cndRangeExpr = isDirectLiteralRange ? "" : ResolveCndRangeExpressionForSelect(select, fromCol, task, dataObjects);
         if (!string.IsNullOrWhiteSpace(cndRangeExpr))
-            return cndRangeExpr.Replace("__FROMCOL__", fromCol);
+            return cndRangeExpr;
 
         if (select.RangeMin.HasValue && select.RangeMax.HasValue)
         {
@@ -438,18 +438,64 @@ internal static partial class ProjectGenerator
                 string.IsNullOrWhiteSpace(expr.Syntax))
                 continue;
 
-            var m = Regex.Match(expr.Syntax, @"^\s*(?<token>[A-Za-z]+)\s*=\s*(?<rhs>.+?)\s*$");
-            if (!m.Success)
+            var sourceSyntax = expr.Syntax.Trim();
+            if (TrySplitTopLevelXpaBooleanBinaryExpression(sourceSyntax, out var booleanLeft, out var booleanOperator, out var booleanRight))
+            {
+                if (string.Equals(booleanOperator, "&&", StringComparison.Ordinal) &&
+                    TrySplitSimpleVarRangeEquality(booleanLeft, out var rangeToken, out var rangeSource))
+                {
+                    var rangeLeftExpr = ResolveExpressionOrdinalBinding(rangeToken, task, _allTasks ?? Array.Empty<TaskSemantic>(), dataObjects);
+                    if (string.IsNullOrWhiteSpace(rangeLeftExpr))
+                        continue;
+
+                    var rangeValueExpr = TryCreateFilterComparisonContext(task, rangeLeftExpr, out var rangeComparisonContext)
+                        ? ResolveSourceFragmentCode(rangeSource, task, dataObjects, rangeComparisonContext)
+                        : ResolveSourceFragmentCode(rangeSource, task, dataObjects, CreateExpectedEmissionContext(default));
+                    var conditionExpr = ResolveSourceFragmentCode(booleanRight, task, dataObjects, CreateBooleanConditionEmissionContext());
+                    if (!string.IsNullOrWhiteSpace(rangeValueExpr) && !string.IsNullOrWhiteSpace(conditionExpr))
+                    {
+                        if (string.Equals(rangeSource, "Date()", StringComparison.OrdinalIgnoreCase))
+                            rangeValueExpr = "db.Date()";
+                        sb.AppendLine($"        Where.Add(CndRange(() => {conditionExpr}, {BuildFilterIsEqualTo(task, rangeLeftExpr, rangeValueExpr)}));");
+                    }
+                    continue;
+                }
+
+                var predicateExpr = ResolveSourceFragmentCode(sourceSyntax, task, dataObjects, CreateBooleanConditionEmissionContext());
+                if (!string.IsNullOrWhiteSpace(predicateExpr))
+                    sb.AppendLine($"        Where.Add(() => {predicateExpr});");
+                continue;
+            }
+
+            if (!TrySplitSimpleVarRangeEquality(sourceSyntax, out var token, out var rhsSource))
                 continue;
 
-            var leftExpr = ResolveExpressionOrdinalBinding(m.Groups["token"].Value, task, _allTasks ?? Array.Empty<TaskSemantic>(), dataObjects);
+            var leftExpr = ResolveExpressionOrdinalBinding(token, task, _allTasks ?? Array.Empty<TaskSemantic>(), dataObjects);
             if (string.IsNullOrWhiteSpace(leftExpr))
                 continue;
 
-            var rhsExpr = TranslateXpaExpressionToCSharp(m.Groups["rhs"].Value.Trim(), task, dataObjects);
+            if (TrySplitTopLevelXpaBooleanBinaryExpression(rhsSource, out var rhsRangeSource, out var rhsRangeOperator, out var rhsConditionSource) &&
+                string.Equals(rhsRangeOperator, "&&", StringComparison.Ordinal))
+            {
+                var rhsValueExpr = TryCreateFilterComparisonContext(task, leftExpr, out var splitComparisonContext)
+                    ? ResolveSourceFragmentCode(rhsRangeSource, task, dataObjects, splitComparisonContext)
+                    : TranslateXpaExpressionToCSharp(rhsRangeSource, task, dataObjects);
+                var rhsConditionExpr = ResolveSourceFragmentCode(rhsConditionSource, task, dataObjects, CreateBooleanConditionEmissionContext());
+                if (!string.IsNullOrWhiteSpace(rhsValueExpr) && !string.IsNullOrWhiteSpace(rhsConditionExpr))
+                {
+                    if (string.Equals(rhsRangeSource, "Date()", StringComparison.OrdinalIgnoreCase))
+                        rhsValueExpr = "db.Date()";
+                    sb.AppendLine($"        Where.Add(CndRange(() => {rhsConditionExpr}, {BuildFilterIsEqualTo(task, leftExpr, rhsValueExpr)}));");
+                }
+                continue;
+            }
+
+            var rhsExpr = TryCreateFilterComparisonContext(task, leftExpr, out var comparisonContext)
+                ? ResolveSourceFragmentCode(rhsSource, task, dataObjects, comparisonContext)
+                : TranslateXpaExpressionToCSharp(rhsSource, task, dataObjects);
             if (string.IsNullOrWhiteSpace(rhsExpr))
                 continue;
-            if (string.Equals(m.Groups["rhs"].Value.Trim(), "Date()", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(rhsSource, "Date()", StringComparison.OrdinalIgnoreCase))
                 rhsExpr = "db.Date()";
 
             var normalizedRhsExpr = StripRedundantOuterParentheses(rhsExpr);
@@ -463,6 +509,55 @@ internal static partial class ProjectGenerator
                 sb.AppendLine($"        Where.Add(\"{{0}} = {{1}}\", {leftExpr}, {rhsExpr});");
             }
         }
+    }
+
+    private static bool TrySplitSimpleVarRangeEquality(string syntax, out string token, out string valueSource)
+    {
+        token = "";
+        valueSource = "";
+        if (string.IsNullOrWhiteSpace(syntax))
+            return false;
+
+        var trimmed = syntax.Trim();
+        var depth = 0;
+        for (var i = 0; i < trimmed.Length; i++)
+        {
+            if (IsQuotedSegmentStart(trimmed, i))
+            {
+                if (!TryReadQuotedSegmentEnd(trimmed, i, out var quoteEnd))
+                    return false;
+                i = quoteEnd;
+                continue;
+            }
+
+            var ch = trimmed[i];
+            if (ch == '(')
+            {
+                depth++;
+                continue;
+            }
+
+            if (ch == ')')
+            {
+                if (depth > 0)
+                    depth--;
+                continue;
+            }
+
+            if (depth != 0 || ch != '=')
+                continue;
+
+            var before = i > 0 ? trimmed[i - 1] : '\0';
+            var after = i + 1 < trimmed.Length ? trimmed[i + 1] : '\0';
+            if (before is '<' or '>' or '=' || after == '=')
+                continue;
+
+            token = trimmed[..i].Trim();
+            valueSource = trimmed[(i + 1)..].Trim();
+            return Regex.IsMatch(token, @"^[A-Za-z]+$") && !string.IsNullOrWhiteSpace(valueSource);
+        }
+
+        return false;
     }
 
 
@@ -569,9 +664,9 @@ internal static partial class ProjectGenerator
                task.ResourceDbs.Count > 0;
     }
 
-    private static string ResolveCndRangeExpressionForSelect(TaskLogicSelectDef select, TaskSemantic task, IReadOnlyList<DataObjectDef> dataObjects)
+    private static string ResolveCndRangeExpressionForSelect(TaskLogicSelectDef select, string fromCol, TaskSemantic task, IReadOnlyList<DataObjectDef> dataObjects)
     {
-        if (!select.HasRange || !select.RangeMin.HasValue)
+        if (!select.HasRange || !select.RangeMin.HasValue || string.IsNullOrWhiteSpace(fromCol))
             return "";
         var expr = ResolveExpressionCode(select.RangeMin.Value.ToString(), task, dataObjects);
         if (string.IsNullOrWhiteSpace(expr))
@@ -579,10 +674,10 @@ internal static partial class ProjectGenerator
         if (!TrySplitCndRangeExpression(expr, out var cond, out var val))
             return "";
         cond = EmitExpressionForContext(cond, task, CreateBooleanConditionEmissionContext());
-        val = NormalizeComparisonRightExpression(task, "__FROMCOL__", val);
+        val = NormalizeComparisonRightExpression(task, fromCol, val);
         if (val.Contains("_parent.", StringComparison.Ordinal))
-            return BuildFilterBindEqualTo(task, "__FROMCOL__", val);
-        return $"CndRange(() => {cond}, {BuildFilterIsEqualTo(task, "__FROMCOL__", val)})";
+            return BuildFilterBindEqualTo(task, fromCol, val);
+        return $"CndRange(() => {cond}, {BuildFilterIsEqualTo(task, fromCol, val)})";
     }
 
     private static bool TrySplitCndRangeExpression(string expr, out string cond, out string val)

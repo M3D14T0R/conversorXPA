@@ -7,9 +7,17 @@ namespace XpaConverterMvp;
 
 internal static partial class ProjectGenerator
 {
+    private readonly record struct SnippetColumnArgumentCandidate(
+        TaskSemantic OwnerTask,
+        TaskResourceColumnDef Resource,
+        string MemberName,
+        string TargetExpression);
+
+    private readonly record struct SnippetMethodSignature(string ReturnType, string Name, string Parameters);
+
     private static string ResolveSnippetClassName(TaskSemantic task, TaskInvokeDef targetInvoke, IReadOnlyList<TaskSemantic> allTasks)
     {
-        var classBase = ResolveTaskClassName(task, allTasks) + "Snippet";
+        var classBase = ResolveSnippetOwnerClassBaseName(task, allTasks) + "Snippet";
         var targetIndex = EnumerateTaskInvokes(task)
             .Where(i => i.OperationType == "." && !string.IsNullOrWhiteSpace(i.SnippetCode) && !string.IsNullOrWhiteSpace(i.FunctionName))
             .ToList()
@@ -42,6 +50,24 @@ internal static partial class ProjectGenerator
         return classBase;
     }
 
+    private static string ResolveSnippetOwnerClassBaseName(TaskSemantic task, IReadOnlyList<TaskSemantic> allTasks)
+    {
+        var chain = new List<string>();
+        var current = task;
+        while (current is not null)
+        {
+            if (!current.MainProgram)
+                chain.Add(ResolveTaskClassName(current, allTasks));
+
+            current = GetTaskByOrdinal(current.ParentOrdinal, allTasks);
+        }
+
+        chain.Reverse();
+        return chain.Count == 0
+            ? ResolveTaskClassName(task, allTasks)
+            : string.Concat(chain);
+    }
+
     private static bool SameSnippetInvokeIdentity(TaskInvokeDef left, TaskInvokeDef right)
     {
         return string.Equals(left.XmlTrace, right.XmlTrace, StringComparison.OrdinalIgnoreCase)
@@ -51,19 +77,39 @@ internal static partial class ProjectGenerator
                && left.ArgumentVariables.SequenceEqual(right.ArgumentVariables, StringComparer.OrdinalIgnoreCase);
     }
 
+    private static string ResolveSnippetCallableFunctionName(string? snippetCode, string requestedFunctionName)
+    {
+        if (string.IsNullOrWhiteSpace(snippetCode))
+            return string.IsNullOrWhiteSpace(requestedFunctionName) ? "func" : requestedFunctionName;
+
+        var methods = GetSnippetMethodSignatures(snippetCode);
+        if (methods.Count == 0)
+            return string.IsNullOrWhiteSpace(requestedFunctionName) ? "func" : requestedFunctionName;
+
+        if (!string.IsNullOrWhiteSpace(requestedFunctionName) &&
+            methods.Any(m => string.Equals(m.Name, requestedFunctionName, StringComparison.OrdinalIgnoreCase)))
+            return requestedFunctionName;
+
+        if (methods.Count == 1)
+            return methods[0].Name;
+
+        return string.IsNullOrWhiteSpace(requestedFunctionName) ? "func" : requestedFunctionName;
+    }
+
     private static bool TryGetSnippetFunctionParameters(string? snippetCode, string functionName, out List<string> parameters)
     {
         parameters = new List<string>();
         if (string.IsNullOrWhiteSpace(snippetCode) || string.IsNullOrWhiteSpace(functionName))
             return false;
-        var rx = new Regex(@"\b" + Regex.Escape(functionName) + @"\s*\(([^)]*)\)", RegexOptions.IgnoreCase);
-        var m = rx.Match(snippetCode);
-        if (!m.Success)
+
+        var method = GetSnippetMethodSignatures(snippetCode)
+            .FirstOrDefault(m => string.Equals(m.Name, functionName, StringComparison.OrdinalIgnoreCase));
+        if (string.IsNullOrWhiteSpace(method.Name))
             return false;
-        var args = m.Groups[1].Value.Trim();
+        var args = method.Parameters.Trim();
         if (string.IsNullOrWhiteSpace(args))
             return true;
-        parameters = args.Split(',').Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
+        parameters = SplitSnippetParameters(args).Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
         return true;
     }
 
@@ -73,17 +119,35 @@ internal static partial class ProjectGenerator
         if (string.IsNullOrWhiteSpace(snippetCode) || string.IsNullOrWhiteSpace(functionName))
             return false;
 
-        var rx = new Regex(
-            @"\b(?:public|private|internal|protected|static|extern|unsafe|async|\s)+(?<type>[A-Za-z_][A-Za-z0-9_<>\.\[\]]*)\s+" +
-            Regex.Escape(functionName) +
-            @"\s*\(",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        var m = rx.Match(snippetCode);
-        if (!m.Success)
+        var method = GetSnippetMethodSignatures(snippetCode)
+            .FirstOrDefault(m => string.Equals(m.Name, functionName, StringComparison.OrdinalIgnoreCase));
+        if (string.IsNullOrWhiteSpace(method.Name))
             return false;
 
-        returnType = MapSnippetClrTypeToExpressionReturnType(ResolveSnippetParameterClrType(m.Groups["type"].Value, ""));
+        returnType = MapSnippetClrTypeToExpressionReturnType(ResolveSnippetParameterClrType(method.ReturnType, ""));
         return !string.IsNullOrWhiteSpace(returnType);
+    }
+
+    private static List<SnippetMethodSignature> GetSnippetMethodSignatures(string snippetCode)
+    {
+        var methods = new List<SnippetMethodSignature>();
+        if (string.IsNullOrWhiteSpace(snippetCode))
+            return methods;
+
+        var rx = new Regex(
+            @"\bpublic\s+static\s+(?<type>[A-Za-z_][A-Za-z0-9_<>,\.\[\]\?]*)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*\((?<params>[^)]*)\)\s*\{",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        foreach (Match match in rx.Matches(snippetCode))
+        {
+            var returnType = match.Groups["type"].Value.Trim();
+            var name = match.Groups["name"].Value.Trim();
+            var parameters = match.Groups["params"].Value.Trim();
+            if (returnType.Length == 0 || name.Length == 0)
+                continue;
+            methods.Add(new SnippetMethodSignature(returnType, name, parameters));
+        }
+
+        return methods;
     }
 
     private static string MapSnippetClrTypeToExpressionReturnType(string clrType)
@@ -236,12 +300,12 @@ internal static partial class ProjectGenerator
         valueType = "";
         readExpr = "";
         writeExpr = "";
-        foreach (var resource in task.ResourcesSemantic.Ordered)
+        foreach (var candidate in EnumerateSnippetColumnArgumentCandidates(task))
         {
-            var memberName = ResolveTaskResourceMemberName(task, resource);
+            var resource = candidate.Resource;
             if (IsDotNetTaskResource(resource))
                 continue;
-            if (!SnippetArgumentReferencesResource(task, dataObjects, argExpression, argumentDef, memberName, resource))
+            if (!SnippetArgumentReferencesResource(task, dataObjects, argExpression, argumentDef, candidate.TargetExpression, candidate.MemberName, resource))
                 continue;
 
             valueType = ResolveSnippetParameterClrType(parameter, resource.AttrObj switch
@@ -253,15 +317,80 @@ internal static partial class ProjectGenerator
                 "FIELD_BLOB" => "byte[]",
                 _ => "Text"
             });
-            targetExpr = memberName;
-            readExpr = string.Equals(valueType, "string", StringComparison.Ordinal)
-                ? $"{memberName}.Value.ToString()"
-                : $"{memberName}.Value";
-            writeExpr = $"{memberName}.Value = __TEMP__";
+            targetExpr = candidate.TargetExpression;
+            readExpr = BuildSnippetColumnReadExpression(candidate.TargetExpression, resource, valueType);
+            writeExpr = BuildSnippetColumnWriteBackExpression(task, candidate.TargetExpression, valueType);
             return true;
         }
 
         return false;
+    }
+
+    private static IEnumerable<SnippetColumnArgumentCandidate> EnumerateSnippetColumnArgumentCandidates(TaskSemantic task)
+    {
+        foreach (var resource in task.ResourcesSemantic.Ordered)
+        {
+            var memberName = ResolveTaskResourceMemberName(task, resource);
+            yield return new SnippetColumnArgumentCandidate(task, resource, memberName, memberName);
+        }
+
+        if (_allTasks is null)
+            yield break;
+
+        var owner = task;
+        var parentOrdinal = task.ParentOrdinal;
+        var prefix = "_parent.";
+        while (parentOrdinal.HasValue)
+        {
+            var parent = GetTaskByOrdinal(parentOrdinal, _allTasks);
+            if (parent is null || ReferenceEquals(parent, owner))
+                yield break;
+
+            foreach (var resource in parent.ResourcesSemantic.Ordered)
+            {
+                var memberName = ResolveTaskResourceMemberName(parent, resource);
+                yield return new SnippetColumnArgumentCandidate(parent, resource, memberName, prefix + memberName);
+            }
+
+            owner = parent;
+            parentOrdinal = parent.ParentOrdinal;
+            prefix += "_parent.";
+        }
+    }
+
+    private static string BuildSnippetColumnReadExpression(string targetExpression, TaskResourceColumnDef resource, string valueType)
+    {
+        if (IsSnippetTextParameter(valueType))
+        {
+            if (string.Equals(resource.AttrObj, "FIELD_BLOB", StringComparison.OrdinalIgnoreCase))
+                return $"u.ByteArrayToText({targetExpression}).ToString()";
+            return $"{targetExpression}.Value.ToString()";
+        }
+
+        return $"{targetExpression}.Value";
+    }
+
+    private static string BuildSnippetColumnWriteBackExpression(TaskSemantic task, string targetExpression, string valueType)
+    {
+        var sourceReturnType = MapSnippetClrTypeToExpressionReturnType(valueType);
+        var targetInfo = ResolveTargetValueInfo(task, null, targetExpression);
+        var context = CreateAssignmentEmissionContext(targetInfo, targetExpression);
+        var expectedReturnType = ResolveReturnTypeForExpectedContext(context.Expected);
+        var valueExpression = "__TEMP__";
+        if (!string.IsNullOrWhiteSpace(sourceReturnType) &&
+            !string.IsNullOrWhiteSpace(expectedReturnType))
+        {
+            var evidence = new[]
+            {
+                CreateEvidence(sourceReturnType, EmittedExpressionTypeEvidenceKind.FunctionContract, "snippet-ref-out"),
+                CreateEvidence(expectedReturnType, EmittedExpressionTypeEvidenceKind.SinkExpectedType, targetExpression, isExpectedType: true)
+            };
+            var request = new EmittedExpressionRequest(valueExpression, context.SinkKind.ToString(), expectedReturnType, targetExpression);
+            if (StrictEmittedExpressionEngine.TryEmitFromReliableEvidence(request, evidence, out var emitted))
+                valueExpression = emitted.Code;
+        }
+
+        return BuildReturnAssignmentExpression("", targetExpression, valueExpression, task, null).Trim().TrimEnd(';');
     }
 
     private static bool SnippetArgumentReferencesResource(
@@ -269,10 +398,17 @@ internal static partial class ProjectGenerator
         IReadOnlyList<DataObjectDef> dataObjects,
         string argExpression,
         TaskArgumentDef? argumentDef,
+        string targetExpression,
         string memberName,
         TaskResourceColumnDef resource)
     {
-        if (string.Equals(argExpression, memberName, StringComparison.Ordinal))
+        if (string.Equals(argExpression, targetExpression, StringComparison.Ordinal) ||
+            string.Equals(argExpression, memberName, StringComparison.Ordinal))
+            return true;
+
+        if (TryUnwrapDirectParameterBindingExpression(argExpression, out var directBinding) &&
+            (string.Equals(directBinding, targetExpression, StringComparison.Ordinal) ||
+             string.Equals(directBinding, memberName, StringComparison.Ordinal)))
             return true;
 
         var variable = argumentDef?.Variable?.Trim();
@@ -283,11 +419,13 @@ internal static partial class ProjectGenerator
         if (IsAlphabeticBindingToken(normalizedVariable))
         {
             var sourceBinding = ResolveExpressionOrdinalBinding(normalizedVariable, task, _allTasks ?? Array.Empty<TaskSemantic>(), dataObjects);
-            if (string.Equals(sourceBinding, memberName, StringComparison.Ordinal))
+            if (string.Equals(sourceBinding, targetExpression, StringComparison.Ordinal) ||
+                string.Equals(sourceBinding, memberName, StringComparison.Ordinal))
                 return true;
         }
 
         return string.Equals(variable, resource.Name, StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(variable, targetExpression, StringComparison.OrdinalIgnoreCase) ||
                string.Equals(variable, memberName, StringComparison.OrdinalIgnoreCase);
     }
 

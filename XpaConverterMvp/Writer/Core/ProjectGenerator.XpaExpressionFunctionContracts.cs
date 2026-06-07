@@ -34,6 +34,7 @@ internal static partial class ProjectGenerator
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             ["DNEXCEPTIONOCCURRED"] = "Bool",
+            ["IMAGERELOAD"] = "Bool",
             ["FILEEXIST"] = "Bool",
             ["CLIENTFILEEXIST"] = "Bool",
             ["FILEDELETE"] = "Bool",
@@ -232,8 +233,8 @@ internal static partial class ProjectGenerator
             ["SECOND"] = "Number",
             ["NDOW"] = "Number",
             ["NMONTH"] = "Number",
-            ["BOY"] = "Number",
-            ["EOY"] = "Number",
+            ["BOY"] = "Date",
+            ["EOY"] = "Date",
             ["DBNAME"] = "Text",
             ["INDEX"] = "Number",
             ["TASKINSTANCE"] = "Number",
@@ -388,6 +389,15 @@ internal static partial class ProjectGenerator
             return true;
         }
 
+        if (IsJavaGetStaticFunctionName(normalizedFunction) &&
+            args.Count >= 2 &&
+            TryResolveJavaSignatureReturnType(args[1], out returnType))
+        {
+            XpaFunctionReturnContractCache.TryAdd(cacheKey, returnType);
+            Interlocked.Increment(ref _xpaFunctionContractReturnHitCount);
+            return true;
+        }
+
         if (!KnownXpaFunctionReturnTypes.TryGetValue(normalizedFunction, out var knownReturnType) ||
             string.IsNullOrWhiteSpace(knownReturnType))
         {
@@ -400,6 +410,80 @@ internal static partial class ProjectGenerator
         Interlocked.Increment(ref _xpaFunctionContractReturnHitCount);
         return true;
     }
+
+    private static bool TryResolveJavaSignatureReturnType(string signatureExpression, out string returnType)
+    {
+        returnType = "";
+        if (!TryGetWholeCSharpStringLiteralValue(signatureExpression, out var signature) ||
+            string.IsNullOrWhiteSpace(signature))
+            return false;
+
+        var normalized = signature.Trim();
+        returnType = normalized switch
+        {
+            "Z" => "Bool",
+            "B" or "S" or "I" or "J" or "F" or "D" => "Number",
+            "C" => "Text",
+            "Ljava/lang/String;" => "Text",
+            _ => ""
+        };
+
+        return !string.IsNullOrWhiteSpace(returnType);
+    }
+
+    private static bool TryGetWholeCSharpStringLiteralValue(string expression, out string value)
+    {
+        value = "";
+        if (!TryGetWholeCSharpStringLiteral(expression, out var literalCode))
+            return false;
+
+        if (literalCode.StartsWith("@\"", StringComparison.Ordinal) &&
+            literalCode.EndsWith("\"", StringComparison.Ordinal) &&
+            literalCode.Length >= 3)
+        {
+            value = literalCode[2..^1].Replace("\"\"", "\"", StringComparison.Ordinal);
+            return true;
+        }
+
+        if (!literalCode.StartsWith("\"", StringComparison.Ordinal) ||
+            !literalCode.EndsWith("\"", StringComparison.Ordinal) ||
+            literalCode.Length < 2)
+            return false;
+
+        var sb = new System.Text.StringBuilder(literalCode.Length);
+        for (var i = 1; i < literalCode.Length - 1; i++)
+        {
+            var ch = literalCode[i];
+            if (ch != '\\' || i + 1 >= literalCode.Length - 1)
+            {
+                sb.Append(ch);
+                continue;
+            }
+
+            var escaped = literalCode[++i];
+            sb.Append(escaped switch
+            {
+                '"' => '"',
+                '\\' => '\\',
+                '0' => '\0',
+                'a' => '\a',
+                'b' => '\b',
+                'f' => '\f',
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                'v' => '\v',
+                _ => escaped
+            });
+        }
+
+        value = sb.ToString();
+        return true;
+    }
+
+    private static bool IsJavaGetStaticFunctionName(string normalizedFunction)
+        => string.Equals(normalizedFunction, "JGETSTATIC", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(normalizedFunction, "JAVACOMPAT.JGETSTATIC", StringComparison.OrdinalIgnoreCase);
 
     private static bool TryResolveXpaFunctionSourceArgumentReturnTypeContract(
         string functionName,
@@ -460,6 +544,8 @@ internal static partial class ProjectGenerator
             "ASTR" when argumentIndex is 0 or 1 => "Text",
             "DSTR" when argumentIndex == 0 => "Date",
             "TSTR" when argumentIndex == 0 => "Time",
+            "NOT" when argumentIndex == 0 => "Bool",
+            "DBNAME" when argumentIndex is 0 or 1 => "Number",
 
             "TRIM" or "LTRIM" or "RTRIM" or "UPPER" or "LOWER" or "FLIP" or "LEN"
                 when argumentIndex == 0 => "Text",
@@ -478,6 +564,7 @@ internal static partial class ProjectGenerator
             "FILELISTGET" or "CLIENTFILELISTGET" when argumentIndex is 0 or 1 => "Text",
             "FILELISTGET" or "CLIENTFILELISTGET" when argumentIndex == 2 => "Bool",
             "FILEEXIST" or "FILE2BLB" when argumentIndex == 0 => "Text",
+            "IMAGERELOAD" when argumentIndex == 0 => "Text",
             "BLB2FILE" when argumentIndex == 0 => "byte[]",
             "BLB2FILE" when argumentIndex == 1 => "Text",
             "BLOBTOBASE64" when argumentIndex == 0 => "byte[]",
@@ -538,6 +625,10 @@ internal static partial class ProjectGenerator
             "DVAL" when argumentIndex is 0 or 1 => "Text",
             "TVAL" when argumentIndex is 0 or 1 => "Text",
             "DBNAME" when argumentIndex is 0 or 1 => "Number",
+            "ABS" or "ACOS" or "ASIN" or "ATAN" or "COS" or "EXP" or "LOG" or "SIN" or "TAN"
+                when argumentIndex == 0 => "Number",
+            "MOD" when argumentIndex is 0 or 1 => "Number",
+            "ROUND" when argumentIndex >= 0 && argumentIndex <= 2 => "Number",
             "FIX" when argumentIndex >= 0 && argumentIndex <= 2 => "Number",
             "MTSTR" when argumentIndex == 0 => "Number",
             "MTSTR" when argumentIndex == 1 => "Text",

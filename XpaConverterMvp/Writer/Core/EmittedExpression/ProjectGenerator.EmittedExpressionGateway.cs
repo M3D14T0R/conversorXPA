@@ -11,7 +11,13 @@ internal static partial class ProjectGenerator
     private static readonly EmittedExpressionEngine StrictEmittedExpressionEngine = new();
     private static readonly ConcurrentDictionary<string, StrictEmissionCacheEntry> StrictEmissionCache = new(StringComparer.Ordinal);
 
-    private readonly record struct StrictEmissionCacheEntry(bool Success, string Code);
+    private readonly record struct StrictEmissionCacheEntry(
+        bool Success,
+        string Code,
+        string ReturnType = "",
+        XpaType XpaType = XpaType.Unknown,
+        EmittedExpressionTypeEvidenceKind EvidenceKind = default,
+        string EvidenceSourceKey = "");
 
     private static bool TryEmitThroughStrictEmittedExpression(
         string code,
@@ -20,6 +26,20 @@ internal static partial class ProjectGenerator
         out string emittedCode)
     {
         emittedCode = "";
+        if (!TryEmitThroughStrictEmittedExpressionTyped(code, task, context, out var emitted))
+            return false;
+
+        emittedCode = emitted.Code;
+        return true;
+    }
+
+    private static bool TryEmitThroughStrictEmittedExpressionTyped(
+        string code,
+        TaskSemantic task,
+        ExpressionEmissionContext context,
+        out StrictEmittedExpression emittedExpression)
+    {
+        emittedExpression = default;
         if (string.IsNullOrWhiteSpace(code))
             return false;
 
@@ -32,15 +52,55 @@ internal static partial class ProjectGenerator
             TrackExpressionEmissionAuditCacheHit(context, expectedReturnType, cached.Success);
             if (cached.Success)
             {
+                emittedExpression = new StrictEmittedExpression(
+                    cached.Code,
+                    cached.ReturnType,
+                    cached.XpaType,
+                    cached.EvidenceKind,
+                    cached.EvidenceSourceKey);
+                emittedExpression = ApplyStrictNestedTextArgumentBridges(
+                    emittedExpression,
+                    cleanCode,
+                    task,
+                    context,
+                    expectedReturnType);
                 TrackCriticalExternalCoercionIfBridgeChanged(
                     "EmittedExpression",
                     nameof(TryEmitThroughStrictEmittedExpression),
                     cleanCode,
-                    cached.Code,
+                    emittedExpression.Code,
                     string.Create(CultureInfo.InvariantCulture, $"cacheHit=true sink={context.SinkKind} expected={expectedReturnType} expr={TruncateTelemetryValue(cleanCode)}"));
             }
-            emittedCode = cached.Code;
             return cached.Success;
+        }
+
+        if (TryCreateNoOpStrictEmission(cleanCode, task, context, expectedReturnType, out emittedExpression))
+        {
+            emittedExpression = ApplyStrictNestedTextArgumentBridges(
+                emittedExpression,
+                cleanCode,
+                task,
+                context,
+                expectedReturnType);
+            StrictEmissionCache.TryAdd(
+                cacheKey,
+                new StrictEmissionCacheEntry(
+                    true,
+                    emittedExpression.Code,
+                    emittedExpression.ReturnType,
+                    emittedExpression.XpaType,
+                    emittedExpression.EvidenceKind,
+                    emittedExpression.EvidenceSourceKey));
+            TrackExpressionEmissionAudit(
+                task,
+                context,
+                cleanCode,
+                expectedReturnType,
+                success: true,
+                emittedExpression.ReturnType,
+                emittedExpression.EvidenceKind.ToString(),
+                "");
+            return true;
         }
 
         var evidence = BuildStrictEmittedExpressionEvidence(cleanCode, task, context);
@@ -52,6 +112,20 @@ internal static partial class ProjectGenerator
 
         if (!StrictEmittedExpressionEngine.TryEmitFromReliableEvidence(request, evidence, out var emitted))
         {
+            if (TryEmitStrictNestedTextBridges(cleanCode, task, context, expectedReturnType, out emittedExpression))
+            {
+                StrictEmissionCache.TryAdd(
+                    cacheKey,
+                    new StrictEmissionCacheEntry(
+                        true,
+                        emittedExpression.Code,
+                        emittedExpression.ReturnType,
+                        emittedExpression.XpaType,
+                        emittedExpression.EvidenceKind,
+                        emittedExpression.EvidenceSourceKey));
+                return true;
+            }
+
             var hasReliableSource = StrictEmittedExpressionEngine.TrySelectReliableSourceType(evidence, out var selected) &&
                                     selected.HasType;
             var sourceReturnType = hasReliableSource ? selected.ReturnType : "";
@@ -69,12 +143,17 @@ internal static partial class ProjectGenerator
             return false;
         }
 
-        emittedCode = emitted.Code;
+        emittedExpression = ApplyStrictNestedTextArgumentBridges(
+            emitted,
+            cleanCode,
+            task,
+            context,
+            expectedReturnType);
         TrackCriticalExternalCoercionIfBridgeChanged(
             "EmittedExpression",
             nameof(TryEmitThroughStrictEmittedExpression),
             cleanCode,
-            emittedCode,
+            emittedExpression.Code,
             string.Create(CultureInfo.InvariantCulture, $"sink={context.SinkKind} expected={expectedReturnType} source={emitted.ReturnType} sourceKind={emitted.EvidenceKind} expr={TruncateTelemetryValue(cleanCode)}"));
         TrackExpressionEmissionAudit(
             task,
@@ -82,10 +161,167 @@ internal static partial class ProjectGenerator
             cleanCode,
             expectedReturnType,
             success: true,
-            emitted.ReturnType,
-            emitted.EvidenceKind.ToString(),
+            emittedExpression.ReturnType,
+            emittedExpression.EvidenceKind.ToString(),
             "");
-        StrictEmissionCache.TryAdd(cacheKey, new StrictEmissionCacheEntry(true, emittedCode));
+        StrictEmissionCache.TryAdd(
+            cacheKey,
+            new StrictEmissionCacheEntry(
+                true,
+                emittedExpression.Code,
+                emittedExpression.ReturnType,
+                emittedExpression.XpaType,
+                emittedExpression.EvidenceKind,
+                emittedExpression.EvidenceSourceKey));
+        return true;
+    }
+
+    private static StrictEmittedExpression ApplyStrictNestedTextArgumentBridges(
+        StrictEmittedExpression emitted,
+        string originalCode,
+        TaskSemantic task,
+        ExpressionEmissionContext context,
+        string expectedReturnType)
+    {
+        if (string.IsNullOrWhiteSpace(emitted.Code))
+            return emitted;
+
+        var bridgedCode = RenderStrictFunctionArgumentBridges(emitted.Code, task);
+        if (string.Equals(bridgedCode, emitted.Code, StringComparison.Ordinal))
+            return emitted;
+
+        if (string.Equals(ScalarReturnType(CanonicalReturnType(expectedReturnType)), "Text", StringComparison.Ordinal))
+        {
+            TrackCriticalExternalCoercionIfBridgeChanged(
+                "EmittedExpression",
+                nameof(ApplyStrictNestedTextArgumentBridges),
+                originalCode,
+                bridgedCode,
+                string.Create(CultureInfo.InvariantCulture, $"sink={context.SinkKind} expected={expectedReturnType} expr={TruncateTelemetryValue(originalCode)}"));
+        }
+
+        return new StrictEmittedExpression(
+            bridgedCode,
+            emitted.ReturnType,
+            emitted.XpaType,
+            emitted.EvidenceKind,
+            emitted.EvidenceSourceKey);
+    }
+
+    private static bool TryEmitStrictNestedTextBridges(
+        string cleanCode,
+        TaskSemantic task,
+        ExpressionEmissionContext context,
+        string expectedReturnType,
+        out StrictEmittedExpression emittedExpression)
+    {
+        emittedExpression = default;
+        if (!string.Equals(ScalarReturnType(CanonicalReturnType(expectedReturnType)), "Text", StringComparison.Ordinal) ||
+            SplitTopLevelArithmeticExpression(cleanCode) is null)
+        {
+            return false;
+        }
+
+        var bridgedCode = RenderStrictFunctionArgumentBridges(cleanCode, task);
+        if (string.Equals(bridgedCode, cleanCode, StringComparison.Ordinal))
+            return false;
+
+        var normalizedReturnType = NormalizeReturnTypeToken(expectedReturnType);
+        var xpaType = XpaTypeEngine.MapExpectedToXpaType(GetValueReturnType(normalizedReturnType));
+        if (xpaType == XpaType.Unknown)
+            return false;
+
+        emittedExpression = new StrictEmittedExpression(
+            bridgedCode,
+            normalizedReturnType,
+            xpaType,
+            EmittedExpressionTypeEvidenceKind.FunctionContract,
+            "nested-text-bridges");
+        TrackCriticalExternalCoercionIfBridgeChanged(
+            "EmittedExpression",
+            nameof(TryEmitStrictNestedTextBridges),
+            cleanCode,
+            bridgedCode,
+            string.Create(CultureInfo.InvariantCulture, $"sink={context.SinkKind} expected={expectedReturnType} expr={TruncateTelemetryValue(cleanCode)}"));
+        TrackExpressionEmissionAudit(
+            task,
+            context,
+            cleanCode,
+            expectedReturnType,
+            success: true,
+            normalizedReturnType,
+            EmittedExpressionTypeEvidenceKind.FunctionContract.ToString(),
+            "");
+        return true;
+    }
+
+    private static bool TryCreateNoOpStrictEmission(
+        string cleanCode,
+        TaskSemantic task,
+        ExpressionEmissionContext context,
+        string expectedReturnType,
+        out StrictEmittedExpression emittedExpression)
+    {
+        emittedExpression = default;
+        if (string.IsNullOrWhiteSpace(cleanCode))
+            return false;
+
+        string returnType;
+        EmittedExpressionTypeEvidenceKind evidenceKind;
+        string evidenceSourceKey;
+        if (string.IsNullOrWhiteSpace(expectedReturnType))
+        {
+            if (TryParseFunctionCall(cleanCode, out var functionName, out var args) &&
+                TryRenderStrictDbNameLiteralContract(functionName, args, out var renderedDbName))
+            {
+                emittedExpression = new StrictEmittedExpression(
+                    renderedDbName,
+                    "Text",
+                    XpaType.Text,
+                    EmittedExpressionTypeEvidenceKind.FunctionContract,
+                    "function:DBName:literal");
+                return true;
+            }
+
+            if (!TryResolveLiteralExpectedType(cleanCode, out var literalExpected))
+                return false;
+
+            returnType = ResolveReturnTypeForExpectedContext(literalExpected);
+            evidenceKind = EmittedExpressionTypeEvidenceKind.Literal;
+            evidenceSourceKey = "literal:no-expected";
+        }
+        else
+        {
+            if (TryGetCurrentTaskResourceReturnType(task, cleanCode, out var currentTaskReturnType) &&
+                !SourceReturnTypeMatchesExpected(currentTaskReturnType, expectedReturnType))
+            {
+                return false;
+            }
+
+            if (TryResolveSimpleSourceReturnTypeFromResourcePath(task, cleanCode, out var resourceReturnType) &&
+                !SourceReturnTypeMatchesExpected(resourceReturnType, expectedReturnType))
+            {
+                return false;
+            }
+
+            if (!IsKnownExpressionReturnTypeCompatible(cleanCode, expectedReturnType, task))
+                return false;
+
+            returnType = expectedReturnType;
+            evidenceKind = EmittedExpressionTypeEvidenceKind.FunctionContract;
+            evidenceSourceKey = "compatible:no-op";
+        }
+
+        var xpaType = XpaTypeEngine.MapExpectedToXpaType(GetValueReturnType(NormalizeReturnTypeToken(returnType)));
+        if (xpaType == XpaType.Unknown)
+            return false;
+
+        emittedExpression = new StrictEmittedExpression(
+            cleanCode,
+            NormalizeReturnTypeToken(returnType),
+            xpaType,
+            evidenceKind,
+            evidenceSourceKey);
         return true;
     }
 
@@ -118,7 +354,15 @@ internal static partial class ProjectGenerator
         }
 
         emittedCode = emitted.Code;
-        StrictEmissionCache.TryAdd(cacheKey, new StrictEmissionCacheEntry(true, emittedCode));
+        StrictEmissionCache.TryAdd(
+            cacheKey,
+            new StrictEmissionCacheEntry(
+                true,
+                emitted.Code,
+                emitted.ReturnType,
+                emitted.XpaType,
+                emitted.EvidenceKind,
+                emitted.EvidenceSourceKey));
         return true;
     }
 
@@ -165,194 +409,6 @@ internal static partial class ProjectGenerator
         return string.Create(
             CultureInfo.InvariantCulture,
             $"{task.Ordinal}|{context.SinkKind}|{expectedReturnType}|{target?.TargetMember}|{target?.AttrObj}|{target?.ModelAttrObj}|{code}");
-    }
-
-    private static bool TryRenderContractedFunctionArgumentsFromEvidence(
-        string code,
-        TaskSemantic task,
-        out string rendered)
-    {
-        rendered = RenderContractedFunctionArgumentsFromEvidence(code, task, out var changed);
-        return changed;
-    }
-
-    private static string RenderContractedFunctionArgumentsFromEvidence(
-        string code,
-        TaskSemantic task,
-        out bool changed)
-    {
-        changed = false;
-        if (string.IsNullOrWhiteSpace(code))
-            return code;
-
-        var originalCode = code.Trim();
-        var strippedCode = StripRedundantOuterParentheses(originalCode);
-        if (TryRenderContractedArithmeticOperandsFromEvidence(strippedCode, task, out var arithmeticRendered))
-        {
-            changed = true;
-            return arithmeticRendered;
-        }
-
-        if (TryRenderContractedComparisonOperandsFromEvidence(strippedCode, task, out var comparisonRendered))
-        {
-            changed = true;
-            return comparisonRendered;
-        }
-
-        if (!TryParseFunctionCall(strippedCode, out var functionName, out var args) ||
-            args.Count == 0)
-        {
-            return string.Equals(strippedCode, originalCode, StringComparison.Ordinal)
-                ? code
-                : strippedCode;
-        }
-
-        if (TryRenderStrictDbNameLiteralContract(functionName, args, out var dbNameRendered))
-        {
-            changed = true;
-            return dbNameRendered;
-        }
-
-        var renderedArgs = new string[args.Count];
-        for (var i = 0; i < args.Count; i++)
-        {
-            var originalArg = args[i].Trim();
-            var renderedArg = RenderContractedFunctionArgumentsFromEvidence(originalArg, task, out var nestedChanged);
-            changed |= nestedChanged;
-
-            if (CanApplyContractedFunctionArgument(functionName, i, args.Count) &&
-                TryReadDotNetMethodArgumentTypeEvidence(
-                    functionName,
-                    task,
-                    i,
-                    args.Count,
-                    out var expectedDotNetReturnType) &&
-                TryEmitExpectedArgumentFromReliableEvidence(renderedArg, expectedDotNetReturnType, task, out var contractedDotNetArg))
-            {
-                renderedArg = contractedDotNetArg;
-            }
-            else if (CanApplyContractedFunctionArgument(functionName, i, args.Count) &&
-                TryResolveXpaFunctionEmissionArgumentReturnTypeContract(
-                    functionName,
-                    i,
-                    args.Count,
-                    out var expectedReturnType) &&
-                TryEmitExpectedArgumentFromReliableEvidence(renderedArg, expectedReturnType, task, out var contractedArg))
-            {
-                renderedArg = contractedArg;
-            }
-
-            renderedArgs[i] = renderedArg;
-            changed |= !string.Equals(renderedArg, originalArg, StringComparison.Ordinal);
-        }
-
-        return changed
-            ? $"{functionName}({string.Join(", ", renderedArgs)})"
-            : string.Equals(strippedCode, originalCode, StringComparison.Ordinal) ? code : strippedCode;
-    }
-
-    private static bool TryRenderContractedArithmeticOperandsFromEvidence(
-        string code,
-        TaskSemantic task,
-        out string rendered)
-    {
-        rendered = code;
-        if (SplitTopLevelComparisonExpression(code) is not null ||
-            SplitTopLevelBooleanBinaryExpression(code) is not null)
-        {
-            return false;
-        }
-
-        var arithmetic = SplitTopLevelArithmeticExpression(code);
-        if (arithmetic is null)
-            return false;
-
-        var leftOriginal = arithmetic.Value.Left.Trim();
-        var rightOriginal = arithmetic.Value.Right.Trim();
-        var left = RenderContractedFunctionArgumentsFromEvidence(leftOriginal, task, out var leftChanged);
-        var right = RenderContractedFunctionArgumentsFromEvidence(rightOriginal, task, out var rightChanged);
-
-        var leftTypeKnown = TryResolveStrictSourceReturnType(left, task, out var leftReturnType);
-        var rightTypeKnown = TryResolveStrictSourceReturnType(right, task, out var rightReturnType);
-        var numericContext = IsReliableNumericArithmeticContext(
-            arithmetic.Value.Operator,
-            leftTypeKnown ? leftReturnType : "",
-            rightTypeKnown ? rightReturnType : "");
-
-        if (numericContext)
-        {
-            if (TryEmitExpectedArgumentFromReliableEvidence(left, "Number", task, out var numericLeft))
-                left = numericLeft;
-            if (TryEmitExpectedArgumentFromReliableEvidence(right, "Number", task, out var numericRight))
-                right = numericRight;
-        }
-
-        var changed =
-            leftChanged ||
-            rightChanged ||
-            !string.Equals(left, leftOriginal, StringComparison.Ordinal) ||
-            !string.Equals(right, rightOriginal, StringComparison.Ordinal);
-        if (!changed)
-            return false;
-
-        rendered = $"{left} {arithmetic.Value.Operator} {right}";
-        return true;
-    }
-
-    private static bool IsReliableNumericArithmeticContext(
-        string arithmeticOperator,
-        string leftReturnType,
-        string rightReturnType)
-    {
-        var left = ScalarReturnType(CanonicalReturnType(leftReturnType));
-        var right = ScalarReturnType(CanonicalReturnType(rightReturnType));
-        if (string.Equals(left, "Text", StringComparison.Ordinal) ||
-            string.Equals(right, "Text", StringComparison.Ordinal))
-            return false;
-
-        if (string.Equals(arithmeticOperator, "*", StringComparison.Ordinal) ||
-            string.Equals(arithmeticOperator, "/", StringComparison.Ordinal) ||
-            string.Equals(arithmeticOperator, "%", StringComparison.Ordinal) ||
-            string.Equals(arithmeticOperator, "-", StringComparison.Ordinal))
-            return true;
-
-        return string.Equals(arithmeticOperator, "+", StringComparison.Ordinal) &&
-               (string.Equals(left, "Number", StringComparison.Ordinal) ||
-                string.Equals(right, "Number", StringComparison.Ordinal));
-    }
-
-    private static bool TryRenderContractedComparisonOperandsFromEvidence(
-        string code,
-        TaskSemantic task,
-        out string rendered)
-    {
-        rendered = code;
-        var comparison = SplitTopLevelComparisonExpression(code);
-        if (comparison is null)
-            return false;
-
-        var leftOriginal = comparison.Value.Left.Trim();
-        var rightOriginal = comparison.Value.Right.Trim();
-        var left = RenderContractedFunctionArgumentsFromEvidence(leftOriginal, task, out var leftChanged);
-        var right = RenderContractedFunctionArgumentsFromEvidence(rightOriginal, task, out var rightChanged);
-        var changed =
-            leftChanged ||
-            rightChanged ||
-            !string.Equals(left, leftOriginal, StringComparison.Ordinal) ||
-            !string.Equals(right, rightOriginal, StringComparison.Ordinal);
-        if (!changed)
-            return false;
-
-        rendered = $"{left} {comparison.Value.Operator} {right}";
-        return true;
-    }
-
-    private static bool CanApplyContractedFunctionArgument(string functionName, int argumentIndex, int argumentCount)
-    {
-        _ = argumentIndex;
-        _ = argumentCount;
-        var normalizedFunction = NormalizeXpaFunctionContractName(functionName);
-        return !string.Equals(normalizedFunction, "VARSET", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool TryEmitExpectedArgumentFromReliableEvidence(
@@ -811,9 +867,6 @@ internal static partial class ProjectGenerator
         if (TryRewriteStrictNotComparison(strippedCode, task, out var rewrittenNotComparison))
             return RenderStrictFunctionArgumentBridges(rewrittenNotComparison, task);
 
-        if (TryRewriteStrictComparisonOperandBridges(strippedCode, task, out var rewrittenComparison))
-            return rewrittenComparison;
-
         var booleanBinary = SplitTopLevelBooleanBinaryExpression(strippedCode);
         if (booleanBinary is not null)
         {
@@ -822,6 +875,19 @@ internal static partial class ProjectGenerator
             if (!string.Equals(left, booleanBinary.Value.Left, StringComparison.Ordinal) ||
                 !string.Equals(right, booleanBinary.Value.Right, StringComparison.Ordinal))
                 return $"{left} {booleanBinary.Value.Operator} {right}";
+        }
+
+        if (TryRewriteStrictComparisonOperandBridges(strippedCode, task, out var rewrittenComparison))
+            return rewrittenComparison;
+
+        var arithmetic = SplitTopLevelArithmeticExpression(strippedCode);
+        if (arithmetic is not null)
+        {
+            var left = RenderStrictFunctionArgumentBridges(arithmetic.Value.Left, task);
+            var right = RenderStrictFunctionArgumentBridges(arithmetic.Value.Right, task);
+            if (!string.Equals(left, arithmetic.Value.Left, StringComparison.Ordinal) ||
+                !string.Equals(right, arithmetic.Value.Right, StringComparison.Ordinal))
+                return $"{left} {arithmetic.Value.Operator} {right}";
         }
 
         if (!TryParseFunctionCall(strippedCode, out var functionName, out var args) ||
@@ -931,7 +997,7 @@ internal static partial class ProjectGenerator
         rendered = "";
         if (!IsTopLevelCall(functionName, "u.DBName") ||
             args.Count != 1 ||
-            !TryGetWholeCSharpStringLiteral(args[0].Trim(), out var dbNameLiteral) ||
+            !TryReadStrictDbNameLiteralArgument(args[0].Trim(), out var dbNameLiteral) ||
             !TrySplitDbNameLiteral(dbNameLiteral, out var fileIndex, out var infoType))
         {
             return false;
@@ -939,6 +1005,23 @@ internal static partial class ProjectGenerator
 
         rendered = $"u.DBName({fileIndex}, {infoType})";
         return true;
+    }
+
+    private static bool TryReadStrictDbNameLiteralArgument(string argument, out string literal)
+    {
+        literal = "";
+        var trimmed = StripRedundantOuterParentheses((argument ?? "").Trim());
+        if (TryGetWholeCSharpStringLiteral(trimmed, out literal))
+            return true;
+
+        if (!TryParseFunctionCall(trimmed, out var functionName, out var args) ||
+            args.Count != 1 ||
+            !IsTopLevelCall(functionName, "u.CastToNumber"))
+        {
+            return false;
+        }
+
+        return TryGetWholeCSharpStringLiteral(args[0].Trim(), out literal);
     }
 
     private static bool TryRenderStrictObjectConditionalNullBridge(
@@ -1023,6 +1106,7 @@ internal static partial class ProjectGenerator
             args => RewriteStrictContractedFunctionCall("GetVarName", args, task));
 
         rewritten = RewriteStrictAccessibleFunctionCalls(rewritten, task);
+        rewritten = RewriteStrictComponentFunctionCalls(rewritten, task);
 
         rewritten = System.Text.RegularExpressions.Regex.Replace(
             rewritten,
@@ -1040,6 +1124,62 @@ internal static partial class ProjectGenerator
             System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
         return rewritten;
+    }
+
+    private static string RewriteStrictComponentFunctionCalls(string code, TaskSemantic task)
+    {
+        if (string.IsNullOrWhiteSpace(code) ||
+            code.IndexOf(".ComponentFunctions.", StringComparison.Ordinal) < 0 ||
+            _componentFunctionSourceByName.Count == 0)
+        {
+            return code;
+        }
+
+        var rewritten = code;
+        var visitedTargets = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var functionName in _componentFunctionSourceByName.Keys)
+        {
+            if (!TryGetComponentFunctionCallContract(functionName, out var contract) ||
+                contract.ParameterTypes.Count == 0 ||
+                string.IsNullOrWhiteSpace(contract.TargetName) ||
+                !visitedTargets.Add(contract.TargetName) ||
+                rewritten.IndexOf(contract.TargetName, StringComparison.Ordinal) < 0)
+            {
+                continue;
+            }
+
+            rewritten = RewriteFunctionCalls(
+                rewritten,
+                contract.TargetName,
+                args => RewriteStrictComponentFunctionCall(contract.TargetName, contract, args, task));
+        }
+
+        return rewritten;
+    }
+
+    private static string? RewriteStrictComponentFunctionCall(
+        string targetName,
+        ComponentFunctionCallContract contract,
+        List<string> args,
+        TaskSemantic task)
+    {
+        var changed = false;
+        for (var i = 0; i < args.Count && i < contract.ParameterTypes.Count; i++)
+        {
+            var expectedReturnType = NormalizeReturnTypeToken(contract.ParameterTypes[i]);
+            if (string.IsNullOrWhiteSpace(expectedReturnType))
+                continue;
+
+            var originalArg = args[i].Trim();
+            var renderedArg = RenderStrictFunctionArgumentBridges(originalArg, task);
+            if (TryRenderStrictExpectedArgument(renderedArg, expectedReturnType, task, out var bridgedArg))
+                renderedArg = bridgedArg;
+
+            args[i] = renderedArg;
+            changed |= !string.Equals(renderedArg, originalArg, StringComparison.Ordinal);
+        }
+
+        return changed ? $"{targetName}({string.Join(", ", args)})" : null;
     }
 
     private static string RewriteStrictAccessibleFunctionCalls(string code, TaskSemantic task)
@@ -1282,6 +1422,9 @@ internal static partial class ProjectGenerator
         if (string.IsNullOrWhiteSpace(expectedReturnType) ||
             !TryResolveStrictSourceReturnType(code, task, out var sourceReturnType))
         {
+            if (TryRenderStrictByteArrayTextArgument(code, expectedReturnType, task, null, out rendered))
+                return true;
+
             if (string.Equals(ScalarReturnType(CanonicalReturnType(expectedReturnType)), "Number", StringComparison.Ordinal) &&
                 SplitTopLevelArithmeticExpression(code) is { } arithmetic &&
                 TryRenderStrictExpectedArgument(arithmetic.Left.Trim(), "Number", task, out var left) &&
@@ -1294,6 +1437,9 @@ internal static partial class ProjectGenerator
         }
 
         if (TryRenderStrictExpectedFromInnerScalarCast(code, expectedReturnType, task, out rendered))
+            return true;
+
+        if (TryRenderStrictByteArrayTextArgument(code, expectedReturnType, task, sourceReturnType, out rendered))
             return true;
 
         var evidence = new[]
@@ -1317,6 +1463,49 @@ internal static partial class ProjectGenerator
             code,
             rendered,
             string.Create(CultureInfo.InvariantCulture, $"expected={expectedReturnType} source={sourceReturnType} expr={TruncateTelemetryValue(code)}"));
+        return true;
+    }
+
+    private static bool TryRenderStrictByteArrayTextArgument(
+        string code,
+        string expectedReturnType,
+        TaskSemantic task,
+        string? sourceReturnType,
+        out string rendered)
+    {
+        rendered = code;
+        if (!string.Equals(ScalarReturnType(CanonicalReturnType(expectedReturnType)), "byte[]", StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(code))
+        {
+            return false;
+        }
+
+        var trimmed = StripRedundantOuterParentheses(code.Trim());
+        var hasTextSource =
+            !string.IsNullOrWhiteSpace(sourceReturnType) &&
+            string.Equals(ScalarReturnType(CanonicalReturnType(sourceReturnType)), "Text", StringComparison.Ordinal);
+
+        if (!hasTextSource &&
+            TryResolveStrictSourceReturnType(trimmed, task, out var resolvedReturnType) &&
+            string.Equals(ScalarReturnType(CanonicalReturnType(resolvedReturnType)), "Text", StringComparison.Ordinal))
+        {
+            hasTextSource = true;
+        }
+
+        if (!hasTextSource && !IsTextualBlobAssignmentExpression(trimmed))
+            return false;
+
+        var normalized = NormalizeByteArrayExpectedExpression(trimmed);
+        if (string.Equals(normalized, trimmed, StringComparison.Ordinal))
+            return false;
+
+        rendered = normalized;
+        TrackCriticalExternalCoercionIfBridgeChanged(
+            "EmittedExpression",
+            nameof(TryRenderStrictByteArrayTextArgument),
+            code,
+            rendered,
+            string.Create(CultureInfo.InvariantCulture, $"expected={expectedReturnType} source=Text expr={TruncateTelemetryValue(code)}"));
         return true;
     }
 
@@ -1561,6 +1750,20 @@ internal static partial class ProjectGenerator
     private static bool TryChooseStrictComparisonExpectedType(string leftReturnType, string rightReturnType, out string expectedReturnType)
     {
         expectedReturnType = "";
+        if ((string.Equals(leftReturnType, "Bool", StringComparison.Ordinal) && string.Equals(rightReturnType, "Text", StringComparison.Ordinal)) ||
+            (string.Equals(leftReturnType, "Text", StringComparison.Ordinal) && string.Equals(rightReturnType, "Bool", StringComparison.Ordinal)))
+        {
+            expectedReturnType = "Text";
+            return true;
+        }
+
+        if ((string.Equals(leftReturnType, "Bool", StringComparison.Ordinal) && string.Equals(rightReturnType, "Number", StringComparison.Ordinal)) ||
+            (string.Equals(leftReturnType, "Number", StringComparison.Ordinal) && string.Equals(rightReturnType, "Bool", StringComparison.Ordinal)))
+        {
+            expectedReturnType = "Number";
+            return true;
+        }
+
         if ((string.Equals(leftReturnType, "Number", StringComparison.Ordinal) && string.Equals(rightReturnType, "Text", StringComparison.Ordinal)) ||
             (string.Equals(leftReturnType, "Text", StringComparison.Ordinal) && string.Equals(rightReturnType, "Number", StringComparison.Ordinal)))
         {
@@ -1570,6 +1773,17 @@ internal static partial class ProjectGenerator
 
         if ((string.Equals(leftReturnType, "Date", StringComparison.Ordinal) && string.Equals(rightReturnType, "Time", StringComparison.Ordinal)) ||
             (string.Equals(leftReturnType, "Time", StringComparison.Ordinal) && string.Equals(rightReturnType, "Date", StringComparison.Ordinal)))
+        {
+            expectedReturnType = "Number";
+            return true;
+        }
+
+        if ((string.Equals(leftReturnType, "Number", StringComparison.Ordinal) &&
+             (string.Equals(rightReturnType, "Date", StringComparison.Ordinal) ||
+              string.Equals(rightReturnType, "Time", StringComparison.Ordinal))) ||
+            (string.Equals(rightReturnType, "Number", StringComparison.Ordinal) &&
+             (string.Equals(leftReturnType, "Date", StringComparison.Ordinal) ||
+              string.Equals(leftReturnType, "Time", StringComparison.Ordinal))))
         {
             expectedReturnType = "Number";
             return true;

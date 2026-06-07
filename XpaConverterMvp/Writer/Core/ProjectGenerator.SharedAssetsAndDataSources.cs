@@ -48,10 +48,10 @@ internal static partial class ProjectGenerator
         var printingDir = Path.Combine(sharedDir, "Printing");
         Directory.CreateDirectory(printingDir);
         var printerNames = tasks
-            .SelectMany(t => t.Ios)
+            .SelectMany(t => t.Io is null ? t.Ios : t.Ios.Concat(new[] { t.Io }))
             .Select(io => io.Machine)
             .Where(machine => !string.IsNullOrWhiteSpace(machine))
-            .Select(machine => ToPascalIdentifier(machine!))
+            .Select(machine => ResolvePrinterIdentifier(machine!))
             .Where(machine => !string.IsNullOrWhiteSpace(machine))
             .Append("Printer1")
             .Distinct(StringComparer.OrdinalIgnoreCase)

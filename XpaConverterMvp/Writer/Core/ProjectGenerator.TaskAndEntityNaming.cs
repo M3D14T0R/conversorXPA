@@ -10,11 +10,22 @@ internal static partial class ProjectGenerator
 {
     private static string ResolveTaskResourceMemberName(TaskSemantic task, TaskResourceColumnDef resource)
     {
-        var cacheKey = string.Create(
-            System.Globalization.CultureInfo.InvariantCulture,
-            $"{task.Ordinal}|{resource.Id}|{resource.Name}");
+        if (_resourceMemberNameByTaskOrdinal.TryGetValue(task.Ordinal, out var byResourceId) &&
+            byResourceId.TryGetValue(resource.Id, out var cachedById))
+        {
+            return cachedById;
+        }
+
+        var cacheKey = BuildTaskResourceMemberNameCacheKey(task, resource);
         if (_resourceMemberNameCache.TryGetValue(cacheKey, out var cached))
             return cached;
+
+        if (!_resourceMemberNameCacheBuiltTaskOrdinals.Contains(task.Ordinal))
+        {
+            BuildTaskResourceMemberNameCache(task);
+            if (_resourceMemberNameCache.TryGetValue(cacheKey, out cached))
+                return cached;
+        }
 
         var baseName = ToLegacyVariableName(resource.Name);
         if (IsReservedTaskMemberName(task, baseName))
@@ -48,28 +59,85 @@ internal static partial class ProjectGenerator
         return resolved;
     }
 
+    private static string BuildTaskResourceMemberNameCacheKey(TaskSemantic task, TaskResourceColumnDef resource)
+        => string.Create(
+            System.Globalization.CultureInfo.InvariantCulture,
+            $"{task.Ordinal}|{resource.Id}|{resource.Name}");
+
+    private static void BuildTaskResourceMemberNameCache(TaskSemantic task)
+    {
+        var seenByBaseName = new Dictionary<string, int>(StringComparer.Ordinal);
+        var byResourceId = new Dictionary<int, string>();
+        var byMemberName = new Dictionary<string, TaskResourceColumnDef>(StringComparer.Ordinal);
+        foreach (var resource in task.ResourcesSemantic.Ordered)
+        {
+            var baseName = ToLegacyVariableName(resource.Name);
+            if (IsReservedTaskMemberName(task, baseName))
+                baseName += "_";
+
+            seenByBaseName.TryGetValue(baseName, out var index);
+            var resolved = index switch
+            {
+                0 => baseName,
+                1 => baseName + "_",
+                _ => $"{baseName}_{index}"
+            };
+            seenByBaseName[baseName] = index + 1;
+            _resourceMemberNameCache[BuildTaskResourceMemberNameCacheKey(task, resource)] = resolved;
+            byResourceId[resource.Id] = resolved;
+            byMemberName.TryAdd(resolved, resource);
+        }
+
+        _resourceMemberNameByTaskOrdinal[task.Ordinal] = byResourceId;
+        _taskResourceByMemberNameCache[task.Ordinal] = byMemberName;
+        _resourceMemberNameCacheBuiltTaskOrdinals.Add(task.Ordinal);
+    }
+
+    private static IReadOnlyDictionary<string, TaskResourceColumnDef> GetTaskResourcesByMemberName(TaskSemantic task)
+    {
+        if (!_taskResourceByMemberNameCache.TryGetValue(task.Ordinal, out var cached))
+        {
+            BuildTaskResourceMemberNameCache(task);
+            cached = _taskResourceByMemberNameCache.TryGetValue(task.Ordinal, out var built)
+                ? built
+                : new Dictionary<string, TaskResourceColumnDef>(StringComparer.Ordinal);
+        }
+
+        return cached;
+    }
+
     private static bool IsReservedTaskMemberName(TaskSemantic task, string candidate)
     {
         if (string.IsNullOrWhiteSpace(candidate))
             return false;
 
-        if (IsFrameworkReservedTaskMemberName(task, candidate))
-            return true;
+        return GetReservedTaskMemberNames(task).Contains(candidate);
+    }
+
+    private static HashSet<string> GetReservedTaskMemberNames(TaskSemantic task)
+    {
+        if (_reservedTaskMemberNameCache.TryGetValue(task.Ordinal, out var cached))
+            return cached;
+
+        var reserved = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var name in ResolveFrameworkReservedTaskMemberNames(task))
+            reserved.Add(name);
 
         var allTasks = _allTasks ?? Array.Empty<TaskSemantic>();
-        if (string.Equals(ResolveTaskClassName(task, allTasks), candidate, StringComparison.Ordinal))
-            return true;
+        reserved.Add(ResolveTaskClassName(task, allTasks));
+        if (_childTasksByParentOrdinal.TryGetValue(task.Ordinal, out var children))
+            foreach (var child in children)
+                reserved.Add(ResolveTaskClassName(child, allTasks));
 
-        foreach (var child in allTasks.Where(x => x.ParentOrdinal == task.Ordinal))
-        {
-            if (string.Equals(ResolveTaskClassName(child, allTasks), candidate, StringComparison.Ordinal))
-                return true;
-        }
-
-        return false;
+        _reservedTaskMemberNameCache[task.Ordinal] = reserved;
+        return reserved;
     }
 
     private static bool IsFrameworkReservedTaskMemberName(TaskSemantic task, string candidate)
+        => ResolveFrameworkReservedTaskMemberNames(task).Contains(candidate);
+
+    private static IReadOnlySet<string> ResolveFrameworkReservedTaskMemberNames(TaskSemantic task)
     {
         var reserved = ResolveBaseClass(task) switch
         {
@@ -77,11 +145,10 @@ internal static partial class ProjectGenerator
             "BusinessProcessBase" => BusinessProcessReservedTaskMembers,
             _ => null
         };
-        if (reserved is null)
-            return false;
-
-        return reserved.Contains(candidate);
+        return reserved ?? EmptyReservedTaskMembers;
     }
+
+    private static readonly HashSet<string> EmptyReservedTaskMembers = new(StringComparer.Ordinal);
 
     private static readonly HashSet<string> UiControllerReservedTaskMembers = new(StringComparer.Ordinal)
     {

@@ -8,6 +8,14 @@ namespace XpaConverterMvp;
 
 internal static partial class ProjectGenerator
 {
+    private sealed record UserMethodsCatalogSnapshot(
+        string[] Names,
+        IReadOnlyDictionary<string, string> NameMap,
+        int ExternalCatalogs);
+
+    private static readonly object UserMethodsCatalogCacheLock = new();
+    private static readonly Dictionary<string, UserMethodsCatalogSnapshot> UserMethodsCatalogCache = new(StringComparer.OrdinalIgnoreCase);
+
     private static void IncludeTaskWithStructure(
         TaskSemantic task,
         IReadOnlyList<TaskSemantic> allTasks,
@@ -146,22 +154,78 @@ internal static partial class ProjectGenerator
         if (_userMethodsPublicNames is not null)
             return _userMethodsPublicNames;
 
-        _userMethodsPublicNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        _userMethodsPublicNameMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var methodName in RuntimeUserMethodsCatalog.Names)
-            RegisterUserMethodName(methodName);
-
-        var externalCatalogs = 0;
-        foreach (var root in EnumerateUserMethodsSearchRoots())
+        var roots = EnumerateUserMethodsSearchRoots()
+            .Select(NormalizeUserMethodsSearchRoot)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var cacheKey = BuildUserMethodsCatalogCacheKey(roots);
+        UserMethodsCatalogSnapshot snapshot;
+        var cacheHit = true;
+        lock (UserMethodsCatalogCacheLock)
         {
-            if (TryLoadUserMethodsPublicNamesFromRoot(root))
-                externalCatalogs++;
+            if (!UserMethodsCatalogCache.TryGetValue(cacheKey, out snapshot!))
+            {
+                snapshot = BuildUserMethodsCatalogSnapshot(roots);
+                UserMethodsCatalogCache[cacheKey] = snapshot;
+                cacheHit = false;
+            }
         }
+
+        _userMethodsPublicNames = new HashSet<string>(snapshot.Names, StringComparer.OrdinalIgnoreCase);
+        _userMethodsPublicNameMap = new Dictionary<string, string>(snapshot.NameMap, StringComparer.OrdinalIgnoreCase);
 
         ConversionTelemetry.Log(
             "RUNTIME_FUNCTIONS",
-            $"catalog builtin={RuntimeUserMethodsCatalog.Names.Count} externalUserMethodsFiles={externalCatalogs} total={_userMethodsPublicNames.Count}");
+            $"catalog builtin={RuntimeUserMethodsCatalog.Names.Count} externalUserMethodsFiles={snapshot.ExternalCatalogs} total={_userMethodsPublicNames.Count} cacheHit={cacheHit.ToString().ToLowerInvariant()}");
         return _userMethodsPublicNames;
+    }
+
+    private static UserMethodsCatalogSnapshot BuildUserMethodsCatalogSnapshot(IReadOnlyList<string> roots)
+    {
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var nameMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        void Register(string methodName)
+        {
+            if (string.IsNullOrWhiteSpace(methodName))
+                return;
+            names.Add(methodName);
+            nameMap[methodName] = methodName;
+        }
+
+        foreach (var methodName in RuntimeUserMethodsCatalog.Names)
+            Register(methodName);
+
+        var externalCatalogs = 0;
+        foreach (var root in roots)
+        {
+            if (TryLoadUserMethodsPublicNamesFromRoot(root, Register))
+                externalCatalogs++;
+        }
+
+        return new UserMethodsCatalogSnapshot(names.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray(), nameMap, externalCatalogs);
+    }
+
+    private static string BuildUserMethodsCatalogCacheKey(IEnumerable<string> roots)
+    {
+        return string.Join(
+            "|",
+            roots.Select(root =>
+            {
+                var candidate = Path.Combine(root, "ENV", "UserMethods.cs");
+                if (!File.Exists(candidate))
+                    return root;
+
+                try
+                {
+                    var info = new FileInfo(candidate);
+                    return $"{root}:{info.Length}:{info.LastWriteTimeUtc.Ticks}";
+                }
+                catch
+                {
+                    return root;
+                }
+            }));
     }
 
     private static IEnumerable<string> EnumerateUserMethodsSearchRoots()
@@ -179,7 +243,21 @@ internal static partial class ProjectGenerator
         }
     }
 
-    private static bool TryLoadUserMethodsPublicNamesFromRoot(string root)
+    private static string NormalizeUserMethodsSearchRoot(string root)
+    {
+        if (string.IsNullOrWhiteSpace(root))
+            return "";
+        try
+        {
+            return Path.GetFullPath(root);
+        }
+        catch
+        {
+            return root;
+        }
+    }
+
+    private static bool TryLoadUserMethodsPublicNamesFromRoot(string root, Action<string> register)
     {
         var candidate = Path.Combine(root, "ENV", "UserMethods.cs");
         if (!File.Exists(candidate))
@@ -193,7 +271,7 @@ internal static partial class ProjectGenerator
             if (!m.Success)
                 continue;
 
-            RegisterUserMethodName(m.Groups[1].Value);
+            register(m.Groups[1].Value);
         }
 
         return true;

@@ -13,6 +13,7 @@ internal static partial class ProjectGenerator
     private static readonly ConcurrentDictionary<string, string> _dotNetMethodParameterTypeEvidenceCache = new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<string, bool> _dotNetMemberExistenceEvidenceCache = new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<string, string> _dotNetTypeAssemblyPathEvidenceCache = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, string> _dotNetTypeScalarEvidenceCache = new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<string, bool> _dotNetEvidenceAssemblyDependencyLoadCache = new(StringComparer.OrdinalIgnoreCase);
 
     private static bool TryReadDotNetMemberEvidence(
@@ -963,15 +964,27 @@ internal static partial class ProjectGenerator
     }
 
     private static bool TryMapClrEvidenceTypeName(string clrTypeName, out string returnType)
+        => TryMapClrEvidenceTypeName(clrTypeName, out returnType, new HashSet<string>(StringComparer.Ordinal));
+
+    private static bool TryMapClrEvidenceTypeName(string clrTypeName, out string returnType, HashSet<string> visitedTypes)
     {
         returnType = "";
         var normalized = clrTypeName.Trim();
         if (normalized.EndsWith("[]", StringComparison.Ordinal) &&
-            TryMapClrEvidenceTypeName(normalized[..^2], out var elementType) &&
+            TryMapClrEvidenceTypeName(normalized[..^2], out var elementType, visitedTypes) &&
             !string.Equals(elementType, "Date", StringComparison.Ordinal) &&
             !string.Equals(elementType, "Time", StringComparison.Ordinal))
             return SetReturnType(elementType + "[]", out returnType);
 
+        if (TryMapDirectClrEvidenceTypeName(normalized, out returnType))
+            return true;
+
+        return TryMapClrEvidenceTypeNameFromMetadataBase(normalized, out returnType, visitedTypes);
+    }
+
+    private static bool TryMapDirectClrEvidenceTypeName(string normalized, out string returnType)
+    {
+        returnType = "";
         return normalized switch
         {
             "System.String" or "String" or "XPARuntimeCore.Box.Text" or "ENV.Data.TextColumn" => SetReturnType("Text", out returnType),
@@ -983,6 +996,75 @@ internal static partial class ProjectGenerator
             _ when IsClrNumericTypeName(normalized) => SetReturnType("Number", out returnType),
             _ => false
         };
+    }
+
+    private static bool TryMapClrEvidenceTypeNameFromMetadataBase(
+        string normalized,
+        out string returnType,
+        HashSet<string> visitedTypes)
+    {
+        returnType = "";
+        if (string.IsNullOrWhiteSpace(normalized) ||
+            !visitedTypes.Add(normalized))
+        {
+            return false;
+        }
+
+        if (_dotNetTypeScalarEvidenceCache.TryGetValue(normalized, out var cached))
+            return !string.IsNullOrWhiteSpace(cached) && SetReturnType(cached, out returnType);
+
+        if (!TryReadMetadataBaseTypeNameForClrType(normalized, out var baseType) ||
+            string.IsNullOrWhiteSpace(baseType) ||
+            string.Equals(baseType, "System.Object", StringComparison.Ordinal))
+        {
+            _dotNetTypeScalarEvidenceCache.TryAdd(normalized, "");
+            return false;
+        }
+
+        if (TryMapDirectClrEvidenceTypeName(baseType, out returnType) ||
+            TryMapClrEvidenceTypeName(baseType, out returnType, visitedTypes))
+        {
+            _dotNetTypeScalarEvidenceCache.TryAdd(normalized, returnType);
+            return true;
+        }
+
+        _dotNetTypeScalarEvidenceCache.TryAdd(normalized, "");
+        return false;
+    }
+
+    private static bool TryReadMetadataBaseTypeNameForClrType(string objectType, out string baseType)
+    {
+        baseType = "";
+        var assemblyPath = FindMappedAssemblyPathForDotNetType(objectType);
+        if (string.IsNullOrWhiteSpace(assemblyPath) || !File.Exists(assemblyPath))
+            return false;
+
+        try
+        {
+            using var stream = File.OpenRead(assemblyPath);
+            using var peReader = new PEReader(stream);
+            if (!peReader.HasMetadata)
+                return false;
+
+            var reader = peReader.GetMetadataReader();
+            var provider = new DotNetMetadataTypeNameProvider();
+            foreach (var typeHandle in reader.TypeDefinitions)
+            {
+                var type = reader.GetTypeDefinition(typeHandle);
+                if (!MetadataTypeMatches(reader, typeHandle, type, objectType))
+                    continue;
+
+                baseType = ReadMetadataBaseTypeName(reader, type.BaseType, provider);
+                return !string.IsNullOrWhiteSpace(baseType);
+            }
+
+            return false;
+        }
+        catch
+        {
+            baseType = "";
+            return false;
+        }
     }
 
     private static bool SetReturnType(string value, out string returnType)

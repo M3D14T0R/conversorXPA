@@ -923,7 +923,7 @@ internal static class XpaParser
         var sqlWhere = ParseTaskSqlWhere(t.Element("SQL_WHERE_U"));
         var varRangeInfos = ParseTaskVarRangeInfos(t);
         var sqlForm = ParseTaskSqlForm(t);
-        var logic = ParseTaskLogic(ctx, contexts, t, resourceDataObjects, topLevelProgramIndexLocal, expressions);
+        var logic = ParseTaskLogic(ctx, contexts, t, resourceDataObjects, resourceDbs, infoDbObj, topLevelProgramIndexLocal, expressions);
 
         var taskPublicName = header.Element("Public")?.Attribute("val")?.Value;
         var declaredParameterCount = ParseInt(header.Element("ReturnValue")?.Element("TSK_PARAMS")?.Attribute("val")?.Value);
@@ -1729,6 +1729,8 @@ internal static class XpaParser
         IReadOnlyList<ParseContext> contexts,
         XElement task,
         IReadOnlyList<int> resourceDataObjects,
+        IReadOnlyList<TaskResourceDbDef> resourceDbs,
+        int? informationDbObj,
         int? topLevelProgramIndexLocal,
         List<TaskExpressionDef> expressions)
     {
@@ -1936,6 +1938,24 @@ internal static class XpaParser
                 return logicalResourceColumns.Contains(resolvedColumnId) ? name : null;
             }
 
+            bool IsWritableResourceDb(int dbObj)
+                => resourceDbs.Any(db =>
+                    db.DataObject == dbObj &&
+                    string.Equals(db.Access, "W", StringComparison.OrdinalIgnoreCase));
+
+            int ResolveEffectiveDataViewSourceDb(int selectedDbObj)
+            {
+                if (informationDbObj.HasValue &&
+                    informationDbObj.Value != selectedDbObj &&
+                    IsWritableResourceDb(informationDbObj.Value) &&
+                    !IsWritableResourceDb(selectedDbObj))
+                {
+                    return informationDbObj.Value;
+                }
+
+                return selectedDbObj;
+            }
+
             for (var lineIdx = 0; lineIdx < logicLines.Count; lineIdx++)
             {
                 var line = logicLines[lineIdx];
@@ -1957,7 +1977,7 @@ internal static class XpaParser
                         {
                             if (idx.Value > 0 && idx.Value <= resourceDataObjects.Count)
                             {
-                                primaryDbObj = resourceDataObjects[idx.Value - 1];
+                                primaryDbObj = ResolveEffectiveDataViewSourceDb(resourceDataObjects[idx.Value - 1]);
                                 currentDbObj = primaryDbObj;
                             }
                         }

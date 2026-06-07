@@ -11,13 +11,15 @@ internal static partial class ProjectGenerator
     private static long _expressionEmissionAuditPassCount;
     private static long _expressionEmissionAuditFailCount;
     private static long _expressionEmissionAuditCacheHitCount;
+    private static long _expressionEmissionAuditCriticalFailCount;
     private static readonly ConcurrentDictionary<string, long> _expressionEmissionAuditBySink = new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<string, long> _expressionEmissionAuditBySinkExpected = new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<string, long> _expressionEmissionAuditByFailureReason = new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<string, long> _expressionEmissionAuditBySourceKind = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, long> _expressionEmissionAuditCriticalFailuresBySink = new(StringComparer.Ordinal);
     private static readonly ConcurrentQueue<string> _expressionEmissionAuditDetails = new();
     private static long _expressionEmissionAuditDetailCount;
-    private const int ExpressionEmissionAuditDetailLimit = 500;
+    private const int ExpressionEmissionAuditDetailLimit = 5000;
 
     private static void ResetExpressionEmissionAuditCounters()
     {
@@ -25,11 +27,13 @@ internal static partial class ProjectGenerator
         Interlocked.Exchange(ref _expressionEmissionAuditPassCount, 0);
         Interlocked.Exchange(ref _expressionEmissionAuditFailCount, 0);
         Interlocked.Exchange(ref _expressionEmissionAuditCacheHitCount, 0);
+        Interlocked.Exchange(ref _expressionEmissionAuditCriticalFailCount, 0);
         Interlocked.Exchange(ref _expressionEmissionAuditDetailCount, 0);
         _expressionEmissionAuditBySink.Clear();
         _expressionEmissionAuditBySinkExpected.Clear();
         _expressionEmissionAuditByFailureReason.Clear();
         _expressionEmissionAuditBySourceKind.Clear();
+        _expressionEmissionAuditCriticalFailuresBySink.Clear();
         while (_expressionEmissionAuditDetails.TryDequeue(out _))
         {
         }
@@ -44,6 +48,7 @@ internal static partial class ProjectGenerator
         else
             Interlocked.Increment(ref _expressionEmissionAuditFailCount);
 
+        TrackExpressionEmissionAuditCriticalFailure(context, success);
         TrackExpressionEmissionAuditCounters(
             context,
             expectedReturnType,
@@ -68,6 +73,7 @@ internal static partial class ProjectGenerator
         else
             Interlocked.Increment(ref _expressionEmissionAuditFailCount);
 
+        TrackExpressionEmissionAuditCriticalFailure(context, success);
         TrackExpressionEmissionAuditCounters(
             context,
             expectedReturnType,
@@ -89,6 +95,18 @@ internal static partial class ProjectGenerator
             string.Create(
                 CultureInfo.InvariantCulture,
                 $"task={task.Ordinal} sink={context.SinkKind} expected={QuoteTelemetry(expectedReturnType)} source={QuoteTelemetry(source)} sourceKind={QuoteTelemetry(kind)} result={QuoteTelemetry(reason)} target={QuoteTelemetry(context.TargetInfo?.TargetMember ?? "")} expr={QuoteTelemetry(TruncateTelemetryValue(expression))}"));
+    }
+
+    private static void TrackExpressionEmissionAuditCriticalFailure(ExpressionEmissionContext context, bool success)
+    {
+        if (success || !IsHighValueExpressionEmissionAuditSink(context.SinkKind))
+            return;
+
+        Interlocked.Increment(ref _expressionEmissionAuditCriticalFailCount);
+        _expressionEmissionAuditCriticalFailuresBySink.AddOrUpdate(
+            context.SinkKind.ToString(),
+            1,
+            (_, value) => value + 1);
     }
 
     private static void TrackExpressionEmissionAuditCounters(
@@ -152,12 +170,22 @@ internal static partial class ProjectGenerator
         var passes = Interlocked.Read(ref _expressionEmissionAuditPassCount);
         var fails = Interlocked.Read(ref _expressionEmissionAuditFailCount);
         var cacheHits = Interlocked.Read(ref _expressionEmissionAuditCacheHitCount);
+        var criticalFails = Interlocked.Read(ref _expressionEmissionAuditCriticalFailCount);
 
         ConversionTelemetry.Log(
             "EXPR_EMIT_AUDIT",
             string.Create(
                 CultureInfo.InvariantCulture,
                 $"summary attempts={attempts} passes={passes} fails={fails} cacheHits={cacheHits}"));
+
+        ConversionTelemetry.Log(
+            "EXPR_EMIT_AUDIT_GATE",
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"summary criticalFails={criticalFails}"));
+
+        if (!_expressionEmissionAuditCriticalFailuresBySink.IsEmpty)
+            ConversionTelemetry.Log("EXPR_EMIT_AUDIT_GATE", $"critical-failures {FormatExpressionEmissionAuditCounts(_expressionEmissionAuditCriticalFailuresBySink)}");
 
         if (!_expressionEmissionAuditBySink.IsEmpty)
             ConversionTelemetry.Log("EXPR_EMIT_AUDIT", $"sinks {FormatExpressionEmissionAuditCounts(_expressionEmissionAuditBySink)}");

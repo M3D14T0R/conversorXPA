@@ -35,8 +35,14 @@ internal static partial class ProjectGenerator
 
     private static int InferIncomingParameterCount(TaskSemantic targetTask)
     {
+        if (_incomingParameterCountCache.TryGetValue(targetTask.Ordinal, out var cached))
+            return cached;
+
         if (_allTasks is null || _allTasks.Count == 0)
+        {
+            _incomingParameterCountCache[targetTask.Ordinal] = 0;
             return 0;
+        }
 
         var counts = new HashSet<int>();
         foreach (var task in _allTasks)
@@ -55,9 +61,9 @@ internal static partial class ProjectGenerator
             }
         }
 
-        if (counts.Count == 1)
-            return counts.First();
-        return 0;
+        var result = counts.Count == 1 ? counts.First() : 0;
+        _incomingParameterCountCache[targetTask.Ordinal] = result;
+        return result;
     }
 }
 

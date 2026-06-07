@@ -1,6 +1,39 @@
 # Emission Pipeline Inventory
 
-Date: 2026-06-02
+Date: 2026-06-05
+
+## 2026-06-05 Migration Pass
+
+This pass separates legacy translators into two groups:
+
+- **Allowed lexical translation**: source-to-C# rendering that is still inside a typed source path and does not decide coercion by reading generated C#.
+- **Critical legacy decision**: any callsite that has a target/sink contract but translates a source expression to C# string before feeding source and target evidence into `EmittedExpression`.
+
+Changes applied in this pass:
+
+| Area | Previous behavior | New behavior | Risk guard |
+|---|---|---|---|
+| `TaskUpdateAssignments.ResolveUpdateValueExpression` fallback | fallback path translated `exp.LiteralNormalizedSyntax` through `TranslateXpaExpressionToCSharp`, then normalized by attribute and context | fallback path now calls `ResolveTypedExpressionEntryCode(exp, ..., context)` so source evidence and assignment sink travel together | only affects the rare branch where the normal contextual `ResolveExpressionCode(...)` returned empty |
+| `DataViewRanges.EmitTaskRangeExpressions` RHS fragments | RHS extracted from `A = <rhs>` was translated directly by `TranslateXpaExpressionToCSharp` | when the left side has filter-comparison type evidence, the RHS is wrapped as a synthetic `ExpressionEntrySemantic` and emitted by `ResolveTypedExpressionEntryCode(...)` with `FilterComparison` context | if the left side has no reliable target type, the old lexical translation remains instead of guessing |
+| `DataViewRanges.EmitTaskRangeExpressions` value+condition ranges | `A = 'LA' AND condition` could be emitted as a text RHS, producing invalid code such as `u.CastToText("LA" && condition)` | the XPA RHS is split before C# rendering; the range value is emitted through the filter-comparison context and the condition is emitted as `BooleanCondition`, producing `CndRange(() => condition, A.IsEqualTo("LA"))` | only top-level XPA `AND` is rewritten; other boolean shapes keep the existing path |
+
+New helper:
+
+- `CreateSyntheticExpressionEntry(...)`
+- `ResolveSourceFragmentCode(...)`
+
+Purpose:
+
+- support source fragments that do not exist as standalone XML expression entries
+- keep the fragment in the typed pipeline until final C# rendering
+- avoid adding source-fragment coercion rules through generated C# cleanup
+
+Still intentionally not migrated in this pass:
+
+- `StringLiteralResolution.TryResolveExpressionAsStringLiteralCode`: lexical-only literal detection, not coercion.
+- `CanEmitExpressionEntryAsStatement`: lexical fallback only after source CLR return type evidence fails.
+- Core `ExpressionResolution` internal calls that translate source while building `SourceTranslatedExpression`: these remain part of the source-rendering layer and must be migrated only when they start deciding type/coercion outside `EmittedExpression`.
+- `BuildBindValueSuffix`: still string-shape based for choosing direct bind versus lambda, but not currently a coercion bridge. It should receive a typed `BindValueEmission` result in a later pass.
 
 ## Objective
 

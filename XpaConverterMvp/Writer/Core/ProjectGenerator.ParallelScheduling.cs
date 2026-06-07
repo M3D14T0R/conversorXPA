@@ -47,12 +47,65 @@ internal static partial class ProjectGenerator
         if (scheduledTasks.Count == 0)
             return;
 
-        var degree = ResolveParallelSkeletonTaskDegree(scheduledTasks, requestedDegree);
-        var queue = new ConcurrentQueue<TaskSemantic>(scheduledTasks);
+        var workerDegree = ResolveParallelSkeletonWorkerDegree(scheduledTasks, requestedDegree);
+        var heavyDegreeCap = ResolveParallelSkeletonHeavyDegreeCap(scheduledTasks, requestedDegree);
+        var weightedTasks = BuildWeightedSkeletonTasks(scheduledTasks);
+        var remainingTasks = new List<(TaskSemantic Task, long Weight)>(weightedTasks);
+        var sync = new object();
+        var activeHeavyTasks = 0;
         var exceptions = new ConcurrentQueue<Exception>();
-        var workers = new Thread[degree];
+        var workers = new Thread[workerDegree];
 
-        for (var workerIndex = 0; workerIndex < degree; workerIndex++)
+        bool TryTakeNext(out (TaskSemantic Task, long Weight) item)
+        {
+            lock (sync)
+            {
+                while (true)
+                {
+                    if (remainingTasks.Count == 0)
+                    {
+                        item = default;
+                        return false;
+                    }
+
+                    var selectedIndex = -1;
+                    for (var i = 0; i < remainingTasks.Count; i++)
+                    {
+                        var candidate = remainingTasks[i];
+                        if (!IsLargeParallelSkeletonTask(candidate.Weight) || activeHeavyTasks < heavyDegreeCap)
+                        {
+                            selectedIndex = i;
+                            break;
+                        }
+                    }
+
+                    if (selectedIndex >= 0)
+                    {
+                        item = remainingTasks[selectedIndex];
+                        remainingTasks.RemoveAt(selectedIndex);
+                        if (IsLargeParallelSkeletonTask(item.Weight))
+                            activeHeavyTasks++;
+                        return true;
+                    }
+
+                    Monitor.Wait(sync);
+                }
+            }
+        }
+
+        void Complete((TaskSemantic Task, long Weight) item)
+        {
+            if (!IsLargeParallelSkeletonTask(item.Weight))
+                return;
+
+            lock (sync)
+            {
+                activeHeavyTasks = Math.Max(0, activeHeavyTasks - 1);
+                Monitor.PulseAll(sync);
+            }
+        }
+
+        for (var workerIndex = 0; workerIndex < workerDegree; workerIndex++)
         {
             var name = $"xpa-task-emitter-{workerIndex + 1}";
             workers[workerIndex] = new Thread(() =>
@@ -60,8 +113,17 @@ internal static partial class ProjectGenerator
                 var workerState = CreateIsolatedGenerationState();
                 try
                 {
-                    while (queue.TryDequeue(out var task))
-                        RunWithGenerationState(workerState, () => emitTask(task));
+                    while (TryTakeNext(out var item))
+                    {
+                        try
+                        {
+                            RunWithGenerationState(workerState, () => emitTask(item.Task));
+                        }
+                        finally
+                        {
+                            Complete(item);
+                        }
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -84,12 +146,24 @@ internal static partial class ProjectGenerator
     }
 
     private static int ResolveParallelSkeletonTaskDegree(IReadOnlyList<TaskSemantic> scheduledTasks, int requestedDegree)
+        => ResolveParallelSkeletonHeavyDegreeCap(scheduledTasks, requestedDegree);
+
+    private static int ResolveParallelSkeletonWorkerDegree(IReadOnlyList<TaskSemantic> scheduledTasks, int requestedDegree)
     {
         if (scheduledTasks.Count == 0)
             return 1;
 
         var requested = ResolveConfiguredParallelTaskDegree(requestedDegree);
         var degree = Math.Min(Math.Max(1, requested), scheduledTasks.Count);
+        return Math.Max(1, degree);
+    }
+
+    private static int ResolveParallelSkeletonHeavyDegreeCap(IReadOnlyList<TaskSemantic> scheduledTasks, int requestedDegree)
+    {
+        if (scheduledTasks.Count == 0)
+            return 1;
+
+        var degree = ResolveParallelSkeletonWorkerDegree(scheduledTasks, requestedDegree);
         if (degree <= 1)
             return degree;
 
@@ -108,6 +182,24 @@ internal static partial class ProjectGenerator
             degree = Math.Min(degree, LargeParallelTaskDegreeCap);
 
         return Math.Max(1, degree);
+    }
+
+    private static IReadOnlyList<(TaskSemantic Task, long Weight)> BuildWeightedSkeletonTasks(IReadOnlyList<TaskSemantic> scheduledTasks)
+    {
+        var weightCache = new Dictionary<int, long>();
+        return scheduledTasks
+            .Select(task => (Task: task, Weight: EstimateTaskTreeGenerationWeight(task, _childTasksByParentOrdinal, weightCache)))
+            .ToList();
+    }
+
+    private static bool IsLargeParallelSkeletonTask(long weight)
+        => weight >= LargeParallelTaskWeightThreshold;
+
+    private static string FormatParallelDegreePlan(IReadOnlyList<TaskSemantic> scheduledTasks, int requestedDegree)
+    {
+        var workerDegree = ResolveParallelSkeletonWorkerDegree(scheduledTasks, requestedDegree);
+        var heavyDegreeCap = ResolveParallelSkeletonHeavyDegreeCap(scheduledTasks, requestedDegree);
+        return $"workers={workerDegree} heavyCap={heavyDegreeCap} requested={requestedDegree} scheduled=largest-first";
     }
 
     private static int ResolveConfiguredParallelTaskDegree(int requestedDegree)

@@ -45,7 +45,10 @@ internal static partial class ProjectGenerator
             return PrefixControllerReferencesForView(buttonResourceBinding, task, dataObjects);
         }
 
-        var hintedBinding = ResolveParentModelBindingByControlHint(c, task, allTasks, dataObjects);
+        var allowParentHintBinding = AllowsViewControlParentHintBinding(c);
+        var hintedBinding = allowParentHintBinding
+            ? ResolveParentModelBindingByControlHint(c, task, allTasks, dataObjects)
+            : "";
         if (!string.IsNullOrWhiteSpace(hintedBinding))
         {
             var prefixedHint = PrefixControllerReferencesForView(hintedBinding, task, dataObjects);
@@ -59,7 +62,7 @@ internal static partial class ProjectGenerator
             if (string.IsNullOrWhiteSpace(expr))
                 expr = ResolveSelectExpressionByName(c.DataColumn!, task, dataObjects);
             if (string.IsNullOrWhiteSpace(expr))
-                expr = ResolveParentModelBindingByControlHint(c, task, allTasks, dataObjects);
+                expr = allowParentHintBinding ? ResolveParentModelBindingByControlHint(c, task, allTasks, dataObjects) : "";
             if (string.IsNullOrWhiteSpace(expr))
                 expr = ResolveDataColumnOrdinalBinding(c.DataColumn, task, allTasks);
             if (string.IsNullOrWhiteSpace(expr))
@@ -181,6 +184,30 @@ internal static partial class ProjectGenerator
         return $"(XPARuntimeCore.Box.UI.Advanced.ButtonData){trimmed}";
     }
 
+    private static string NormalizeImageDirectDataAssignmentExpression(
+        string valueExpression,
+        TaskSemantic task,
+        IReadOnlyList<TaskSemantic> allTasks)
+    {
+        if (string.IsNullOrWhiteSpace(valueExpression))
+            return valueExpression;
+
+        var trimmed = valueExpression.Trim();
+        if (trimmed.StartsWith("XPARuntimeCore.Box.UI.Advanced.ImageData.", StringComparison.Ordinal) ||
+            trimmed.StartsWith("new XPARuntimeCore.Box.UI.Advanced.ImageData(", StringComparison.Ordinal) ||
+            trimmed.StartsWith("(XPARuntimeCore.Box.UI.Advanced.ImageData)", StringComparison.Ordinal))
+            return trimmed;
+
+        var unscoped = trimmed;
+        if (unscoped.StartsWith("_controller.", StringComparison.Ordinal))
+            unscoped = unscoped["_controller.".Length..];
+
+        if (IsBlobViewDataExpression(unscoped, task, allTasks))
+            return $"XPARuntimeCore.Box.UI.Advanced.ImageData.FromByteArray(() => ENV.UserMethods.Instance.CastToByteArray({trimmed}))";
+
+        return $"XPARuntimeCore.Box.UI.Advanced.ImageData.FromText(() => ENV.UserMethods.Instance.CastToText({trimmed}))";
+    }
+
     private static bool IsLogicalViewDataExpression(string expression, TaskSemantic task, IReadOnlyList<TaskSemantic> allTasks)
         => IsViewDataExpressionWithAttr(expression, task, allTasks, attr =>
             string.Equals(attr, "FIELD_BOOLEAN", StringComparison.OrdinalIgnoreCase) ||
@@ -190,6 +217,11 @@ internal static partial class ProjectGenerator
         => IsViewDataExpressionWithAttr(expression, task, allTasks, attr =>
             string.Equals(attr, "FIELD_ALPHA", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(attr, "FIELD_UNICODE", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsBlobViewDataExpression(string expression, TaskSemantic task, IReadOnlyList<TaskSemantic> allTasks)
+        => IsViewDataExpressionWithAttr(expression, task, allTasks, attr =>
+            string.Equals(attr, "FIELD_BLOB", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(attr, "FIELD_OBJECT", StringComparison.OrdinalIgnoreCase));
 
     private static bool IsViewDataExpressionWithAttr(
         string expression,
@@ -521,6 +553,11 @@ internal static partial class ProjectGenerator
     private static bool IsViewCheckBoxControl(TaskFormControlDef c)
     {
         return c.Model is "CTRL_GUI0_CHECKBOX" or "CTRL_RICH_CLIENT_CHECKBOX";
+    }
+
+    private static bool IsViewImageControl(TaskFormControlDef c)
+    {
+        return c.Model is "CTRL_GUI0_IMAGE" or "CTRL_GUI1_IMAGE";
     }
 
     private static bool SupportsDirectViewDataAssignment(TaskFormControlDef c)

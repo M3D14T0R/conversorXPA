@@ -664,6 +664,9 @@ internal static partial class ProjectGenerator
             if (IsGenericObjectExpectation(rightExpected) && !IsGenericObjectExpectation(leftExpected) && leftExpected.HasExpectation)
                 return leftExpected;
 
+            if (ShouldUseNumericDomainForMixedTemporalComparison(leftExpected, rightExpected))
+                return ExpectedTypeForReturnType("Number");
+
             var leftPriority = GetComparisonExpectedTypePriority(leftExpected);
             var rightPriority = GetComparisonExpectedTypePriority(rightExpected);
             if (leftPriority > rightPriority && leftExpected.HasExpectation)
@@ -679,6 +682,32 @@ internal static partial class ProjectGenerator
         }
 
         return default;
+    }
+
+    private static bool ShouldUseNumericDomainForMixedTemporalComparison(ExpectedTypeContext leftExpected, ExpectedTypeContext rightExpected)
+    {
+        if (!leftExpected.HasExpectation || !rightExpected.HasExpectation)
+            return false;
+
+        var leftReturnType = GetValueReturnType(NormalizeReturnTypeToken(leftExpected.ReturnType));
+        var rightReturnType = GetValueReturnType(NormalizeReturnTypeToken(rightExpected.ReturnType));
+        var leftAttr = NormalizeAttrObjKind(leftExpected.AttrObj);
+        var rightAttr = NormalizeAttrObjKind(rightExpected.AttrObj);
+
+        var leftIsNumber = string.Equals(leftReturnType, "Number", StringComparison.Ordinal) ||
+                           string.Equals(leftAttr, "FIELD_NUMERIC", StringComparison.OrdinalIgnoreCase);
+        var rightIsNumber = string.Equals(rightReturnType, "Number", StringComparison.Ordinal) ||
+                            string.Equals(rightAttr, "FIELD_NUMERIC", StringComparison.OrdinalIgnoreCase);
+        var leftIsTemporal = string.Equals(leftReturnType, "Date", StringComparison.Ordinal) ||
+                             string.Equals(leftReturnType, "Time", StringComparison.Ordinal) ||
+                             string.Equals(leftAttr, "FIELD_DATE", StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(leftAttr, "FIELD_TIME", StringComparison.OrdinalIgnoreCase);
+        var rightIsTemporal = string.Equals(rightReturnType, "Date", StringComparison.Ordinal) ||
+                              string.Equals(rightReturnType, "Time", StringComparison.Ordinal) ||
+                              string.Equals(rightAttr, "FIELD_DATE", StringComparison.OrdinalIgnoreCase) ||
+                              string.Equals(rightAttr, "FIELD_TIME", StringComparison.OrdinalIgnoreCase);
+
+        return (leftIsNumber && rightIsTemporal) || (rightIsNumber && leftIsTemporal);
     }
 
     private static bool IsCounterExpression(string expression)
@@ -1075,6 +1104,9 @@ internal static partial class ProjectGenerator
     {
         TrackLegacyExpressionTreatment("Parser", nameof(SplitTopLevelComparisonExpression));
         if (string.IsNullOrWhiteSpace(expression))
+            return null;
+
+        if (SplitTopLevelBooleanBinaryExpression(expression) is not null)
             return null;
 
         var operators = new[] { "==", "!=", ">=", "<=", ">", "<" };

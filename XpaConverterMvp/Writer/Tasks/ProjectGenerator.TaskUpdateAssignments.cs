@@ -48,8 +48,7 @@ internal static partial class ProjectGenerator
                     }
                     else
                     {
-                        translated = NormalizeDateConstructorMappings(TranslateXpaExpressionToCSharp(exp.LiteralNormalizedSyntax, t, dataObjects, exp.Attribute));
-                        translated = NormalizeVarSetValueExpressions(translated);
+                        translated = ResolveTypedExpressionEntryCode(exp, t, dataObjects, context).Code;
                         if (string.Equals(exp.Attribute, "A", StringComparison.OrdinalIgnoreCase))
                         {
                             var trimmed = translated.Trim();
@@ -57,7 +56,6 @@ internal static partial class ProjectGenerator
                             if (trimmed.StartsWith(uriPrefix, StringComparison.Ordinal) && trimmed.EndsWith(")", StringComparison.Ordinal))
                                 translated = trimmed.Substring(uriPrefix.Length, trimmed.Length - uriPrefix.Length - 1).Trim();
                         }
-                        translated = NormalizeExpressionByAttribute(t, exp.Attribute, translated);
                         translated = EmitExpressionForContext(translated, t, context);
                     }
                 }
@@ -213,9 +211,13 @@ internal static partial class ProjectGenerator
         if (TryNormalizeDirectResourceReference(value, task, out var normalizedDirectReference))
             value = normalizedDirectReference;
         var assignmentContext = CreateAssignmentEmissionContext(targetInfo, target);
-        if (TryEmitThroughStrictEmittedExpression(value, task, assignmentContext, out var strictValue))
+        var emittedThroughStrict = TryEmitThroughStrictEmittedExpression(value, task, assignmentContext, out var strictValue);
+        if (emittedThroughStrict)
             value = strictValue;
-        else if (TryEmitForDeclaredAssignmentType(value, task, resolvedColumnType, out var declaredValue))
+        if (TryEmitAssignmentValueFromKnownTypes(value, task, targetInfo, out var knownTypedValue))
+            value = knownTypedValue;
+        else if (!emittedThroughStrict &&
+                 TryEmitForDeclaredAssignmentType(value, task, resolvedColumnType, out var declaredValue))
             value = declaredValue;
         value = RenderDeclaredAssignmentBridge(value, resolvedColumnType);
         var topLevelCall = TryGetTopLevelFunctionName(value);
@@ -306,6 +308,59 @@ internal static partial class ProjectGenerator
         return $"{target}.Value = {value};";
     }
 
+    private static bool TryEmitAssignmentValueFromKnownTypes(
+        string value,
+        TaskSemantic task,
+        TargetValueInfo targetInfo,
+        out string emitted)
+    {
+        emitted = "";
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        var expectedReturnType = ResolveReturnTypeForExpectedContext(ExpectedTypeForTarget(targetInfo));
+        if (string.IsNullOrWhiteSpace(expectedReturnType))
+        {
+            var attrObj = !string.IsNullOrWhiteSpace(targetInfo.AttrObj)
+                ? targetInfo.AttrObj
+                : targetInfo.ModelAttrObj ?? "";
+            expectedReturnType = MapAttrObjToReturnType(attrObj);
+        }
+
+        if (string.IsNullOrWhiteSpace(expectedReturnType) ||
+            !TryResolveStrictSourceReturnType(value, task, out var sourceReturnType) ||
+            string.IsNullOrWhiteSpace(sourceReturnType))
+        {
+            return false;
+        }
+
+        if (SourceReturnTypeMatchesExpected(sourceReturnType, expectedReturnType))
+            return TryEmitClrObjectSourceForExpectedValue(value, expectedReturnType, out emitted);
+
+        emitted = EmitFromReliableTypeEvidence(value, sourceReturnType, expectedReturnType, "assignment-target");
+        return !string.IsNullOrWhiteSpace(emitted) &&
+               !string.Equals(emitted.Trim(), value.Trim(), StringComparison.Ordinal);
+    }
+
+    private static bool TryEmitClrObjectSourceForExpectedValue(
+        string value,
+        string expectedReturnType,
+        out string emitted)
+    {
+        emitted = "";
+        var functionName = TryGetTopLevelFunctionName(value);
+        if (string.IsNullOrWhiteSpace(functionName))
+            return false;
+
+        var normalizedFunction = NormalizeXpaFunctionContractName(functionName);
+        if (!FunctionReturnsClrObjectBeforeXpaMaterialization(normalizedFunction))
+            return false;
+
+        emitted = EmitFromReliableTypeEvidence(value, "object", expectedReturnType, normalizedFunction);
+        return !string.IsNullOrWhiteSpace(emitted) &&
+               !string.Equals(emitted.Trim(), value.Trim(), StringComparison.Ordinal);
+    }
+
     private static bool TryEmitForDeclaredAssignmentType(
         string value,
         TaskSemantic task,
@@ -363,8 +418,18 @@ internal static partial class ProjectGenerator
         if (string.IsNullOrWhiteSpace(functionName))
             return false;
 
-        return IsTopLevelCall(functionName, "JavaCompat.JGetStatic") ||
-               IsTopLevelCall(functionName, "u.JGet") ||
+        if (IsTopLevelCall(functionName, "JavaCompat.JGetStatic"))
+        {
+            if (TryParseFunctionCall(value, out _, out var args) &&
+                args.Count >= 2 &&
+                TryResolveJavaSignatureReturnType(args[1], out var javaReturnType) &&
+                IsSafeLegacyContractReturnType(NormalizeReturnTypeToken(javaReturnType)))
+                return false;
+
+            return true;
+        }
+
+        return IsTopLevelCall(functionName, "u.JGet") ||
                IsTopLevelCall(functionName, "u.JCall") ||
                IsTopLevelCall(functionName, "u.JCallStatic") ||
                IsTopLevelCall(functionName, "u.RqQueLst") ||

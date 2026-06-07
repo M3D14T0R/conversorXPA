@@ -59,12 +59,9 @@ internal static partial class ProjectGenerator
         if (_taskClassNameByOrdinal.TryGetValue(task.Ordinal, out var cached))
             return cached;
 
-        var baseName = ToTaskClassName(task.Description);
+        var baseName = ResolveTaskClassBaseName(task);
         var parent = GetTaskByOrdinal(task.ParentOrdinal, allTasks);
-        var siblings = GetSiblingTasks(task, allTasks);
-        var siblingCollisionIndex = siblings
-            .TakeWhile(x => x.Ordinal != task.Ordinal)
-            .Count(x => string.Equals(ToTaskClassName(x.Description), baseName, StringComparison.Ordinal));
+        var siblingCollisionIndex = ResolveTaskSiblingCollisionIndex(task, allTasks, baseName);
 
         var candidate = siblingCollisionIndex == 0
             ? baseName
@@ -102,6 +99,55 @@ internal static partial class ProjectGenerator
 
         _taskClassNameByOrdinal[task.Ordinal] = candidate;
         return candidate;
+    }
+
+    private static void BuildTaskClassNameIndexes(IReadOnlyList<TaskSemantic> allTasks)
+    {
+        _taskClassBaseNameByOrdinal = allTasks.ToDictionary(t => t.Ordinal, t => ToTaskClassName(t.Description));
+        _taskClassSiblingCollisionIndexByOrdinal = new Dictionary<int, int>();
+
+        foreach (var group in allTasks.GroupBy(t => t.ParentOrdinal))
+        {
+            var ordered = group.Key.HasValue
+                ? group.OrderBy(t => t.SubtaskIndex ?? int.MaxValue).ThenBy(t => t.Ordinal)
+                : group.OrderBy(t => t.Ordinal);
+            var seenByBaseName = new Dictionary<string, int>(StringComparer.Ordinal);
+            foreach (var task in ordered)
+            {
+                var baseName = ResolveTaskClassBaseName(task);
+                seenByBaseName.TryGetValue(baseName, out var seen);
+                _taskClassSiblingCollisionIndexByOrdinal[task.Ordinal] = seen;
+                seenByBaseName[baseName] = seen + 1;
+            }
+        }
+    }
+
+    private static string ResolveTaskClassBaseName(TaskSemantic task)
+    {
+        if (_taskClassBaseNameByOrdinal.TryGetValue(task.Ordinal, out var cached))
+            return cached;
+
+        var baseName = ToTaskClassName(task.Description);
+        _taskClassBaseNameByOrdinal[task.Ordinal] = baseName;
+        return baseName;
+    }
+
+    private static int ResolveTaskSiblingCollisionIndex(TaskSemantic task, IReadOnlyList<TaskSemantic> allTasks, string baseName)
+    {
+        if (_taskClassSiblingCollisionIndexByOrdinal.TryGetValue(task.Ordinal, out var cached))
+            return cached;
+
+        var seen = 0;
+        foreach (var sibling in GetSiblingTasks(task, allTasks))
+        {
+            if (sibling.Ordinal == task.Ordinal)
+                break;
+            if (string.Equals(ResolveTaskClassBaseName(sibling), baseName, StringComparison.Ordinal))
+                seen++;
+        }
+
+        _taskClassSiblingCollisionIndexByOrdinal[task.Ordinal] = seen;
+        return seen;
     }
 
     private static TaskSemantic? GetTaskByOrdinal(int? ordinal, IReadOnlyList<TaskSemantic> allTasks)
@@ -288,6 +334,12 @@ internal static partial class ProjectGenerator
     private static Dictionary<int, int> BuildOptionalRunParameterStartIndexCache(IReadOnlyList<TaskSemantic> allTasks)
     {
         var result = allTasks.ToDictionary(t => t.Ordinal, _ => -1);
+        var topLevelTasksByProgramIndex = allTasks
+            .Where(t => !t.ParentOrdinal.HasValue && t.TopLevelProgramIndex.HasValue)
+            .GroupBy(t => t.TopLevelProgramIndex!.Value)
+            .ToDictionary(
+                g => g.Key,
+                g => (IReadOnlyList<TaskSemantic>)g.ToList());
         foreach (var task in allTasks)
         {
             foreach (var call in EnumerateTaskCalls(task))
@@ -297,8 +349,12 @@ internal static partial class ProjectGenerator
                 if (resolved is not null)
                     RegisterOptionalRunArgumentCount(result, resolved.Ordinal, effectiveArgumentCount);
 
-                foreach (var target in ResolveProgramIndexCallTargets(call, allTasks))
-                    RegisterOptionalRunArgumentCount(result, target.Ordinal, effectiveArgumentCount);
+                if (TryResolveProgramIndexCallTargetIndex(call, out var targetIndex) &&
+                    topLevelTasksByProgramIndex.TryGetValue(targetIndex, out var targets))
+                {
+                    foreach (var target in targets)
+                        RegisterOptionalRunArgumentCount(result, target.Ordinal, effectiveArgumentCount);
+                }
             }
         }
 
@@ -349,24 +405,34 @@ internal static partial class ProjectGenerator
 
     private static IEnumerable<TaskSemantic> ResolveProgramIndexCallTargets(TaskCallDef call, IReadOnlyList<TaskSemantic> allTasks)
     {
-        if (!string.IsNullOrWhiteSpace(call.TargetComponentName))
-            yield break;
-        if (!string.Equals(call.OperationType, "P", StringComparison.OrdinalIgnoreCase))
-            yield break;
-
-        var targetIndex = call.TargetObjectId ?? call.TaskId;
-        if (!targetIndex.HasValue)
+        if (!TryResolveProgramIndexCallTargetIndex(call, out var targetIndex))
             yield break;
 
         foreach (var target in allTasks)
         {
             if (target.ParentOrdinal.HasValue ||
                 !target.TopLevelProgramIndex.HasValue ||
-                target.TopLevelProgramIndex.Value != targetIndex.Value)
+                target.TopLevelProgramIndex.Value != targetIndex)
                 continue;
 
             yield return target;
         }
+    }
+
+    private static bool TryResolveProgramIndexCallTargetIndex(TaskCallDef call, out int targetIndex)
+    {
+        targetIndex = 0;
+        if (!string.IsNullOrWhiteSpace(call.TargetComponentName))
+            return false;
+        if (!string.Equals(call.OperationType, "P", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var candidate = call.TargetObjectId ?? call.TaskId;
+        if (!candidate.HasValue)
+            return false;
+
+        targetIndex = candidate.Value;
+        return true;
     }
 
     private static int CountEffectiveCallArguments(TaskCallDef call)

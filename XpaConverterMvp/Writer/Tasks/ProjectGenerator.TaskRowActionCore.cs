@@ -21,7 +21,7 @@ internal static partial class ProjectGenerator
         var target = ResolveUpdateTargetExpression(up.Variable, task, dataObjects, allTasks);
         targetStopwatch.Stop();
         ConversionTelemetry.LogDuration("DIRECTUPDATE", className, targetStopwatch.Elapsed, $"section=\"after-target\" var={QuoteTelemetry(up.Variable ?? "?")}");
-        if (string.IsNullOrWhiteSpace(target) || target.StartsWith("_parent.", StringComparison.Ordinal))
+        if (string.IsNullOrWhiteSpace(target))
             return false;
 
         var resourceStopwatch = Stopwatch.StartNew();
@@ -61,13 +61,16 @@ internal static partial class ProjectGenerator
         {
             value = value.Trim();
         }
-        else if (TryEmitThroughStrictEmittedExpression(value, task, assignmentContext, out var strictValue))
+        else
         {
-            value = strictValue;
-        }
-        else if (TryEmitForDeclaredAssignmentType(value, task, resolvedColumnType, out var declaredValue))
-        {
-            value = declaredValue;
+            var emittedThroughStrict = TryEmitThroughStrictEmittedExpression(value, task, assignmentContext, out var strictValue);
+            if (emittedThroughStrict)
+                value = strictValue;
+            if (TryEmitAssignmentValueFromKnownTypes(value, task, targetInfo, out var knownTypedValue))
+                value = knownTypedValue;
+            else if (!emittedThroughStrict &&
+                     TryEmitForDeclaredAssignmentType(value, task, resolvedColumnType, out var declaredValue))
+                value = declaredValue;
         }
         value = RenderDeclaredAssignmentBridge(value, resolvedColumnType);
         if (targetInfo.IsArray &&
@@ -84,7 +87,6 @@ internal static partial class ProjectGenerator
         }
         if (TryNormalizeBlobWrappedNewClrExpression(value, out var directClrAssignmentValue))
             value = directClrAssignmentValue;
-        value = RenderStrictFunctionArgumentBridges(value, task);
         coerceStopwatch.Stop();
         ConversionTelemetry.LogDuration("DIRECTUPDATE", className, coerceStopwatch.Elapsed, $"section=\"after-coerce\" var={QuoteTelemetry(up.Variable ?? "?")}");
         if (coerceStopwatch.Elapsed.TotalMilliseconds >= 500)
