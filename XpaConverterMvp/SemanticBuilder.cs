@@ -2114,6 +2114,16 @@ internal static class SemanticBuilder
         if (string.Equals(token, "MODE", StringComparison.OrdinalIgnoreCase))
             return ToCSharpLiteral(literalValue);
 
+        if (string.Equals(token, "INDEX", StringComparison.OrdinalIgnoreCase))
+        {
+            if (int.TryParse(literalValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out var indexId))
+                return indexId.ToString(CultureInfo.InvariantCulture);
+            return ToCSharpLiteral(literalValue);
+        }
+
+        if (string.Equals(token, "HEB", StringComparison.OrdinalIgnoreCase))
+            return ToCSharpLiteral(literalValue);
+
         if (string.Equals(token, "KBD", StringComparison.OrdinalIgnoreCase))
             return ToCSharpLiteral($"<{literalValue}>");
 

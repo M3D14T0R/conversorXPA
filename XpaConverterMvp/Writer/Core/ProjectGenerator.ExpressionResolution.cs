@@ -410,6 +410,14 @@ internal static partial class ProjectGenerator
             ? ResolveSourceReturnTypeForExpressionEntry(expr, task, dataObjects)
             : "";
         string translated;
+        if (TryTranslateUnresolvedXpaPlaceholderExpression(
+                expr,
+                !string.IsNullOrWhiteSpace(contextualExpectedReturnType) ? contextualExpectedReturnType : sourceReturnType,
+                out var unresolvedPlaceholder))
+        {
+            return unresolvedPlaceholder;
+        }
+
         if (TryTranslateSourceVarIndexLiteral(
                 ResolveExpressionEntrySourceSyntax(expr),
                 task,
@@ -660,6 +668,27 @@ internal static partial class ProjectGenerator
             ? ResolveExpressionEntrySourceSyntax(expr)
             : "";
         if (expr is not null &&
+            TryTranslateUnresolvedXpaPlaceholderExpression(
+                expr,
+                expectedReturnTypeForBooleanSource,
+                out var unresolvedPlaceholder))
+        {
+            var unresolved = CreateEmittedExpressionFromSourceTranslated(unresolvedPlaceholder, expr, task, dataObjects, context);
+            if (context.SinkKind == ExpressionSinkKind.BooleanCondition)
+                unresolved = unresolved with
+                {
+                    Code = NormalizeStatementBooleanConditionSyntax(unresolved.Code),
+                    EffectiveReturnType = "Bool",
+                    EffectiveXpaType = XpaType.Bool,
+                    HasEffectiveType = true
+                };
+            _typedExpressionEntryCodeCache[cacheKey] = unresolved;
+            RegisterContextualExpressionReturnType(task, unresolved.Code, context);
+            RegisterTypedExpressionReturnType(task, unresolved.Code, unresolved.PreferredReturnType);
+            return unresolved;
+        }
+
+        if (expr is not null &&
             (context.SinkKind == ExpressionSinkKind.BooleanCondition ||
              (context.Expected.HasExpectation &&
               string.Equals(expectedReturnTypeForBooleanSource, "Bool", StringComparison.Ordinal) &&
@@ -752,6 +781,69 @@ internal static partial class ProjectGenerator
         }
         RegisterTypedExpressionReturnType(task, typed.Code, typed.PreferredReturnType);
         return typed;
+    }
+
+    private static bool TryTranslateUnresolvedXpaPlaceholderExpression(
+        ExpressionEntrySemantic expr,
+        string? expectedReturnType,
+        out SourceTranslatedExpression translated)
+    {
+        translated = default;
+        var sourceSyntax = ResolveExpressionEntrySourceSyntax(expr);
+        if (string.IsNullOrWhiteSpace(sourceSyntax) ||
+            sourceSyntax.IndexOf("???", StringComparison.Ordinal) < 0)
+            return false;
+
+        var returnType = NormalizeReturnTypeToken(expectedReturnType);
+        if (string.IsNullOrWhiteSpace(returnType))
+            returnType = NormalizeReturnTypeToken(ResolveSimpleReturnTypeForExpressionAttribute(expr.Attribute));
+        if (string.IsNullOrWhiteSpace(returnType))
+            returnType = InferUnresolvedPlaceholderReturnTypeFromSource(sourceSyntax);
+        if (string.IsNullOrWhiteSpace(returnType))
+            returnType = "Text";
+
+        var code = BuildUnresolvedXpaPlaceholderCode(returnType);
+        ConversionTelemetry.Log(
+            "UNRESOLVED_XPA_PLACEHOLDER",
+            $"expr={expr.Ordinal.ToString(CultureInfo.InvariantCulture)} returnType={returnType} source={QuoteTelemetry(sourceSyntax)}");
+        translated = CreateSourceTranslatedExpression(expr, code, returnType, "unresolved-xpa-placeholder");
+        return true;
+    }
+
+    private static string InferUnresolvedPlaceholderReturnTypeFromSource(string sourceSyntax)
+    {
+        var source = WebUtility.HtmlDecode(sourceSyntax ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(source))
+            return "";
+
+        if (source.StartsWith("NOT", StringComparison.OrdinalIgnoreCase) ||
+            TrySplitTopLevelXpaBooleanBinaryExpression(source, out _, out _, out _) ||
+            SplitTopLevelComparisonExpression(source) is not null)
+            return "Bool";
+
+        if (TryParseFunctionCall(source, out var functionName, out var args) &&
+            TryResolveKnownXpaFunctionReturnType(functionName, args, out var functionReturnType))
+            return NormalizeReturnTypeToken(functionReturnType);
+
+        if (TrySplitTopLevelSourceArithmeticExpression(source) is not null)
+            return "Number";
+
+        return "";
+    }
+
+    private static string BuildUnresolvedXpaPlaceholderCode(string returnType)
+    {
+        return GetValueReturnType(NormalizeReturnTypeToken(returnType)) switch
+        {
+            "Bool" => "false",
+            "Number" => "0",
+            "Date" => "XPARuntimeCore.Box.Date.Empty",
+            "Time" => "XPARuntimeCore.Box.Time.Empty",
+            "Text" => "\"\"",
+            "byte[]" => "null",
+            "Text[]" or "Number[]" or "Date[]" or "Time[]" or "Bool[]" or "byte[][]" => "null",
+            _ => "null"
+        };
     }
 
     private static bool TryResolveExpectedDominantTypedExpression(

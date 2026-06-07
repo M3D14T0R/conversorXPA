@@ -186,6 +186,16 @@ private static string? RewriteLiteralPostfixToken(string token, string literalVa
     if (string.Equals(token, "MODE", StringComparison.OrdinalIgnoreCase))
         return ToCSharpLiteral(literalValue);
 
+    if (string.Equals(token, "INDEX", StringComparison.OrdinalIgnoreCase))
+    {
+        if (int.TryParse(literalValue, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var indexId))
+            return indexId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return ToCSharpLiteral(literalValue);
+    }
+
+    if (string.Equals(token, "HEB", StringComparison.OrdinalIgnoreCase))
+        return ToCSharpLiteral(literalValue);
+
     if (string.Equals(token, "KBD", StringComparison.OrdinalIgnoreCase))
         return ToCSharpLiteral($"<{literalValue}>");
 

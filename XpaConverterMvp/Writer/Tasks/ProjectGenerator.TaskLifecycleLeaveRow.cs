@@ -27,8 +27,8 @@ internal static partial class ProjectGenerator
         var rowIos = GetPrintRowIos(t);
         var readRowIos = GetTextIoReadRowIos(t);
         var hasRowActions = t.Logic.SavingRowLogics.Count > 0;
-        var hasTabCalls = t.DataView.TabCalls.Any(c => c.OperationType == "T");
-        return hasRowActions || rowIos.Count > 0 || readRowIos.Count > 0 || hasTabCalls;
+        var hasStandaloneTabCalls = GetStandaloneTabCalls(t).Count > 0;
+        return hasRowActions || rowIos.Count > 0 || readRowIos.Count > 0 || hasStandaloneTabCalls;
     }
 
     private static void EmitBusinessProcessLeaveRowBody(
@@ -42,11 +42,11 @@ internal static partial class ProjectGenerator
     {
         var rowIos = GetPrintRowIos(t);
         var readRowIos = GetTextIoReadRowIos(t);
-        var hasTabCalls = t.DataView.TabCalls.Any(c => c.OperationType == "T");
+        var standaloneTabCalls = GetStandaloneTabCalls(t);
         var writeCallMap = TimeSection(() => BuildFormIoWriteCallMap(t), "LEAVEROW", className, "build-write-call-map");
         var readCallMap = TimeSection(() => BuildFormIoReadCallMap(t), "LEAVEROW", className, "build-read-call-map");
 
-        if (!hasTabCalls &&
+        if (standaloneTabCalls.Count == 0 &&
             CanEmitStructuredLeaveRows(t, rowIos, readRowIos))
         {
             foreach (var row in t.Logic.SavingRowLogics)
@@ -64,7 +64,7 @@ internal static partial class ProjectGenerator
         var actionList = TimeSection(() => t.Logic.SavingRowLogics.SelectMany(r => r.Actions).ToList(), "LEAVEROW", className, "collect-row-actions");
         TimeSection(() =>
         {
-            foreach (var c in t.DataView.TabCalls.Where(c => c.OperationType == "T"))
+            foreach (var c in standaloneTabCalls)
             {
                 var alreadyExists = actionList.Any(a =>
                     a.Kind == "Call" &&

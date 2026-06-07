@@ -241,9 +241,13 @@ internal static partial class ProjectGenerator
             return new[] { new TextIoStreamInfo("_ioReport", ResolveTextIoStreamType(t), t.Io) };
 
         if (ios.Count == 1)
-            return new[] { new TextIoStreamInfo("_ioReport", ResolveTextIoStreamType(t, ios[0]), ios[0]) };
+        {
+            var singleUsed = new HashSet<string>(ResolvePrintStreamVariableNames(t), StringComparer.Ordinal);
+            var variableName = EnsureUniqueIdentifier("_ioReport", singleUsed, "_ioReport");
+            return new[] { new TextIoStreamInfo(variableName, ResolveTextIoStreamType(t, ios[0]), ios[0]) };
+        }
 
-        var used = new HashSet<string>(StringComparer.Ordinal);
+        var used = new HashSet<string>(ResolvePrintStreamVariableNames(t), StringComparer.Ordinal);
         var streams = new List<TextIoStreamInfo>(ios.Count);
         for (var index = 0; index < ios.Count; index++)
         {
@@ -609,8 +613,11 @@ internal static partial class ProjectGenerator
 
     private static void EmitFormIoWrite(StringBuilder sb, TaskFormIoDef io, string writeCall, TaskSemantic t, IReadOnlyList<DataObjectDef> dataObjects, string pad)
     {
+        var usesTextIoLayout = writeCall.Contains("_ioReport", StringComparison.Ordinal);
         var resolvedWriteCall = ReplaceBareIoReportPlaceholder(writeCall, ResolveTextIoStreamVariableForIo(t, io));
-        if (io.FormEntryIndex.HasValue && resolvedWriteCall.Contains("_layout.", StringComparison.Ordinal))
+        if (usesTextIoLayout &&
+            io.FormEntryIndex.HasValue &&
+            resolvedWriteCall.Contains("_layout.", StringComparison.Ordinal))
             resolvedWriteCall = resolvedWriteCall.Replace("_layout.", ResolveTextIoLayoutVariableName(t, io.FormEntryIndex.Value) + ".", StringComparison.Ordinal);
         if (resolvedWriteCall.Contains("_ioPrint", StringComparison.Ordinal))
             resolvedWriteCall = resolvedWriteCall.Replace("_ioPrint", ResolvePrintStreamVariableForIo(t, io), StringComparison.Ordinal);
@@ -849,13 +856,13 @@ internal static partial class ProjectGenerator
     {
         var textForms = GetEffectiveTextIoForms(task);
         if (textForms.Count == 0)
-            return "_layout";
+            return HasPrintLayout(task) ? "_textLayout" : "_layout";
         var first = textForms[0];
         if (first.Index == formEntryIndex)
-            return "_layout";
+            return HasPrintLayout(task) ? "_textLayout" : "_layout";
         var formEntry = textForms.FirstOrDefault(x => x.Index == formEntryIndex);
         var suffix = formEntry?.ClassIndex ?? formEntry?.Index ?? formEntryIndex;
-        return $"_layoutC{suffix}";
+        return HasPrintLayout(task) ? $"_textLayoutC{suffix}" : $"_layoutC{suffix}";
     }
 
     private static string ResolvePrintingNamespaceSegment(TaskSemantic task, IReadOnlyList<TaskSemantic> allTasks)

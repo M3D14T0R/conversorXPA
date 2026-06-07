@@ -160,6 +160,14 @@ internal static partial class ProjectGenerator
                         cond = "true";
                     var effectiveCond = CombineStructuredBlockCondition(currentBlockCondition, cond);
 
+                    if (!string.IsNullOrWhiteSpace(currentImmediateCondition) &&
+                        AreEquivalentStructuredConditions(cond, currentImmediateCondition) &&
+                        !HasTopLevelElseBeforeStructuredEnd(orderedLines, index, blocksByLine, endBlockLines))
+                    {
+                        EmitStructuredRowLogicRange(sb, orderedLines, ref index, itemsByLine, blocksByLine, endBlockLines, task, dataObjects, allTasks, pad, currentBlockCondition, currentImmediateCondition, currentLoopConditionId, true, writeCallMap, readCallMap);
+                        continue;
+                    }
+
                     sb.AppendLine($"{pad}if ({cond})");
                     sb.AppendLine($"{pad}{{");
                     var foundElse = EmitStructuredRowLogicRange(sb, orderedLines, ref index, itemsByLine, blocksByLine, endBlockLines, task, dataObjects, allTasks, pad + "    ", effectiveCond, cond, currentLoopConditionId, true, writeCallMap, readCallMap);
@@ -263,6 +271,37 @@ internal static partial class ProjectGenerator
             if (itemsByLine.TryGetValue(line, out var items) &&
                 items.Any(IsExecutableStructuredItem))
                 return true;
+        }
+
+        return false;
+    }
+
+    private static bool HasTopLevelElseBeforeStructuredEnd(
+        IReadOnlyList<int> orderedLines,
+        int startIndex,
+        IReadOnlyDictionary<int, TaskBlockDef> blocksByLine,
+        ISet<int> endBlockLines)
+    {
+        var depth = 0;
+        for (var i = startIndex; i < orderedLines.Count; i++)
+        {
+            var line = orderedLines[i];
+            if (endBlockLines.Contains(line))
+            {
+                if (depth == 0)
+                    return false;
+                depth--;
+                continue;
+            }
+
+            if (!blocksByLine.TryGetValue(line, out var block))
+                continue;
+
+            if (depth == 0 && string.Equals(block.Type, "E", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (!string.Equals(block.Type, "E", StringComparison.OrdinalIgnoreCase))
+                depth++;
         }
 
         return false;

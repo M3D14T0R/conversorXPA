@@ -36,10 +36,11 @@ internal static partial class ProjectGenerator
                 }
                 else if (item.Io is not null && item.Io.FormEntryIndex.HasValue)
                 {
+                    var effectiveIo = stripConditions ? StripFormIoCondition(item.Io) : item.Io;
                     if (item.Io.OperationType == "O" && writeCallMap.TryGetValue(item.Io.FormEntryIndex.Value, out var writeCall))
-                        EmitFormIoWrite(sb, item.Io, writeCall, task, dataObjects, itemPad);
+                        EmitFormIoWrite(sb, effectiveIo, writeCall, task, dataObjects, itemPad);
                     else if (item.Io.OperationType == "I" && readCallMap.TryGetValue(item.Io.FormEntryIndex.Value, out var readCall))
-                        EmitFormIoRead(sb, item.Io, readCall, task, dataObjects, itemPad);
+                        EmitFormIoRead(sb, effectiveIo, readCall, task, dataObjects, itemPad);
                 }
             }
 

@@ -71,7 +71,8 @@ internal static partial class ProjectGenerator
         if (string.IsNullOrWhiteSpace(expression))
             return expression;
 
-        var trimmed = BalanceMalformedParenthesisEnvelope(expression.Trim());
+        var trimmed = RemoveUnmatchedTopLevelClosingParenthesesBeforeBooleanOperators(expression.Trim());
+        trimmed = BalanceMalformedParenthesisEnvelope(trimmed);
         trimmed = StripRedundantOuterParentheses(trimmed);
         var topLevelBoolean =
             SplitTopLevelBooleanBinaryExpression(trimmed) ??
@@ -145,6 +146,73 @@ internal static partial class ProjectGenerator
                 (i == 0 || expression[i - 1] != '?') &&
                 (i + 1 >= expression.Length || expression[i + 1] != '?'))
                 return true;
+        }
+
+        return false;
+    }
+
+    private static string RemoveUnmatchedTopLevelClosingParenthesesBeforeBooleanOperators(string expression)
+    {
+        if (string.IsNullOrWhiteSpace(expression) ||
+            (expression.IndexOf("&&", StringComparison.Ordinal) < 0 &&
+             expression.IndexOf("||", StringComparison.Ordinal) < 0))
+            return expression;
+
+        var sb = new System.Text.StringBuilder(expression.Length);
+        var depth = 0;
+        for (var i = 0; i < expression.Length; i++)
+        {
+            if (IsQuotedSegmentStart(expression, i))
+            {
+                if (!TryReadQuotedSegmentEnd(expression, i, out var quoteEnd))
+                {
+                    sb.Append(expression[i]);
+                    continue;
+                }
+
+                sb.Append(expression, i, quoteEnd - i + 1);
+                i = quoteEnd;
+                continue;
+            }
+
+            var ch = expression[i];
+            if (ch == '(')
+            {
+                depth++;
+                sb.Append(ch);
+                continue;
+            }
+
+            if (ch == ')')
+            {
+                if (depth > 0)
+                {
+                    depth--;
+                    sb.Append(ch);
+                    continue;
+                }
+
+                if (NextNonWhitespaceAfterClosingsIsBooleanOperator(expression, i + 1))
+                    continue;
+            }
+
+            sb.Append(ch);
+        }
+
+        return sb.ToString();
+    }
+
+    private static bool NextNonWhitespaceAfterClosingsIsBooleanOperator(string expression, int index)
+    {
+        for (var i = index; i < expression.Length; i++)
+        {
+            var ch = expression[i];
+            if (char.IsWhiteSpace(ch) || ch == ')')
+                continue;
+
+            return i + 1 < expression.Length &&
+                   ((expression[i] == '&' && expression[i + 1] == '&') ||
+                    (expression[i] == '|' && expression[i + 1] == '|'));
         }
 
         return false;
