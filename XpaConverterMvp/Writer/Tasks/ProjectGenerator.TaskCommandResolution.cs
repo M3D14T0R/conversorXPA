@@ -176,6 +176,11 @@ internal static partial class ProjectGenerator
             reserved.Add(ResolveTaskResourceMemberName(task, rc));
         foreach (var child in (_allTasks ?? Array.Empty<TaskSemantic>()).Where(x => x.ParentOrdinal == task.Ordinal))
             reserved.Add(ResolveTaskClassName(child, _allTasks ?? Array.Empty<TaskSemantic>()));
+        foreach (var fn in task.FunctionOverridesSemantic)
+        {
+            if (!string.IsNullOrWhiteSpace(fn.MethodName))
+                reserved.Add(fn.MethodName);
+        }
         return reserved;
     }
 

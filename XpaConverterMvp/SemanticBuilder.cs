@@ -793,15 +793,9 @@ internal static class SemanticBuilder
                 .ToList();
         }
 
-        var mergeTemplateVars = mergeForms.ToDictionary(
-            x => x.Index,
-            ResolveMergeTemplateVariableName);
-        var printSectionNames = printForms
-            .Select((form, i) => new { form.Index, Name = ResolvePrintSectionName(form, i + 1) })
-            .ToDictionary(x => x.Index, x => x.Name);
-        var textSectionNames = textForms
-            .Select((form, i) => new { form.Index, Name = ResolveTextIoSectionName(form, i + 1) })
-            .ToDictionary(x => x.Index, x => x.Name);
+        var mergeTemplateVars = BuildUniqueFormEntryNameMap(mergeForms, (form, _) => ResolveMergeTemplateVariableName(form));
+        var printSectionNames = BuildUniqueFormEntryNameMap(printForms, ResolvePrintSectionName);
+        var textSectionNames = BuildUniqueFormEntryNameMap(textForms, ResolveTextIoSectionName);
         var textIoPageHeaderSectionNames = new HashSet<string>(StringComparer.Ordinal);
         if (task.Io?.PageHeaderFormEntryIndex is int explicitTextHeaderIndex &&
             textSectionNames.TryGetValue(explicitTextHeaderIndex, out var explicitTextHeaderSection))
@@ -2931,6 +2925,16 @@ internal static class SemanticBuilder
             .ToList() ?? new List<TaskFormControlDef>();
         var usedFieldNames = new HashSet<string>(StringComparer.Ordinal);
         var usedMethodNames = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var child in allTasks.Where(x => x.ParentOrdinal == task.Ordinal))
+        {
+            var childClassName = ToTaskClassName(child.Description);
+            if (!string.IsNullOrWhiteSpace(childClassName))
+            {
+                usedFieldNames.Add(childClassName);
+                usedFieldNames.Add(childClassName + "_");
+                usedFieldNames.Add(childClassName + "__");
+            }
+        }
         foreach (var control in controls)
         {
             var taskNumber = control.SubformTaskNumber!.Value;
@@ -3309,6 +3313,12 @@ internal static class SemanticBuilder
             reserved.Add(ResolveTaskResourceMemberName(task, rc));
         foreach (var child in GetChildTasks(task.Ordinal))
             reserved.Add(ToTaskClassName(child.Description));
+        foreach (var fn in task.FunctionOverrides)
+        {
+            var methodName = string.IsNullOrWhiteSpace(fn.Name) ? "" : ToCodeIdentifierPreservingCase(fn.Name);
+            if (!string.IsNullOrWhiteSpace(methodName))
+                reserved.Add(methodName);
+        }
         return reserved;
     }
 
@@ -3748,6 +3758,38 @@ internal static class SemanticBuilder
         return "_view" + suffix;
     }
 
+    private static Dictionary<int, string> BuildUniqueFormEntryNameMap(
+        IReadOnlyList<TaskFormEntryDef> forms,
+        Func<TaskFormEntryDef, int, string> resolveBaseName)
+    {
+        var map = new Dictionary<int, string>(forms.Count);
+        var used = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = 0; i < forms.Count; i++)
+        {
+            var form = forms[i];
+            var baseName = resolveBaseName(form, i + 1);
+            map[form.Index] = MakeUniqueIdentifier(baseName, used, "Entry" + form.Index);
+        }
+        return map;
+    }
+
+    private static string MakeUniqueIdentifier(string baseName, HashSet<string> used, string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(baseName))
+            baseName = fallback;
+        if (used.Add(baseName))
+            return baseName;
+
+        var suffix = 2;
+        while (true)
+        {
+            var candidate = baseName + suffix;
+            if (used.Add(candidate))
+                return candidate;
+            suffix++;
+        }
+    }
+
     private static Dictionary<int, string> BuildFormIoWriteCalls(
         TaskDef task,
         IReadOnlyList<TaskDef> allTasks,
@@ -3839,7 +3881,39 @@ internal static class SemanticBuilder
         var suffix = ToPascalIdentifier(string.IsNullOrWhiteSpace(task.Io?.Description) ? "Merge" : task.Io.Description!);
         if (string.IsNullOrWhiteSpace(suffix))
             suffix = "Merge";
-        return "_io" + suffix;
+        var candidate = "_io" + suffix;
+        var used = ResolveTextIoStreamVariableNames(task);
+        return MakeUniqueIdentifier(candidate, used, "_ioMerge");
+    }
+
+    private static HashSet<string> ResolveTextIoStreamVariableNames(TaskDef task)
+    {
+        var used = new HashSet<string>(StringComparer.Ordinal);
+        var ios = task.Ios.Count > 0 ? task.Ios : (task.Io is null ? Array.Empty<TaskIoDef>() : new[] { task.Io });
+        if (ios.Count <= 1)
+        {
+            used.Add("_ioReport");
+            return used;
+        }
+
+        for (var index = 0; index < ios.Count; index++)
+        {
+            var baseName = ResolveTextIoStreamVariableName(ios[index], index);
+            MakeUniqueIdentifier(baseName, used, index == 0 ? "_ioReport" : $"_ioReport{index + 1}");
+        }
+        return used;
+    }
+
+    private static string ResolveTextIoStreamVariableName(TaskIoDef? io, int ioIndex)
+    {
+        var desc = io?.Description;
+        if (!string.IsNullOrWhiteSpace(desc))
+        {
+            var suffix = ToPascalIdentifier(desc);
+            if (!string.IsNullOrWhiteSpace(suffix))
+                return "_io" + suffix;
+        }
+        return ioIndex == 0 ? "_ioReport" : $"_ioReport{ioIndex + 1}";
     }
 
     private static string ResolveMergeStreamExpression(TaskDef task, IReadOnlyList<TaskDef> allTasks)

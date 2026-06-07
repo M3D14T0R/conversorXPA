@@ -243,7 +243,16 @@ internal static partial class ProjectGenerator
         if (ios.Count == 1)
             return new[] { new TextIoStreamInfo("_ioReport", ResolveTextIoStreamType(t, ios[0]), ios[0]) };
 
-        return ios.Select((io, index) => new TextIoStreamInfo(ResolveTextIoStreamVariableName(io, index), ResolveTextIoStreamType(t, io), io)).ToList();
+        var used = new HashSet<string>(StringComparer.Ordinal);
+        var streams = new List<TextIoStreamInfo>(ios.Count);
+        for (var index = 0; index < ios.Count; index++)
+        {
+            var io = ios[index];
+            var baseName = ResolveTextIoStreamVariableName(io, index);
+            var variableName = EnsureUniqueIdentifier(baseName, used, index == 0 ? "_ioReport" : $"_ioReport{index + 1}");
+            streams.Add(new TextIoStreamInfo(variableName, ResolveTextIoStreamType(t, io), io));
+        }
+        return streams;
     }
 
     private static string ResolveTextIoStreamVariableName(TaskIoDef? io, int ioIndex)
@@ -345,7 +354,11 @@ internal static partial class ProjectGenerator
         var suffix = ToPascalIdentifier(string.IsNullOrWhiteSpace(t.Io?.Description) ? "Merge" : t.Io.Description!);
         if (string.IsNullOrWhiteSpace(suffix))
             suffix = "Merge";
-        return "_io" + suffix;
+        var candidate = "_io" + suffix;
+        var used = new HashSet<string>(ResolveTextIoStreams(t).Select(x => x.VariableName), StringComparer.Ordinal);
+        foreach (var printStream in ResolvePrintStreamVariableNames(t))
+            used.Add(printStream);
+        return EnsureUniqueIdentifier(candidate, used, "_ioMerge");
     }
 
     private static string ResolveMergeStreamExpression(TaskSemantic t, IReadOnlyList<TaskSemantic> allTasks)
@@ -966,27 +979,30 @@ internal static partial class ProjectGenerator
                         designer.AppendLine($"        {varName}.Text = {ToCSharpLiteral(c.Text)};");
                     }
 
-                    var dataExpr = ResolveControlDataExpression(c, task, tasks, dataObjects);
-                    if (!string.IsNullOrWhiteSpace(dataExpr))
+                    if (IsPrintDataBindableControl(c))
                     {
-                        designer.AppendLine($"        {varName}.Data = _controller.{dataExpr};");
-                    }
-                    else if (c.DataExpressionId.HasValue)
-                    {
-                        if (task.ExpressionsSemantic.EntriesByOrdinal.TryGetValue(c.DataExpressionId.Value, out var exp) && exp is not null)
+                        var dataExpr = ResolveControlDataExpression(c, task, tasks, dataObjects);
+                        if (!string.IsNullOrWhiteSpace(dataExpr))
                         {
-                            var fromMethod = exp.Attribute switch
-                            {
-                                "N" => "FromNumber",
-                                "D" => "FromDate",
-                                "T" => "FromTime",
-                                "B" => "FromBool",
-                                _ => "FromText"
-                            };
-                            designer.AppendLine($"        {varName}.Data = XPARuntimeCore.Box.UI.Advanced.ControlData.{fromMethod}(_controller.Exp_{c.DataExpressionId.Value});");
+                            designer.AppendLine($"        {varName}.Data = _controller.{dataExpr};");
                         }
-                        else
-                            designer.AppendLine($"        // GAP: Print data binding not resolved for {varName} (FormEntry={s.FormEntry.Index}, ControlId={c.Id}, DataExpressionId={c.DataExpressionId.Value}).");
+                        else if (c.DataExpressionId.HasValue)
+                        {
+                            if (task.ExpressionsSemantic.EntriesByOrdinal.TryGetValue(c.DataExpressionId.Value, out var exp) && exp is not null)
+                            {
+                                var fromMethod = exp.Attribute switch
+                                {
+                                    "N" => "FromNumber",
+                                    "D" => "FromDate",
+                                    "T" => "FromTime",
+                                    "B" => "FromBool",
+                                    _ => "FromText"
+                                };
+                                designer.AppendLine($"        {varName}.Data = XPARuntimeCore.Box.UI.Advanced.ControlData.{fromMethod}(_controller.Exp_{c.DataExpressionId.Value});");
+                            }
+                            else
+                                designer.AppendLine($"        // GAP: Print data binding not resolved for {varName} (FormEntry={s.FormEntry.Index}, ControlId={c.Id}, DataExpressionId={c.DataExpressionId.Value}).");
+                        }
                     }
                 }
             }
@@ -1454,6 +1470,7 @@ internal static partial class ProjectGenerator
     private static bool IsPrintTableControl(TaskFormControlDef c) => c.Model == "CTRL_GUI1_TABLE";
     private static bool IsPrintTableColumnControl(TaskFormControlDef c) => c.Model == "CTRL_GUI1_COLUMN";
     private static bool IsPrintLeafControl(TaskFormControlDef c) => c.Model is "CTRL_GUI1_STATIC" or "CTRL_GUI1_EDIT" or "CTRL_GUI1_LINE" or "CTRL_GUI1_SHAPE";
+    private static bool IsPrintDataBindableControl(TaskFormControlDef c) => c.Model is "CTRL_GUI1_STATIC" or "CTRL_GUI1_EDIT" or "CTRL_GUI1_COLUMN";
 
     private static string ResolvePrintControlTypeName(TaskSemantic task, int formEntryIndex, TaskFormControlDef c)
     {

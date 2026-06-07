@@ -262,7 +262,7 @@ internal static partial class ProjectGenerator
                                 var col = primaryEntity.Columns.FirstOrDefault(c => c.Id == seg.FieldId);
                                 if (col is null)
                                     continue;
-                                sortExpr = $"{primaryMember}.{ToPascalIdentifier(col.Name)}";
+                                sortExpr = $"{primaryMember}.{ResolveDataObjectColumnMemberName(primaryEntity, col)}";
                             }
                             if (emittedSortExprs.Contains(sortExpr))
                                 continue;
@@ -283,7 +283,7 @@ internal static partial class ProjectGenerator
                                     var col = primaryEntity.Columns.FirstOrDefault(c => c.Id == seg.ColumnId);
                                     if (col is null)
                                         continue;
-                                    var tieExpr = $"{primaryMember}.{ToPascalIdentifier(col.Name)}";
+                                    var tieExpr = $"{primaryMember}.{ResolveDataObjectColumnMemberName(primaryEntity, col)}";
                                     if (emittedSortExprs.Contains(tieExpr))
                                         continue;
                                     if (string.Equals(seg.Order, "D", StringComparison.OrdinalIgnoreCase))

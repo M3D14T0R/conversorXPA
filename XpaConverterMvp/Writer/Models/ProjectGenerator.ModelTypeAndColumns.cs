@@ -46,5 +46,22 @@ internal static partial class ProjectGenerator
         return result;
     }
 
-}
+    private static IReadOnlyDictionary<int, string> ResolveDataObjectColumnMemberNames(DataObjectDef dataObject)
+    {
+        if (_dataObjectColumnMemberNamesByObjectOrdinal.TryGetValue(dataObject.Ordinal, out var cached))
+            return cached;
 
+        var built = ResolveDataObjectColumnMemberNames(dataObject, ResolveDataObjectTypeName(dataObject));
+        _dataObjectColumnMemberNamesByObjectOrdinal[dataObject.Ordinal] = built;
+        return built;
+    }
+
+    private static string ResolveDataObjectColumnMemberName(DataObjectDef dataObject, DataColumnDef column)
+    {
+        var map = ResolveDataObjectColumnMemberNames(dataObject);
+        return map.TryGetValue(column.Id, out var memberName)
+            ? memberName
+            : ToPascalIdentifier(column.Name);
+    }
+
+}

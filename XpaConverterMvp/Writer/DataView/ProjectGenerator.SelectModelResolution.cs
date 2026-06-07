@@ -31,7 +31,7 @@ internal static partial class ProjectGenerator
                 var sourceMember = ResolveSelectSourceMember(sel, task, dataObjects);
                 if (string.IsNullOrWhiteSpace(sourceMember))
                     sourceMember = primaryMember;
-                var resolved = $"{sourceMember}.{ToPascalIdentifier(col.Name)}";
+                var resolved = $"{sourceMember}.{ResolveDataObjectColumnMemberName(d, col)}";
                 _selectExpressionCache[cacheKey] = resolved;
                 return resolved;
             }

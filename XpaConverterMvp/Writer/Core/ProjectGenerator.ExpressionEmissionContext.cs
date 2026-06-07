@@ -3390,8 +3390,7 @@ internal static partial class ProjectGenerator
         if (string.IsNullOrWhiteSpace(owner) || !_dataObjectsByOrdinal.TryGetValue(dataObjectOrdinal, out var dataObject))
             return;
 
-        var className = ResolveDataObjectTypeName(dataObject);
-        var columnMemberNames = ResolveDataObjectColumnMemberNames(dataObject, className);
+        var columnMemberNames = ResolveDataObjectColumnMemberNames(dataObject);
         foreach (var column in dataObject.Columns)
         {
             if (columnMemberNames.TryGetValue(column.Id, out var emittedMemberName))

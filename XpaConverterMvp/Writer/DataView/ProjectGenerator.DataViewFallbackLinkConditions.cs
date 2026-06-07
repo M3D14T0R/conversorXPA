@@ -48,7 +48,7 @@ internal static partial class ProjectGenerator
                 if (pd is not null)
                 {
                     foreach (var c in pd.Columns)
-                        sourceExprs.Add($"{prefix}{primaryMember}.{ToPascalIdentifier(c.Name)}");
+                        sourceExprs.Add($"{prefix}{primaryMember}.{ResolveDataObjectColumnMemberName(pd, c)}");
                 }
             }
             foreach (var pm in parentMembers)
@@ -57,7 +57,7 @@ internal static partial class ProjectGenerator
                 if (pd is null)
                     continue;
                 foreach (var c in pd.Columns)
-                    sourceExprs.Add($"{prefix}{pm.MemberName}.{ToPascalIdentifier(c.Name)}");
+                    sourceExprs.Add($"{prefix}{pm.MemberName}.{ResolveDataObjectColumnMemberName(pd, c)}");
             }
             ancestor = parent;
         }
@@ -65,13 +65,14 @@ internal static partial class ProjectGenerator
         var firstKeyCol = targetKeyCols.ElementAtOrDefault(0);
         var secondKeyCol = targetKeyCols.ElementAtOrDefault(1);
         var firstKeySource = FindBestSourceExpressionForTargetColumn(sourceExprs, currentLink.MemberName, firstKeyCol, targetKeyCols, parameterExprOrder, preferParameterLike: true);
-        if (TryBuildSingleKeyParameterFallbackLinkCondition(task, currentLink, targetKeyCols, firstKeyCol, firstKeySource, out var singleKeyParameterCondition))
+        if (TryBuildSingleKeyParameterFallbackLinkCondition(task, currentLink, target, targetKeyCols, firstKeyCol, firstKeySource, out var singleKeyParameterCondition))
             return singleKeyParameterCondition;
 
         if (TryBuildTwoKeyFallbackLinkCondition(
                 task,
                 sourceExprs,
                 currentLink,
+                target,
                 targetKeyCols,
                 parameterExprOrder,
                 firstKeyCol,
@@ -86,6 +87,7 @@ internal static partial class ProjectGenerator
                 task,
                 sourceExprs,
                 currentLink,
+                target,
                 targetKeyCols,
                 parameterExprOrder,
                 firstKeyCol,
@@ -102,6 +104,7 @@ internal static partial class ProjectGenerator
                 linkMembers,
                 linkIndex,
                 currentLink,
+                target,
                 cursor,
                 targetKeyCols,
                 parameterExprOrder,
@@ -125,11 +128,13 @@ internal static partial class ProjectGenerator
                 {
                     var prev = linkMembers[i];
                     var pd = dataObjects.FirstOrDefault(x => x.Ordinal == prev.Link.DbObj);
-                    var pc = pd?.Columns.FirstOrDefault(c => NormalizeKey(c.Name) == NormalizeKey(chainedKeyCol.Name));
+                    if (pd is null)
+                        continue;
+                    var pc = pd.Columns.FirstOrDefault(c => NormalizeKey(c.Name) == NormalizeKey(chainedKeyCol.Name));
                     if (pc is null)
                         continue;
-                    var src = $"{prev.MemberName}.{ToPascalIdentifier(pc.Name)}";
-                    return BuildLinkComparison(task, currentLink.Link, $"{currentLink.MemberName}.{ToPascalIdentifier(chainedKeyCol.Name)}", src);
+                    var src = $"{prev.MemberName}.{ResolveDataObjectColumnMemberName(pd, pc)}";
+                    return BuildLinkComparison(task, currentLink.Link, $"{currentLink.MemberName}.{ResolveDataObjectColumnMemberName(target, chainedKeyCol)}", src);
                 }
             }
         }
@@ -146,7 +151,7 @@ internal static partial class ProjectGenerator
                 var sc = d.Columns.FirstOrDefault(c => NormalizeKey(c.Name) == NormalizeKey(tc.Name));
                 if (sc is null)
                     continue;
-                var expr = $"{lm.MemberName}.{ToPascalIdentifier(sc.Name)}";
+                var expr = $"{lm.MemberName}.{ResolveDataObjectColumnMemberName(d, sc)}";
                 if (!expr.StartsWith(currentLink.MemberName + ".", StringComparison.Ordinal))
                     ranked.Add((tc.Name, expr, 100 - (linkIndex - i) + ScoreLinkSourceForColumn(tc, expr, targetKeyCols)));
             }

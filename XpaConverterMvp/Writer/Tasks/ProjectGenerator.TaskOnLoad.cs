@@ -315,7 +315,9 @@ internal static partial class ProjectGenerator
             }
             foreach (var formEntry in t.Layout.MergeForms)
             {
-                var viewVar = ResolveMergeTemplateVariableName(formEntry);
+                var viewVar = t.Layout.MergeTemplateVariableNamesByFormEntryIndex.TryGetValue(formEntry.Index, out var mappedTemplateVar)
+                    ? mappedTemplateVar
+                    : ResolveMergeTemplateVariableName(formEntry);
                 var fileExprId = formEntry.Form.MergeFileNameExpressionId ?? t.Io?.IoExpressionId;
                 var fileExpr = fileExprId.HasValue ? ResolveOnLoadExpression(fileExprId.Value, CreateIoArgumentEmissionContext()) : "";
                 if (string.IsNullOrWhiteSpace(fileExpr) && !string.IsNullOrWhiteSpace(formEntry.Form.MergeFileName))

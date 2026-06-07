@@ -188,10 +188,12 @@ internal static partial class ProjectGenerator
             if (sel is null)
                 continue;
 
-            var assignExpr = ResolveFilterOperandExpression(task, $"{currentLink.MemberName}.{ToPascalIdentifier(keyCol.Name)}", sel.AssignmentExpressionId!.Value, dataObjects);
+            var keyMember = ResolveDataObjectColumnMemberName(target, keyCol);
+            var keyExpr = $"{currentLink.MemberName}.{keyMember}";
+            var assignExpr = ResolveFilterOperandExpression(task, keyExpr, sel.AssignmentExpressionId!.Value, dataObjects);
             if (string.IsNullOrWhiteSpace(assignExpr))
                 continue;
-            parts.Add(BuildLinkComparison(task, currentLink.Link, $"{currentLink.MemberName}.{ToPascalIdentifier(keyCol.Name)}", assignExpr));
+            parts.Add(BuildLinkComparison(task, currentLink.Link, keyExpr, assignExpr));
         }
 
         if (parts.Count == 0)
@@ -235,7 +237,7 @@ internal static partial class ProjectGenerator
             if (col is null)
                 continue;
 
-            var targetExpr = $"{currentLink.MemberName}.{ToPascalIdentifier(col.Name)}";
+            var targetExpr = $"{currentLink.MemberName}.{ResolveDataObjectColumnMemberName(target, col)}";
             var part = ResolveSelectFilterConditionForLink(task, dataObjects, currentLink.Link, sel, targetExpr);
             if (!string.IsNullOrWhiteSpace(part))
                 parts.Add(part);
@@ -358,7 +360,7 @@ internal static partial class ProjectGenerator
             var sc = source.Columns.FirstOrDefault(c => string.Equals(c.Name, tc.Name, StringComparison.OrdinalIgnoreCase)
                                                      || string.Equals(c.DbColumnName, tc.DbColumnName, StringComparison.OrdinalIgnoreCase));
             if (sc is not null)
-                return BuildLinkComparison(task, link, $"{targetMember}.{ToPascalIdentifier(tc.Name)}", $"{sourceMember}.{ToPascalIdentifier(sc.Name)}");
+                return BuildLinkComparison(task, link, $"{targetMember}.{ResolveDataObjectColumnMemberName(target, tc)}", $"{sourceMember}.{ResolveDataObjectColumnMemberName(source, sc)}");
         }
         return "";
     }
@@ -390,7 +392,7 @@ internal static partial class ProjectGenerator
             var sourceExpr = ResolveBestLinkSourceExpression(task, dataObjects, modelMembers, linkMembers, linkIndex, currentLink.MemberName, currentLink.Link, keyCol);
             if (string.IsNullOrWhiteSpace(sourceExpr))
                 continue;
-            parts.Add(BuildLinkComparison(task, currentLink.Link, $"{currentLink.MemberName}.{ToPascalIdentifier(keyCol.Name)}", sourceExpr));
+            parts.Add(BuildLinkComparison(task, currentLink.Link, $"{currentLink.MemberName}.{ResolveDataObjectColumnMemberName(target, keyCol)}", sourceExpr));
         }
         if (parts.Count == 0)
             return "";
@@ -435,7 +437,7 @@ internal static partial class ProjectGenerator
             if (sel is null)
                 continue;
 
-            var targetExpr = $"{currentLink.MemberName}.{ToPascalIdentifier(keyCol.Name)}";
+            var targetExpr = $"{currentLink.MemberName}.{ResolveDataObjectColumnMemberName(target, keyCol)}";
             if (sel.LocateMin.HasValue && sel.LocateMax.HasValue && sel.LocateMin.Value == sel.LocateMax.Value)
             {
                 var sourceExpr = ResolveFilterOperandExpression(task, targetExpr, sel.LocateMin.Value, dataObjects);
@@ -491,7 +493,7 @@ internal static partial class ProjectGenerator
             if (col is null)
                 continue;
 
-            var targetExpr = $"{currentLink.MemberName}.{ToPascalIdentifier(col.Name)}";
+            var targetExpr = $"{currentLink.MemberName}.{ResolveDataObjectColumnMemberName(target, col)}";
             if (!string.IsNullOrWhiteSpace(condExpr) && condExpr.Contains(targetExpr, StringComparison.Ordinal))
                 continue;
             if (sel.LocateMin.HasValue)
@@ -545,7 +547,7 @@ internal static partial class ProjectGenerator
             var col = d.Columns.FirstOrDefault(c => NormalizeKey(c.Name) == keyNorm || NormalizeKey(c.DbColumnName ?? "") == keyNorm);
             if (col is null)
                 continue;
-            var expr = $"{mm.MemberName}.{ToPascalIdentifier(col.Name)}";
+            var expr = $"{mm.MemberName}.{ResolveDataObjectColumnMemberName(d, col)}";
             if (expr.StartsWith(targetMemberName + ".", StringComparison.Ordinal))
                 continue;
             var exprNorm = NormalizeKey(expr);
@@ -563,7 +565,7 @@ internal static partial class ProjectGenerator
             var col = d.Columns.FirstOrDefault(c => NormalizeKey(c.Name) == keyNorm || NormalizeKey(c.DbColumnName ?? "") == keyNorm);
             if (col is null)
                 continue;
-            var expr = $"{lm.MemberName}.{ToPascalIdentifier(col.Name)}";
+            var expr = $"{lm.MemberName}.{ResolveDataObjectColumnMemberName(d, col)}";
             if (expr.StartsWith(targetMemberName + ".", StringComparison.Ordinal))
                 continue;
             var exprNorm = NormalizeKey(expr);

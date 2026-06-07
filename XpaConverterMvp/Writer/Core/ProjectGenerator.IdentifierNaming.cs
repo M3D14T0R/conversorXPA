@@ -8,6 +8,23 @@ namespace XpaConverterMvp;
 
 internal static partial class ProjectGenerator
 {
+    private static string EnsureUniqueIdentifier(string baseName, HashSet<string> used, string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(baseName))
+            baseName = fallback;
+        if (used.Add(baseName))
+            return baseName;
+
+        var suffix = 2;
+        while (true)
+        {
+            var candidate = baseName + suffix;
+            if (used.Add(candidate))
+                return candidate;
+            suffix++;
+        }
+    }
+
     private static string ResolveMultiFormViewClassName(TaskSemantic t, TaskFormEntryDef formEntry, IReadOnlyList<TaskSemantic> allTasks)
     {
         if (t.View.SelectedFormEntry?.Index == formEntry.Index &&

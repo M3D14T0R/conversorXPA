@@ -126,6 +126,7 @@ internal static partial class ProjectGenerator
     private static Dictionary<int, Dictionary<string, string>> _selectNameToExpressionMapCache { get => _state.SelectNameToExpressionMapCache; set => _state.SelectNameToExpressionMapCache = value; }
     private static HashSet<int> _selectNameToExpressionMapResolutionInProgress { get => _state.SelectNameToExpressionMapResolutionInProgress; set => _state.SelectNameToExpressionMapResolutionInProgress = value; }
     private static Dictionary<int, List<(int DbObj, string ModelType, string MemberName)>> _modelMembersCache { get => _state.ModelMembersCache; set => _state.ModelMembersCache = value; }
+    private static Dictionary<int, Dictionary<int, string>> _dataObjectColumnMemberNamesByObjectOrdinal { get => _state.DataObjectColumnMemberNamesByObjectOrdinal; set => _state.DataObjectColumnMemberNamesByObjectOrdinal = value; }
     private static HashSet<int> _modelMembersResolutionInProgress { get => _state.ModelMembersResolutionInProgress; set => _state.ModelMembersResolutionInProgress = value; }
     private static Dictionary<string, List<(TaskLogicLinkDef Link, string MemberName)>> _linkMembersCache { get => _state.LinkMembersCache; set => _state.LinkMembersCache = value; }
     private static Dictionary<string, string> _selectExpressionCache { get => _state.SelectExpressionCache; set => _state.SelectExpressionCache = value; }

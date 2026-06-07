@@ -51,7 +51,7 @@ internal static partial class ProjectGenerator
             fromColumnsById.TryGetValue(s.ColumnId, out var col);
             if (col is null)
                 continue;
-            var fromCol = $"{fromMember}.{ToPascalIdentifier(col.Name)}";
+            var fromCol = $"{fromMember}.{ResolveDataObjectColumnMemberName(fromEntity, col)}";
             var rangeWhereExpr = ResolveSelectRangeWhereExpression(s, fromCol, t, dataObjects);
             if (!string.IsNullOrWhiteSpace(rangeWhereExpr))
             {
@@ -99,7 +99,7 @@ internal static partial class ProjectGenerator
             fromColumnsById.TryGetValue(s.ColumnId, out var col);
             if (col is null)
                 continue;
-            var fromCol = $"{primaryMember}.{ToPascalIdentifier(col.Name)}";
+            var fromCol = $"{primaryMember}.{ResolveDataObjectColumnMemberName(fromEntity, col)}";
             var isDirectLiteralRange =
                 s.RangeMin.HasValue &&
                 s.RangeMax.HasValue &&
@@ -297,7 +297,7 @@ internal static partial class ProjectGenerator
                 continue;
             }
 
-            var fromCol = $"{primaryMember}.{ToPascalIdentifier(col.Name)}";
+            var fromCol = $"{primaryMember}.{ResolveDataObjectColumnMemberName(fromEntity, col)}";
             var valueExpr = "";
             var assignmentIndex = s.AssignmentExpressionId!.Value - 1;
             var assignmentSelect = GetEffectiveRangeParameterSelects(t).ElementAtOrDefault(Math.Max(0, assignmentIndex));
@@ -355,7 +355,7 @@ internal static partial class ProjectGenerator
             fromColumnsById.TryGetValue(s.ColumnId, out var col);
             if (col is null || !s.LocateMin.HasValue)
                 continue;
-            var fromCol = $"{primaryMember}.{ToPascalIdentifier(col.Name)}";
+            var fromCol = $"{primaryMember}.{ResolveDataObjectColumnMemberName(fromEntity, col)}";
             var locateExpr = ResolveFilterOperandExpression(t, fromCol, s.LocateMin.Value, dataObjects);
             if (string.IsNullOrWhiteSpace(locateExpr))
                 continue;

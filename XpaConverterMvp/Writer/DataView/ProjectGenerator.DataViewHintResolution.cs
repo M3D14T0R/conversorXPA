@@ -60,7 +60,7 @@ internal static partial class ProjectGenerator
         var targetColumns = ResolveLinkKeyColumns(target, currentLink.Link);
         if (targetColumns.Count == 0)
             targetColumns = target.Columns;
-        if (TryBuildLinkOverrideByHint(task, dataObjects, linkMembers, linkIndex, currentLink, targetColumns, hint, out var overrideCondition))
+        if (TryBuildLinkOverrideByHint(task, dataObjects, linkMembers, linkIndex, currentLink, target, targetColumns, hint, out var overrideCondition))
             return overrideCondition;
 
         return condExpr;
@@ -90,7 +90,7 @@ internal static partial class ProjectGenerator
             if (d is null)
                 continue;
             foreach (var column in d.Columns)
-                candidates.Add($"{lm.MemberName}.{ToPascalIdentifier(column.Name)}");
+                candidates.Add($"{lm.MemberName}.{ResolveDataObjectColumnMemberName(d, column)}");
         }
 
         return FindBestSourceExpressionForTargetColumn(candidates, currentMemberName, targetColumn, null, parameterExprOrder, preferParameterLike: true, hintNorm: hintNorm);
@@ -102,6 +102,7 @@ internal static partial class ProjectGenerator
         IReadOnlyList<(TaskLogicLinkDef Link, string MemberName)> linkMembers,
         int linkIndex,
         (TaskLogicLinkDef Link, string MemberName) currentLink,
+        DataObjectDef target,
         IReadOnlyList<DataColumnDef> targetColumns,
         string hintNorm,
         out string condition)
@@ -124,7 +125,7 @@ internal static partial class ProjectGenerator
         if (string.IsNullOrWhiteSpace(sourceExpr))
             return false;
 
-        condition = BuildLinkComparison(task, currentLink.Link, $"{currentLink.MemberName}.{ToPascalIdentifier(targetColumn.Name)}", sourceExpr);
+        condition = BuildLinkComparison(task, currentLink.Link, $"{currentLink.MemberName}.{ResolveDataObjectColumnMemberName(target, targetColumn)}", sourceExpr);
         return true;
     }
 

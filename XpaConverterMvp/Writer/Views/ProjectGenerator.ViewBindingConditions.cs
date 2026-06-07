@@ -53,7 +53,7 @@ internal static partial class ProjectGenerator
                     if (string.IsNullOrWhiteSpace(colNorm))
                         continue;
                     if (hints.Any(h => h == colNorm || h.Contains(colNorm) || colNorm.Contains(h)))
-                        return $"{parentPrefix}.{mm.MemberName}.{ToPascalIdentifier(col.Name)}";
+                        return $"{parentPrefix}.{mm.MemberName}.{ResolveDataObjectColumnMemberName(d, col)}";
                 }
             }
             parentOrdinal = parentTask.ParentOrdinal;

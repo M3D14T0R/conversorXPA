@@ -144,6 +144,7 @@ internal static partial class ProjectGenerator
     private static bool TryBuildSingleKeyParameterFallbackLinkCondition(
         TaskSemantic task,
         (TaskLogicLinkDef Link, string MemberName) currentLink,
+        DataObjectDef target,
         IReadOnlyList<DataColumnDef> targetKeyCols,
         DataColumnDef? targetKeyCol,
         string? sourceExpression,
@@ -156,7 +157,7 @@ internal static partial class ProjectGenerator
             string.IsNullOrWhiteSpace(sourceExpression))
             return false;
 
-        condition = BuildLinkComparison(task, currentLink.Link, $"{currentLink.MemberName}.{ToPascalIdentifier(targetKeyCol.Name)}", sourceExpression);
+        condition = BuildLinkComparison(task, currentLink.Link, $"{currentLink.MemberName}.{ResolveDataObjectColumnMemberName(target, targetKeyCol)}", sourceExpression);
         return true;
     }
 
@@ -164,6 +165,7 @@ internal static partial class ProjectGenerator
         TaskSemantic task,
         IReadOnlyList<string> sourceExprs,
         (TaskLogicLinkDef Link, string MemberName) currentLink,
+        DataObjectDef target,
         IReadOnlyList<DataColumnDef> targetKeyCols,
         IReadOnlyDictionary<string, int> parameterExprOrder,
         DataColumnDef? firstKeyCol,
@@ -190,8 +192,8 @@ internal static partial class ProjectGenerator
         if (string.IsNullOrWhiteSpace(firstSource) || string.IsNullOrWhiteSpace(secondSource))
             return false;
 
-        var p1 = BuildLinkComparison(task, currentLink.Link, $"{currentLink.MemberName}.{ToPascalIdentifier(firstKeyCol.Name)}", firstSource);
-        var p2 = BuildLinkComparison(task, currentLink.Link, $"{currentLink.MemberName}.{ToPascalIdentifier(secondKeyCol.Name)}", secondSource);
+        var p1 = BuildLinkComparison(task, currentLink.Link, $"{currentLink.MemberName}.{ResolveDataObjectColumnMemberName(target, firstKeyCol)}", firstSource);
+        var p2 = BuildLinkComparison(task, currentLink.Link, $"{currentLink.MemberName}.{ResolveDataObjectColumnMemberName(target, secondKeyCol)}", secondSource);
         condition = p1 + ".And(" + p2 + ")";
         return true;
     }
@@ -200,6 +202,7 @@ internal static partial class ProjectGenerator
         TaskSemantic task,
         IReadOnlyList<string> sourceExprs,
         (TaskLogicLinkDef Link, string MemberName) currentLink,
+        DataObjectDef target,
         IReadOnlyList<DataColumnDef> targetKeyCols,
         IReadOnlyDictionary<string, int> parameterExprOrder,
         DataColumnDef? firstKeyCol,
@@ -217,8 +220,8 @@ internal static partial class ProjectGenerator
         if (string.IsNullOrWhiteSpace(firstModelSource) || string.IsNullOrWhiteSpace(secondModelSource))
             return false;
 
-        var p1 = BuildLinkComparison(task, currentLink.Link, $"{currentLink.MemberName}.{ToPascalIdentifier(firstKeyCol.Name)}", firstModelSource);
-        var p2 = BuildLinkComparison(task, currentLink.Link, $"{currentLink.MemberName}.{ToPascalIdentifier(secondKeyCol.Name)}", secondModelSource);
+        var p1 = BuildLinkComparison(task, currentLink.Link, $"{currentLink.MemberName}.{ResolveDataObjectColumnMemberName(target, firstKeyCol)}", firstModelSource);
+        var p2 = BuildLinkComparison(task, currentLink.Link, $"{currentLink.MemberName}.{ResolveDataObjectColumnMemberName(target, secondKeyCol)}", secondModelSource);
         condition = p1 + ".And(" + p2 + ")";
         return true;
     }
@@ -229,6 +232,7 @@ internal static partial class ProjectGenerator
         IReadOnlyList<(TaskLogicLinkDef Link, string MemberName)> linkMembers,
         int linkIndex,
         (TaskLogicLinkDef Link, string MemberName) currentLink,
+        DataObjectDef target,
         int cursor,
         IReadOnlyList<DataColumnDef> targetKeyCols,
         IReadOnlyDictionary<string, int> parameterExprOrder,
@@ -247,7 +251,7 @@ internal static partial class ProjectGenerator
         if (string.IsNullOrWhiteSpace(sourceExpression))
             return false;
 
-        condition = BuildLinkComparison(task, currentLink.Link, $"{currentLink.MemberName}.{ToPascalIdentifier(targetKeyCol.Name)}", sourceExpression);
+        condition = BuildLinkComparison(task, currentLink.Link, $"{currentLink.MemberName}.{ResolveDataObjectColumnMemberName(target, targetKeyCol)}", sourceExpression);
         return true;
     }
 

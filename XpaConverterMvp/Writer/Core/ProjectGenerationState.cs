@@ -41,6 +41,7 @@ internal sealed class ProjectGenerationState
     public Dictionary<int, Dictionary<string, string>> SelectNameToExpressionMapCache { get; set; } = new();
     public HashSet<int> SelectNameToExpressionMapResolutionInProgress { get; set; } = new();
     public Dictionary<int, List<(int DbObj, string ModelType, string MemberName)>> ModelMembersCache { get; set; } = new();
+    public Dictionary<int, Dictionary<int, string>> DataObjectColumnMemberNamesByObjectOrdinal { get; set; } = new();
     public HashSet<int> ModelMembersResolutionInProgress { get; set; } = new();
     public Dictionary<string, List<(TaskLogicLinkDef Link, string MemberName)>> LinkMembersCache { get; set; } = new(StringComparer.Ordinal);
     public Dictionary<string, string> SelectExpressionCache { get; set; } = new(StringComparer.Ordinal);
