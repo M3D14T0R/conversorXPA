@@ -8,6 +8,7 @@ namespace XpaConverterMvp;
 
 internal static partial class ProjectGenerator
 {
+    private const int StrictFunctionArgumentBridgeMaxDepth = 128;
     private static readonly EmittedExpressionEngine StrictEmittedExpressionEngine = new();
     private static readonly ConcurrentDictionary<string, StrictEmissionCacheEntry> StrictEmissionCache = new(StringComparer.Ordinal);
 
@@ -851,11 +852,46 @@ internal static partial class ProjectGenerator
         if (string.IsNullOrWhiteSpace(code))
             return code;
 
+        return RenderStrictFunctionArgumentBridges(
+            code,
+            task,
+            new Dictionary<string, string>(StringComparer.Ordinal),
+            new HashSet<string>(StringComparer.Ordinal),
+            depth: 0);
+    }
+
+    private static string RenderStrictFunctionArgumentBridges(
+        string code,
+        TaskSemantic task,
+        Dictionary<string, string> memo,
+        HashSet<string> active,
+        int depth)
+    {
+        if (string.IsNullOrWhiteSpace(code))
+            return code;
+
         var originalCode = code.Trim();
+        if (depth > StrictFunctionArgumentBridgeMaxDepth)
+            return originalCode;
+
+        if (memo.TryGetValue(originalCode, out var memoized))
+            return memoized;
+
+        if (!active.Add(originalCode))
+            return originalCode;
+
+        string Finish(string rendered)
+        {
+            memo[originalCode] = rendered;
+            return rendered;
+        }
+
+        try
+        {
         var strippedCode = StripRedundantOuterParentheses(originalCode);
 
         if (TryRenderStrictArrayNullPredicate(strippedCode, task, out var arrayNullPredicate))
-            return arrayNullPredicate;
+            return Finish(arrayNullPredicate);
 
         if (TryRewriteStrictNestedNotComparisons(strippedCode, task, out var nestedNotComparisons))
             strippedCode = nestedNotComparisons;
@@ -865,46 +901,46 @@ internal static partial class ProjectGenerator
             strippedCode = embeddedBridge;
 
         if (TryRewriteStrictNotComparison(strippedCode, task, out var rewrittenNotComparison))
-            return RenderStrictFunctionArgumentBridges(rewrittenNotComparison, task);
+            return Finish(RenderStrictFunctionArgumentBridges(rewrittenNotComparison, task, memo, active, depth + 1));
 
         var booleanBinary = SplitTopLevelBooleanBinaryExpression(strippedCode);
         if (booleanBinary is not null)
         {
-            var left = RenderStrictFunctionArgumentBridges(booleanBinary.Value.Left, task);
-            var right = RenderStrictFunctionArgumentBridges(booleanBinary.Value.Right, task);
+            var left = RenderStrictFunctionArgumentBridges(booleanBinary.Value.Left, task, memo, active, depth + 1);
+            var right = RenderStrictFunctionArgumentBridges(booleanBinary.Value.Right, task, memo, active, depth + 1);
             if (!string.Equals(left, booleanBinary.Value.Left, StringComparison.Ordinal) ||
                 !string.Equals(right, booleanBinary.Value.Right, StringComparison.Ordinal))
-                return $"{left} {booleanBinary.Value.Operator} {right}";
+                return Finish($"{left} {booleanBinary.Value.Operator} {right}");
         }
 
         if (TryRewriteStrictComparisonOperandBridges(strippedCode, task, out var rewrittenComparison))
-            return rewrittenComparison;
+            return Finish(rewrittenComparison);
 
         var arithmetic = SplitTopLevelArithmeticExpression(strippedCode);
         if (arithmetic is not null)
         {
-            var left = RenderStrictFunctionArgumentBridges(arithmetic.Value.Left, task);
-            var right = RenderStrictFunctionArgumentBridges(arithmetic.Value.Right, task);
+            var left = RenderStrictFunctionArgumentBridges(arithmetic.Value.Left, task, memo, active, depth + 1);
+            var right = RenderStrictFunctionArgumentBridges(arithmetic.Value.Right, task, memo, active, depth + 1);
             if (!string.Equals(left, arithmetic.Value.Left, StringComparison.Ordinal) ||
                 !string.Equals(right, arithmetic.Value.Right, StringComparison.Ordinal))
-                return $"{left} {arithmetic.Value.Operator} {right}";
+                return Finish($"{left} {arithmetic.Value.Operator} {right}");
         }
 
         if (!TryParseFunctionCall(strippedCode, out var functionName, out var args) ||
             args.Count == 0)
         {
-            return string.Equals(strippedCode, originalCode, StringComparison.Ordinal) ? code : strippedCode;
+            return Finish(string.Equals(strippedCode, originalCode, StringComparison.Ordinal) ? code : strippedCode);
         }
 
         if (TryRenderStrictDbNameLiteralContract(functionName, args, out var dbNameRendered))
-            return dbNameRendered;
+            return Finish(dbNameRendered);
 
         var changed = false;
         var renderedArgs = new string[args.Count];
         for (var i = 0; i < args.Count; i++)
         {
             var originalArg = args[i].Trim();
-            var renderedArg = RenderStrictFunctionArgumentBridges(originalArg, task);
+            var renderedArg = RenderStrictFunctionArgumentBridges(originalArg, task, memo, active, depth + 1);
             if ((IsTopLevelCall(functionName, "u.RangeAdd") || IsTopLevelCall(functionName, "u.LocateAdd")) &&
                 (i == 1 || i == 2) &&
                 TryRenderStrictObjectConditionalNullBridge(renderedArg, task, out var objectConditional))
@@ -927,9 +963,14 @@ internal static partial class ProjectGenerator
             changed |= !string.Equals(renderedArg, originalArg, StringComparison.Ordinal);
         }
 
-        return changed
+        return Finish(changed
             ? $"{functionName}({string.Join(", ", renderedArgs)})"
-            : string.Equals(strippedCode, code.Trim(), StringComparison.Ordinal) ? code : strippedCode;
+            : string.Equals(strippedCode, code.Trim(), StringComparison.Ordinal) ? code : strippedCode);
+        }
+        finally
+        {
+            active.Remove(originalCode);
+        }
     }
 
     private static bool TryRenderStrictArrayNullPredicate(string code, TaskSemantic task, out string rendered)

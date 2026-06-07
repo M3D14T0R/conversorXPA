@@ -237,26 +237,18 @@ internal static partial class ProjectGenerator
         var selected = new List<TaskResourceColumnDef>(desiredCount);
         if (selectMappedParameters.Count > 0)
             selected.AddRange(selectMappedParameters);
-        var startIndex = 0;
-        if (selected.Count > 0)
-        {
-            var lastSelectedResource = selected[^1];
-            var lastIndex = resources.FindIndex(r => r.Id == lastSelectedResource.Id);
-            if (lastIndex >= 0)
-                startIndex = lastIndex + 1;
-        }
+        var remainingResources = resources
+            .Where(r => selected.All(s => s.Id != r.Id))
+            .ToList();
 
-        for (var position = selected.Count; position < desiredCount; position++)
+        for (var position = selected.Count; position < desiredCount && remainingResources.Count > 0; position++)
         {
-            var maxIndex = resources.Count - (desiredCount - position);
             TaskResourceColumnDef? best = null;
-            var bestIndex = startIndex;
+            var bestIndex = 0;
             var bestScore = int.MinValue;
-            for (var i = startIndex; i <= maxIndex; i++)
+            for (var i = 0; i < remainingResources.Count; i++)
             {
-                var candidate = resources[i];
-                if (selected.Any(s => s.Id == candidate.Id))
-                    continue;
+                var candidate = remainingResources[i];
                 var score = ScoreParameterCandidate(targetTask, candidate, evidence.ElementAtOrDefault(position), declaredParameterIds);
                 if (score > bestScore)
                 {
@@ -266,9 +258,9 @@ internal static partial class ProjectGenerator
                 }
             }
 
-            best ??= resources[startIndex];
+            best ??= remainingResources[0];
             selected.Add(best);
-            startIndex = bestIndex + 1;
+            remainingResources.RemoveAt(bestIndex);
         }
 
         return selected;
@@ -510,6 +502,14 @@ internal static partial class ProjectGenerator
         TaskSemantic currentTask,
         IReadOnlyList<TaskSemantic> allTasks)
     {
+        var cacheKey = string.Join("|",
+            currentTask.Ordinal.ToString(),
+            parameter.ColumnMember,
+            parameter.ParameterType,
+            parameter.ParameterDirection);
+        if (_nonInputArgumentBindingCache.TryGetValue(cacheKey, out var cached))
+            return cached;
+
         var candidates = new List<(string Expression, string Member, string Direction, string ParameterType, int Depth)>();
         foreach (var resource in currentTask.ResourcesSemantic.Ordered)
         {
@@ -522,7 +522,7 @@ internal static partial class ProjectGenerator
         var depth = 1;
         while (parentOrdinal.HasValue)
         {
-            var parent = allTasks.FirstOrDefault(t => t.Ordinal == parentOrdinal.Value);
+            var parent = GetTaskByOrdinal(parentOrdinal, allTasks);
             if (parent is null)
                 break;
 
@@ -566,6 +566,7 @@ internal static partial class ProjectGenerator
             }
         }
 
+        _nonInputArgumentBindingCache[cacheKey] = bestExpression;
         return bestExpression;
     }
 

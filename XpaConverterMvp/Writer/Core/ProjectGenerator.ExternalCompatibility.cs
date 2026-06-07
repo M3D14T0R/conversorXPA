@@ -214,10 +214,8 @@ internal static partial class ProjectGenerator
                 if (string.IsNullOrWhiteSpace(expr.Syntax))
                     continue;
                 var syntax = expr.Syntax.Trim();
-                foreach (var functionName in knownNames)
+                foreach (var functionName in EnumerateKnownFunctionCalls(syntax, knownNames))
                 {
-                    if (!Regex.IsMatch(syntax, $@"(?<![\w\.]){Regex.Escape(functionName)}\s*\(", RegexOptions.IgnoreCase))
-                        continue;
                     if (!attrByFunction.TryGetValue(functionName, out var attrs))
                     {
                         attrs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -238,10 +236,7 @@ internal static partial class ProjectGenerator
                             topLevelAttrs.Add(expr.Attribute);
                     }
 
-                    if (Regex.IsMatch(
-                            syntax,
-                            $@"(?<![\w\.])Val\s*\(\s*{Regex.Escape(functionName)}\s*\(",
-                            RegexOptions.IgnoreCase))
+                    if (IsWrappedByValCall(syntax, functionName))
                     {
                         if (!usageHintsByFunction.TryGetValue(functionName, out var usageHints))
                         {
@@ -319,6 +314,86 @@ internal static partial class ProjectGenerator
             result[functionName] = "Text";
         }
         return result;
+    }
+
+    private static IEnumerable<string> EnumerateKnownFunctionCalls(string syntax, ISet<string> knownNames)
+    {
+        var yielded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < syntax.Length; i++)
+        {
+            var ch = syntax[i];
+            if (!(ch == '_' || char.IsLetter(ch)))
+                continue;
+            if (i > 0 && (char.IsLetterOrDigit(syntax[i - 1]) || syntax[i - 1] == '_' || syntax[i - 1] == '.'))
+                continue;
+
+            var start = i;
+            i++;
+            while (i < syntax.Length && (char.IsLetterOrDigit(syntax[i]) || syntax[i] == '_'))
+                i++;
+
+            var end = i;
+            while (i < syntax.Length && char.IsWhiteSpace(syntax[i]))
+                i++;
+
+            if (i >= syntax.Length || syntax[i] != '(')
+            {
+                i = end - 1;
+                continue;
+            }
+
+            var name = syntax[start..end];
+            if (knownNames.Contains(name) && yielded.Add(name))
+                yield return name;
+        }
+    }
+
+    private static bool IsWrappedByValCall(string syntax, string functionName)
+    {
+        var index = 0;
+        while (index < syntax.Length)
+        {
+            var valIndex = IndexOfSourceFunctionName(syntax, "Val", index);
+            if (valIndex < 0)
+                return false;
+
+            var cursor = valIndex + 3;
+            while (cursor < syntax.Length && char.IsWhiteSpace(syntax[cursor]))
+                cursor++;
+            if (cursor >= syntax.Length || syntax[cursor] != '(')
+            {
+                index = valIndex + 3;
+                continue;
+            }
+
+            cursor++;
+            while (cursor < syntax.Length && char.IsWhiteSpace(syntax[cursor]))
+                cursor++;
+
+            if (MatchesFunctionCallAt(syntax, functionName, cursor))
+                return true;
+
+            index = cursor;
+        }
+
+        return false;
+    }
+
+    private static bool MatchesFunctionCallAt(string syntax, string functionName, int index)
+    {
+        if (index < 0 || index + functionName.Length > syntax.Length)
+            return false;
+        if (!syntax.AsSpan(index, functionName.Length).Equals(functionName, StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (index > 0 && (char.IsLetterOrDigit(syntax[index - 1]) || syntax[index - 1] == '_' || syntax[index - 1] == '.'))
+            return false;
+
+        var cursor = index + functionName.Length;
+        if (cursor < syntax.Length && (char.IsLetterOrDigit(syntax[cursor]) || syntax[cursor] == '_'))
+            return false;
+        while (cursor < syntax.Length && char.IsWhiteSpace(syntax[cursor]))
+            cursor++;
+        return cursor < syntax.Length && syntax[cursor] == '(';
     }
 
     private static bool ShouldDefaultComponentFunctionReturnToBool(string functionName)

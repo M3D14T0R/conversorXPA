@@ -175,15 +175,21 @@ internal static partial class ProjectGenerator
 
     private static Dictionary<string, string> ResolveAccessibleParentFunctionTargets(TaskSemantic task)
     {
+        if (_accessibleParentFunctionTargetsCache.TryGetValue(task.Ordinal, out var cached))
+            return cached;
+
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (_allTasks is null || !task.ParentOrdinal.HasValue)
+        {
+            _accessibleParentFunctionTargetsCache[task.Ordinal] = result;
             return result;
+        }
 
         var depth = 1;
         var parentOrdinal = task.ParentOrdinal;
         while (parentOrdinal.HasValue)
         {
-            var parentTask = _allTasks.FirstOrDefault(x => x.Ordinal == parentOrdinal.Value);
+            _tasksByOrdinal.TryGetValue(parentOrdinal.Value, out var parentTask);
             if (parentTask is null)
                 break;
 
@@ -202,6 +208,7 @@ internal static partial class ProjectGenerator
             depth++;
         }
 
+        _accessibleParentFunctionTargetsCache[task.Ordinal] = result;
         return result;
     }
 }

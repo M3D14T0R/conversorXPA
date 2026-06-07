@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
 using System.Linq;
 using System.Threading;
 
@@ -12,6 +14,16 @@ internal static partial class ProjectGenerator
     private const int LargeParallelTaskWeightThreshold = 25_000;
     private const int LargeParallelHeadWeightThreshold = 100_000;
     private const int ParallelWorkerStackSizeBytes = 16 * 1024 * 1024;
+    private const double DefaultParallelGcAfterTaskMemoryGb = 22;
+    private const double DefaultParallelMemoryPauseGb = 22;
+    private const double DefaultParallelDynamicWorkerSoftPrivateGb = 14;
+    private const double DefaultParallelDynamicWorkerMediumPrivateGb = 18;
+    private const double DefaultParallelDynamicWorkerHardPrivateGb = 21;
+    private const double DefaultParallelWorkerCacheResetPrivateGb = 16;
+    private const long ParallelGcThrottleTicks = TimeSpan.TicksPerMinute;
+    private const long ParallelMemoryPauseThrottleTicks = TimeSpan.TicksPerSecond * 10;
+    private static long _lastParallelTaskGcTicks;
+    private static long _lastParallelMemoryPauseTicks;
 
     private static IReadOnlyList<TaskSemantic> ScheduleParallelSkeletonTasks(
         IReadOnlyList<TaskSemantic> skeletonTasks,
@@ -56,7 +68,7 @@ internal static partial class ProjectGenerator
         var exceptions = new ConcurrentQueue<Exception>();
         var workers = new Thread[workerDegree];
 
-        bool TryTakeNext(out (TaskSemantic Task, long Weight) item)
+        bool TryTakeNext(int workerIndex, out (TaskSemantic Task, long Weight) item)
         {
             lock (sync)
             {
@@ -66,6 +78,22 @@ internal static partial class ProjectGenerator
                     {
                         item = default;
                         return false;
+                    }
+
+                    var activeWorkerLimit = ResolveDynamicParallelActiveWorkerLimit(
+                        workerDegree,
+                        remainingTasks.Count,
+                        weightedTasks.Count);
+                    if (workerIndex >= activeWorkerLimit)
+                    {
+                        Monitor.Wait(sync, TimeSpan.FromSeconds(2));
+                        continue;
+                    }
+
+                    if (ShouldPauseParallelSchedulingForMemory())
+                    {
+                        Monitor.Wait(sync, TimeSpan.FromSeconds(2));
+                        continue;
                     }
 
                     var selectedIndex = -1;
@@ -95,25 +123,36 @@ internal static partial class ProjectGenerator
 
         void Complete((TaskSemantic Task, long Weight) item)
         {
-            if (!IsLargeParallelSkeletonTask(item.Weight))
-                return;
+            var isLarge = IsLargeParallelSkeletonTask(item.Weight);
+
+            if (isLarge)
+            {
+                lock (sync)
+                {
+                    activeHeavyTasks = Math.Max(0, activeHeavyTasks - 1);
+                    Monitor.PulseAll(sync);
+                }
+            }
+
+            MaybeCollectAfterParallelSkeletonTask(item, isLarge);
 
             lock (sync)
             {
-                activeHeavyTasks = Math.Max(0, activeHeavyTasks - 1);
                 Monitor.PulseAll(sync);
             }
         }
 
         for (var workerIndex = 0; workerIndex < workerDegree; workerIndex++)
         {
+            var workerOrdinal = workerIndex;
             var name = $"xpa-task-emitter-{workerIndex + 1}";
             workers[workerIndex] = new Thread(() =>
             {
                 var workerState = CreateIsolatedGenerationState();
+                var completedSinceStateReset = 0;
                 try
                 {
-                    while (TryTakeNext(out var item))
+                    while (TryTakeNext(workerOrdinal, out var item))
                     {
                         try
                         {
@@ -122,6 +161,12 @@ internal static partial class ProjectGenerator
                         finally
                         {
                             Complete(item);
+                            completedSinceStateReset++;
+                            if (ShouldResetParallelWorkerState(completedSinceStateReset))
+                            {
+                                workerState = CreateParallelWorkerState(workerState);
+                                completedSinceStateReset = 0;
+                            }
                         }
                     }
                 }
@@ -195,6 +240,120 @@ internal static partial class ProjectGenerator
     private static bool IsLargeParallelSkeletonTask(long weight)
         => weight >= LargeParallelTaskWeightThreshold;
 
+    private static int ResolveDynamicParallelActiveWorkerLimit(int maxWorkers, int remainingTasks, int totalTasks)
+    {
+        if (maxWorkers <= 1 || !ResolveConfiguredBool("XPA_CONVERTER_PARALLEL_DYNAMIC_WORKERS", defaultValue: false))
+            return maxWorkers;
+
+        var minWorkers = Math.Clamp(
+            ResolveConfiguredInt("XPA_CONVERTER_PARALLEL_MIN_WORKERS", Math.Min(2, maxWorkers)),
+            1,
+            maxWorkers);
+        var privateGb = GetCurrentPrivateMemoryGb();
+        var softGb = ResolveConfiguredMemoryLimitGb("XPA_CONVERTER_PARALLEL_DYNAMIC_SOFT_GB", DefaultParallelDynamicWorkerSoftPrivateGb);
+        var mediumGb = ResolveConfiguredMemoryLimitGb("XPA_CONVERTER_PARALLEL_DYNAMIC_MEDIUM_GB", DefaultParallelDynamicWorkerMediumPrivateGb);
+        var hardGb = ResolveConfiguredMemoryLimitGb("XPA_CONVERTER_PARALLEL_DYNAMIC_HARD_GB", DefaultParallelDynamicWorkerHardPrivateGb);
+
+        var limit = minWorkers;
+        if (privateGb < softGb)
+            limit = maxWorkers;
+        else if (privateGb < mediumGb)
+            limit = Math.Max(minWorkers, maxWorkers - 1);
+        else if (privateGb < hardGb)
+            limit = Math.Max(minWorkers, maxWorkers - 2);
+
+        var initialUntil = Math.Clamp(
+            ResolveConfiguredDouble("XPA_CONVERTER_PARALLEL_RAMP_INITIAL_UNTIL", 0),
+            0,
+            1);
+        if (initialUntil > 0 && totalTasks > 0)
+        {
+            var completedFraction = (totalTasks - remainingTasks) / (double)totalTasks;
+            if (completedFraction < initialUntil)
+            {
+                var initialWorkers = Math.Clamp(
+                    ResolveConfiguredInt("XPA_CONVERTER_PARALLEL_RAMP_INITIAL_WORKERS", minWorkers),
+                    minWorkers,
+                    maxWorkers);
+                limit = Math.Min(limit, initialWorkers);
+            }
+        }
+
+        return limit;
+    }
+
+    private static bool ShouldResetParallelWorkerState(int completedSinceStateReset)
+    {
+        var everyTasks = ResolveConfiguredInt("XPA_CONVERTER_CACHE_RESET_EVERY_TASKS", 0);
+        if (everyTasks > 0 && completedSinceStateReset >= everyTasks)
+            return true;
+
+        var thresholdGb = ResolveConfiguredMemoryLimitGb("XPA_CONVERTER_CACHE_RESET_MEMORY_GB", DefaultParallelWorkerCacheResetPrivateGb);
+        return thresholdGb > 0 && GetCurrentPrivateMemoryGb() >= thresholdGb;
+    }
+
+    private static void MaybeCollectAfterParallelSkeletonTask((TaskSemantic Task, long Weight) item, bool isLarge)
+    {
+        var thresholdGb = ResolveParallelGcAfterTaskMemoryGb();
+        if (thresholdGb <= 0)
+            return;
+
+        var workingSetGb = Environment.WorkingSet / 1024d / 1024d / 1024d;
+        if (workingSetGb < thresholdGb)
+            return;
+
+        var nowTicks = DateTime.UtcNow.Ticks;
+        var previousTicks = Interlocked.Read(ref _lastParallelTaskGcTicks);
+        if (previousTicks > 0 && nowTicks - previousTicks < ParallelGcThrottleTicks)
+            return;
+        if (Interlocked.CompareExchange(ref _lastParallelTaskGcTicks, nowTicks, previousTicks) != previousTicks)
+            return;
+
+        var beforeGb = workingSetGb;
+        var stopwatch = Stopwatch.StartNew();
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: false);
+        GC.WaitForPendingFinalizers();
+        stopwatch.Stop();
+        var afterGb = Environment.WorkingSet / 1024d / 1024d / 1024d;
+        var taskName = ResolveTaskClassName(item.Task, _allTasks);
+        ConversionTelemetry.LogDuration(
+            "GC",
+            taskName,
+            stopwatch.Elapsed,
+            $"section=\"after-task\" isLarge={isLarge.ToString().ToLowerInvariant()} weight={item.Weight} beforeGb={beforeGb.ToString("0.00", CultureInfo.InvariantCulture)} afterGb={afterGb.ToString("0.00", CultureInfo.InvariantCulture)} thresholdGb={thresholdGb.ToString("0.00", CultureInfo.InvariantCulture)}");
+    }
+
+    private static double ResolveParallelGcAfterTaskMemoryGb()
+    {
+        return ResolveConfiguredMemoryLimitGb("XPA_CONVERTER_GC_AFTER_TASK_MEMORY_GB", DefaultParallelGcAfterTaskMemoryGb);
+    }
+
+    private static bool ShouldPauseParallelSchedulingForMemory()
+    {
+        var thresholdGb = ResolveParallelMemoryPauseGb();
+        if (thresholdGb <= 0)
+            return false;
+
+        var workingSetGb = Environment.WorkingSet / 1024d / 1024d / 1024d;
+        if (workingSetGb < thresholdGb)
+            return false;
+
+        var nowTicks = DateTime.UtcNow.Ticks;
+        var previousTicks = Interlocked.Read(ref _lastParallelMemoryPauseTicks);
+        if (previousTicks > 0 && nowTicks - previousTicks < ParallelMemoryPauseThrottleTicks)
+            return false;
+        if (Interlocked.CompareExchange(ref _lastParallelMemoryPauseTicks, nowTicks, previousTicks) != previousTicks)
+            return false;
+
+        GC.Collect(2, GCCollectionMode.Forced, blocking: false, compacting: false);
+        return true;
+    }
+
+    private static double ResolveParallelMemoryPauseGb()
+    {
+        return ResolveConfiguredMemoryLimitGb("XPA_CONVERTER_PARALLEL_MEMORY_PAUSE_GB", DefaultParallelMemoryPauseGb);
+    }
+
     private static string FormatParallelDegreePlan(IReadOnlyList<TaskSemantic> scheduledTasks, int requestedDegree)
     {
         var workerDegree = ResolveParallelSkeletonWorkerDegree(scheduledTasks, requestedDegree);
@@ -210,6 +369,67 @@ internal static partial class ProjectGenerator
 
         return requestedDegree;
     }
+
+    private static int ResolveConfiguredInt(string name, int defaultValue)
+    {
+        var configured = Environment.GetEnvironmentVariable(name);
+        return int.TryParse(configured, out var parsed) ? parsed : defaultValue;
+    }
+
+    private static double ResolveConfiguredDouble(string name, double defaultValue)
+    {
+        var configured = Environment.GetEnvironmentVariable(name);
+        if (double.TryParse(configured, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) && parsed >= 0)
+            return parsed;
+
+        return defaultValue;
+    }
+
+    private static double ResolveConfiguredMemoryLimitGb(string name, double defaultGb)
+    {
+        var configured = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(configured))
+            return defaultGb;
+
+        configured = configured.Trim();
+        if (configured.EndsWith("%", StringComparison.Ordinal))
+        {
+            var percentText = configured[..^1].Trim();
+            if (double.TryParse(percentText, NumberStyles.Float, CultureInfo.InvariantCulture, out var percent) &&
+                percent >= 0)
+            {
+                return GetTotalPhysicalMemoryGb() * percent / 100d;
+            }
+        }
+
+        if (double.TryParse(configured, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) && parsed >= 0)
+        {
+            if (parsed > 0 && parsed <= 1)
+                return GetTotalPhysicalMemoryGb() * parsed;
+
+            return parsed;
+        }
+
+        return defaultGb;
+    }
+
+    private static bool ResolveConfiguredBool(string name, bool defaultValue)
+    {
+        var configured = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(configured))
+            return defaultValue;
+
+        return configured.Equals("1", StringComparison.OrdinalIgnoreCase) ||
+               configured.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+               configured.Equals("yes", StringComparison.OrdinalIgnoreCase) ||
+               configured.Equals("on", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static double GetCurrentPrivateMemoryGb()
+        => Process.GetCurrentProcess().PrivateMemorySize64 / 1024d / 1024d / 1024d;
+
+    private static double GetTotalPhysicalMemoryGb()
+        => GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / 1024d / 1024d / 1024d;
 
     private static string FormatParallelScheduleHead(IReadOnlyList<TaskSemantic> scheduledTasks)
         => string.Join(", ",

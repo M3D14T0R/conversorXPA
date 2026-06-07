@@ -42,6 +42,13 @@ internal sealed class MainForm : Form
     private readonly CheckBox _internalCompat = new() { Text = "Atualizar compat interno para tasks não convertidas", AutoSize = true, Checked = true, Enabled = false };
     private readonly CheckBox _fullSolution = new() { Text = "Gerar solução completa", AutoSize = true };
     private readonly CheckBox _parallelTaskGeneration = new() { Text = "Paralelizar tasks (experimental)", AutoSize = true };
+    private readonly CheckBox _dynamicWorkers = new() { Text = "Workers dinâmicos", AutoSize = true, Checked = true };
+    private readonly NumericUpDown _parallelMaxWorkers = new() { Minimum = 1, Maximum = 64, Value = 8, Width = 80 };
+    private readonly NumericUpDown _parallelMinWorkers = new() { Minimum = 1, Maximum = 64, Value = 2, Width = 80 };
+    private readonly NumericUpDown _parallelInitialWorkers = new() { Minimum = 1, Maximum = 64, Value = 4, Width = 80 };
+    private readonly NumericUpDown _parallelInitialUntilPercent = new() { Minimum = 0, Maximum = 100, Value = 10, Width = 80 };
+    private readonly TextBox _parallelMaxMemory = new() { Text = "90%", Width = 80 };
+    private readonly NumericUpDown _cacheResetEveryTasks = new() { Minimum = 0, Maximum = 1000, Value = 60, Width = 80 };
     private readonly TextBox _commandPreview = new() { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical };
     private readonly TextBox _log = new() { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical };
     private readonly Button _run = new() { Text = "Executar", AutoSize = true };
@@ -59,7 +66,14 @@ internal sealed class MainForm : Form
         string? RuntimeRootPath,
         bool? FullSolution,
         bool? ParallelTaskGeneration,
-        bool? IncrementalOutput);
+        bool? IncrementalOutput,
+        bool? DynamicWorkers,
+        int? ParallelMaxWorkers,
+        int? ParallelMinWorkers,
+        int? ParallelInitialWorkers,
+        int? ParallelInitialUntilPercent,
+        string? ParallelMaxMemory,
+        int? CacheResetEveryTasks);
 
     public MainForm()
     {
@@ -141,6 +155,20 @@ internal sealed class MainForm : Form
                 _parallelTaskGeneration.Checked = preferences.ParallelTaskGeneration.Value;
             if (preferences.IncrementalOutput.HasValue)
                 _incrementalOutput.Checked = preferences.IncrementalOutput.Value;
+            if (preferences.DynamicWorkers.HasValue)
+                _dynamicWorkers.Checked = preferences.DynamicWorkers.Value;
+            if (preferences.ParallelMaxWorkers.HasValue)
+                _parallelMaxWorkers.Value = Math.Clamp(preferences.ParallelMaxWorkers.Value, (int)_parallelMaxWorkers.Minimum, (int)_parallelMaxWorkers.Maximum);
+            if (preferences.ParallelMinWorkers.HasValue)
+                _parallelMinWorkers.Value = Math.Clamp(preferences.ParallelMinWorkers.Value, (int)_parallelMinWorkers.Minimum, (int)_parallelMinWorkers.Maximum);
+            if (preferences.ParallelInitialWorkers.HasValue)
+                _parallelInitialWorkers.Value = Math.Clamp(preferences.ParallelInitialWorkers.Value, (int)_parallelInitialWorkers.Minimum, (int)_parallelInitialWorkers.Maximum);
+            if (preferences.ParallelInitialUntilPercent.HasValue)
+                _parallelInitialUntilPercent.Value = Math.Clamp(preferences.ParallelInitialUntilPercent.Value, (int)_parallelInitialUntilPercent.Minimum, (int)_parallelInitialUntilPercent.Maximum);
+            if (!string.IsNullOrWhiteSpace(preferences.ParallelMaxMemory))
+                _parallelMaxMemory.Text = preferences.ParallelMaxMemory.Trim();
+            if (preferences.CacheResetEveryTasks.HasValue)
+                _cacheResetEveryTasks.Value = Math.Clamp(preferences.CacheResetEveryTasks.Value, (int)_cacheResetEveryTasks.Minimum, (int)_cacheResetEveryTasks.Maximum);
         }
         catch (Exception ex)
         {
@@ -158,7 +186,14 @@ internal sealed class MainForm : Form
                 string.IsNullOrWhiteSpace(_runtimeRootPath.Text) ? null : _runtimeRootPath.Text.Trim(),
                 _fullSolution.Checked,
                 _parallelTaskGeneration.Checked,
-                _incrementalOutput.Checked);
+                _incrementalOutput.Checked,
+                _dynamicWorkers.Checked,
+                (int)_parallelMaxWorkers.Value,
+                (int)_parallelMinWorkers.Value,
+                (int)_parallelInitialWorkers.Value,
+                (int)_parallelInitialUntilPercent.Value,
+                _parallelMaxMemory.Text.Trim(),
+                (int)_cacheResetEveryTasks.Value);
 
             var path = GetUserPreferencesPath();
             var directory = Path.GetDirectoryName(path);
@@ -211,6 +246,10 @@ internal sealed class MainForm : Form
         var scopeTab = new TabPage("Escopo");
         scopeTab.Controls.Add(BuildFiltersPanel());
         tabs.TabPages.Add(scopeTab);
+
+        var performanceTab = new TabPage("Performance");
+        performanceTab.Controls.Add(BuildPerformancePanel());
+        tabs.TabPages.Add(performanceTab);
 
         return tabs;
     }
@@ -278,6 +317,29 @@ internal sealed class MainForm : Form
         return panel;
     }
 
+    private Control BuildPerformancePanel()
+    {
+        var panel = new TableLayoutPanel { Dock = DockStyle.Top, ColumnCount = 2, Padding = new Padding(8), AutoSize = true };
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+
+        panel.Controls.Add(new Label { Text = "Workers", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
+        panel.Controls.Add(_dynamicWorkers, 1, 0);
+        panel.Controls.Add(new Label { Text = "Máximo", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 1);
+        panel.Controls.Add(_parallelMaxWorkers, 1, 1);
+        panel.Controls.Add(new Label { Text = "Mínimo", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 2);
+        panel.Controls.Add(_parallelMinWorkers, 1, 2);
+        panel.Controls.Add(new Label { Text = "Início", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 3);
+        panel.Controls.Add(_parallelInitialWorkers, 1, 3);
+        panel.Controls.Add(new Label { Text = "Início até (%)", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 4);
+        panel.Controls.Add(_parallelInitialUntilPercent, 1, 4);
+        panel.Controls.Add(new Label { Text = "RAM máxima", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 5);
+        panel.Controls.Add(_parallelMaxMemory, 1, 5);
+        panel.Controls.Add(new Label { Text = "Reset cache a cada", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 6);
+        panel.Controls.Add(_cacheResetEveryTasks, 1, 6);
+
+        return panel;
+    }
     private Control BuildSupportFilesPanel()
     {
         var panel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 2, Padding = new Padding(8) };
@@ -427,7 +489,14 @@ internal sealed class MainForm : Form
         _withDependencies.CheckedChanged += (_, _) => RefreshUiState();
         _incrementalOutput.CheckedChanged += (_, _) => RefreshCommandPreview();
         _fullSolution.CheckedChanged += (_, _) => RefreshCommandPreview();
-        _parallelTaskGeneration.CheckedChanged += (_, _) => RefreshCommandPreview();
+        _parallelTaskGeneration.CheckedChanged += (_, _) => RefreshUiState();
+        _dynamicWorkers.CheckedChanged += (_, _) => RefreshCommandPreview();
+        _parallelMaxWorkers.ValueChanged += (_, _) => RefreshCommandPreview();
+        _parallelMinWorkers.ValueChanged += (_, _) => RefreshCommandPreview();
+        _parallelInitialWorkers.ValueChanged += (_, _) => RefreshCommandPreview();
+        _parallelInitialUntilPercent.ValueChanged += (_, _) => RefreshCommandPreview();
+        _parallelMaxMemory.TextChanged += (_, _) => RefreshCommandPreview();
+        _cacheResetEveryTasks.ValueChanged += (_, _) => RefreshCommandPreview();
         _modeComplete.CheckedChanged += (_, _) => RefreshUiState();
         _modeFolder.CheckedChanged += (_, _) => RefreshUiState();
         _modeTask.CheckedChanged += (_, _) => RefreshUiState();
@@ -537,6 +606,14 @@ internal sealed class MainForm : Form
         _fullSolution.Enabled = !_modeFolder.Checked;
         _tablesXmls.Enabled = _modeFolder.Checked || partialTaskScope;
         _runtimeCoreDllPath.Enabled = string.Equals(_runtimeCoreReferenceMode.SelectedItem?.ToString(), "Dll", StringComparison.OrdinalIgnoreCase);
+        var performanceEnabled = _parallelTaskGeneration.Checked;
+        _dynamicWorkers.Enabled = performanceEnabled;
+        _parallelMaxWorkers.Enabled = performanceEnabled;
+        _parallelMinWorkers.Enabled = performanceEnabled;
+        _parallelInitialWorkers.Enabled = performanceEnabled;
+        _parallelInitialUntilPercent.Enabled = performanceEnabled && _dynamicWorkers.Checked;
+        _parallelMaxMemory.Enabled = performanceEnabled && _dynamicWorkers.Checked;
+        _cacheResetEveryTasks.Enabled = performanceEnabled;
         RefreshCommandPreview();
     }
 
@@ -707,7 +784,11 @@ internal sealed class MainForm : Form
         if (options.IncrementalOutput)
             args.Add("--incremental-output");
 
-        _commandPreview.Text = string.Join(" ", args);
+        var envPreview = BuildPerformanceEnvironment(options)
+            .Select(kv => $"set {kv.Key}={kv.Value}")
+            .ToList();
+        envPreview.Add(string.Join(" ", args));
+        _commandPreview.Text = string.Join(Environment.NewLine, envPreview);
     }
 
     private async Task RunConversionAsync()
@@ -749,11 +830,16 @@ internal sealed class MainForm : Form
                 options.TaskRanges.AddRange(ranges);
             }
 
+            var performanceEnvironment = BuildPerformanceEnvironment(options);
             SaveUserPreferences();
             _log.Clear();
             AppendLogLine($"Build configuration: {BuildConfigurationLabel}");
             if (options.ParallelTaskGeneration)
+            {
+                ApplyPerformanceEnvironment(performanceEnvironment);
                 AppendLogLine("Paralelismo experimental ativado: as tasks serão emitidas em paralelo com caches isolados por worker.");
+                AppendLogLine("Performance: " + string.Join("; ", performanceEnvironment.Select(kv => $"{kv.Key}={kv.Value}")));
+            }
             if (options.IncrementalOutput)
                 AppendLogLine("Modo incremental ativado: o output existente será preservado e os arquivos desta execução serão sobrescritos quando tiverem o mesmo nome.");
 #if DEBUG
@@ -779,6 +865,70 @@ internal sealed class MainForm : Form
         }
     }
 
+    private Dictionary<string, string> BuildPerformanceEnvironment(ConversionOptions options)
+    {
+        var env = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (!options.ParallelTaskGeneration)
+            return env;
+
+        var maxWorkers = Math.Max(1, (int)_parallelMaxWorkers.Value);
+        var minWorkers = Math.Clamp((int)_parallelMinWorkers.Value, 1, maxWorkers);
+        var initialWorkers = Math.Clamp((int)_parallelInitialWorkers.Value, minWorkers, maxWorkers);
+        var initialUntil = ((double)_parallelInitialUntilPercent.Value / 100d).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+        var maxMemory = NormalizeMemoryLimit(_parallelMaxMemory.Text, "90%");
+
+        env["XPA_CONVERTER_PARALLEL_TASK_DEGREE"] = maxWorkers.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        env["XPA_CONVERTER_PARALLEL_DYNAMIC_WORKERS"] = _dynamicWorkers.Checked ? "true" : "false";
+        env["XPA_CONVERTER_PARALLEL_MIN_WORKERS"] = minWorkers.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        env["XPA_CONVERTER_PARALLEL_RAMP_INITIAL_WORKERS"] = initialWorkers.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        env["XPA_CONVERTER_PARALLEL_RAMP_INITIAL_UNTIL"] = initialUntil;
+        env["XPA_CONVERTER_PARALLEL_DYNAMIC_SOFT_GB"] = ScaleMemoryLimit(maxMemory, 0.64);
+        env["XPA_CONVERTER_PARALLEL_DYNAMIC_MEDIUM_GB"] = ScaleMemoryLimit(maxMemory, 0.80);
+        env["XPA_CONVERTER_PARALLEL_DYNAMIC_HARD_GB"] = ScaleMemoryLimit(maxMemory, 0.92);
+        env["XPA_CONVERTER_CACHE_RESET_MEMORY_GB"] = ScaleMemoryLimit(maxMemory, 0.80);
+        env["XPA_CONVERTER_CACHE_RESET_EVERY_TASKS"] = ((int)_cacheResetEveryTasks.Value).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        env["XPA_CONVERTER_GC_AFTER_TASK_MEMORY_GB"] = ScaleMemoryLimit(maxMemory, 0.92);
+        env["XPA_CONVERTER_PARALLEL_MEMORY_PAUSE_GB"] = maxMemory;
+        return env;
+    }
+
+    private static void ApplyPerformanceEnvironment(Dictionary<string, string> environment)
+    {
+        foreach (var item in environment)
+            Environment.SetEnvironmentVariable(item.Key, item.Value);
+    }
+
+    private static string NormalizeMemoryLimit(string raw, string fallback)
+    {
+        raw = raw.Trim();
+        if (string.IsNullOrWhiteSpace(raw))
+            return fallback;
+
+        if (raw.EndsWith("%", StringComparison.Ordinal))
+        {
+            var percentText = raw[..^1].Trim();
+            if (double.TryParse(percentText, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var percent) && percent >= 0)
+                return percent.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) + "%";
+            return fallback;
+        }
+
+        if (double.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var value) && value >= 0)
+            return value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+
+        return fallback;
+    }
+
+    private static string ScaleMemoryLimit(string normalized, double factor)
+    {
+        if (normalized.EndsWith("%", StringComparison.Ordinal))
+        {
+            var percent = double.Parse(normalized[..^1], System.Globalization.CultureInfo.InvariantCulture);
+            return (percent * factor).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) + "%";
+        }
+
+        var value = double.Parse(normalized, System.Globalization.CultureInfo.InvariantCulture);
+        return (value * factor).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+    }
     private void ToggleRunningState(bool isRunning)
     {
         _run.Enabled = !isRunning;

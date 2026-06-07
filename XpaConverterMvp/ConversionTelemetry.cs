@@ -15,6 +15,7 @@ internal static class ConversionTelemetry
     private static StreamWriter? _logWriter;
     private static int _pendingLogLineCount;
     private static DateTimeOffset _lastStatusWriteAt;
+    private static bool _minimalTelemetry;
 
     public static string? LogPath
     {
@@ -43,6 +44,7 @@ internal static class ConversionTelemetry
             _pendingLogLineCount = 0;
             _lastStatusWriteAt = DateTimeOffset.MinValue;
             _session = Stopwatch.StartNew();
+            _minimalTelemetry = IsMinimalTelemetryEnabled();
 
             WriteLineUnsafe("SESSION", $"run-start xml={Quote(options.XmlPath)} output={Quote(options.OutputDir)} app={Quote(appNamespace)} withDependencies={options.WithDependencies} fullSolution={options.FullSolution} parallelTasks={options.ParallelTaskGeneration} incrementalOutput={options.IncrementalOutput} folderFilter={Quote(options.FolderFilter)} tasks={Quote(string.Join(", ", options.TaskFilters))} taskRanges={Quote(string.Join(", ", options.TaskRanges))}");
             WriteLineUnsafe("SESSION", $"command-preview={Quote(BuildCommandPreview(options, appNamespace))}");
@@ -55,16 +57,72 @@ internal static class ConversionTelemetry
         {
             if (string.IsNullOrWhiteSpace(_logPath))
                 return;
+            if (!ShouldWriteLog(category, message, null))
+                return;
             WriteLineUnsafe(category, message);
         }
     }
 
     public static void LogDuration(string category, string name, TimeSpan elapsed, string? extra = null)
     {
+        if (!ShouldWriteLog(category, name, elapsed))
+            return;
+
         var payload = $"{name} elapsedMs={elapsed.TotalMilliseconds:F0}";
         if (!string.IsNullOrWhiteSpace(extra))
             payload += $" {extra}";
-        Log(category, payload);
+        lock (_gate)
+        {
+            if (string.IsNullOrWhiteSpace(_logPath))
+                return;
+            WriteLineUnsafe(category, payload);
+        }
+    }
+
+    private static bool IsMinimalTelemetryEnabled()
+    {
+        var value = Environment.GetEnvironmentVariable("XPA_CONVERTER_TELEMETRY_LEVEL");
+        return string.Equals(value, "minimal", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(value, "summary", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ShouldWriteLog(string category, string message, TimeSpan? elapsed)
+    {
+        if (!_minimalTelemetry)
+            return true;
+
+        if (string.Equals(category, "SESSION", StringComparison.Ordinal) ||
+            string.Equals(category, "PHASE", StringComparison.Ordinal) ||
+            string.Equals(category, "SEMANTIC", StringComparison.Ordinal) ||
+            string.Equals(category, "WRITER", StringComparison.Ordinal) ||
+            string.Equals(category, "TASK", StringComparison.Ordinal) ||
+            string.Equals(category, "TASK_BUILD", StringComparison.Ordinal) ||
+            string.Equals(category, "QUALITY_GATE", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (string.Equals(category, "SELECTS", StringComparison.Ordinal) ||
+            string.Equals(category, "RELATIONS", StringComparison.Ordinal) ||
+            string.Equals(category, "VIEW_EXPR", StringComparison.Ordinal) ||
+            string.Equals(category, "TASK_METHOD", StringComparison.Ordinal) ||
+            string.Equals(category, "LEAVEROW", StringComparison.Ordinal) ||
+            string.Equals(category, "ROWACTION", StringComparison.Ordinal) ||
+            string.Equals(category, "CALLPIPE", StringComparison.Ordinal) ||
+            string.Equals(category, "DIRECTUPDATE", StringComparison.Ordinal) ||
+            string.Equals(category, "DIRECTUPDATE_DETAIL", StringComparison.Ordinal))
+        {
+            return elapsed.HasValue && elapsed.Value.TotalMilliseconds >= 500;
+        }
+
+        if (category.Contains("UNRESOLVED", StringComparison.OrdinalIgnoreCase) ||
+            category.Contains("FAIL", StringComparison.OrdinalIgnoreCase) ||
+            category.Contains("ERROR", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return false;
     }
 
     public static void CloseSuccess(int taskCount, int dataObjectCount, int fieldModelCount)
@@ -109,7 +167,10 @@ internal static class ConversionTelemetry
         var line = $"{DateTimeOffset.Now:O}\t{category}\t{message}{Environment.NewLine}";
         _logWriter!.Write(line);
         _pendingLogLineCount++;
-        if (_pendingLogLineCount >= LogFlushLineThreshold || string.Equals(category, "SESSION", StringComparison.Ordinal))
+        if (_pendingLogLineCount >= LogFlushLineThreshold ||
+            string.Equals(category, "SESSION", StringComparison.Ordinal) ||
+            string.Equals(category, "PHASE", StringComparison.Ordinal) ||
+            string.Equals(category, "SEMANTIC", StringComparison.Ordinal))
             FlushLogUnsafe();
         WriteStatusUnsafe(category, message);
     }
@@ -237,6 +298,8 @@ internal static class ConversionTelemetry
 
         var now = DateTimeOffset.Now;
         if (!string.Equals(category, "SESSION", StringComparison.Ordinal) &&
+            !string.Equals(category, "PHASE", StringComparison.Ordinal) &&
+            !string.Equals(category, "SEMANTIC", StringComparison.Ordinal) &&
             now - _lastStatusWriteAt < _statusWriteInterval)
             return;
 

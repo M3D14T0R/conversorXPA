@@ -10,6 +10,21 @@ namespace XpaConverterMvp;
 
 internal static partial class ProjectGenerator
 {
+    private const string XpaLikeOperandPattern =
+        @"(?:\([^\(\)]*\)|@?""(?:[^""]|"""")*""|'[^']*'|[_A-Za-z][A-Za-z0-9_\.]*(?:\([^\(\)]*\))?|[-+]?\d+(?:\.\d+)?)";
+
+    private static readonly Regex XpaPowOperatorRegex = new(
+        @"(?<left>(?:[-+]?\s*(?:\([^\(\)]*\)|[_A-Za-z][A-Za-z0-9_\.]*(?:\([^\(\)]*\))?|[-+]?\d+(?:\.\d+)?)))\s*\^\s*(?<right>(?:[-+]?\s*(?:\([^\(\)]*\)|[_A-Za-z][A-Za-z0-9_\.]*(?:\([^\(\)]*\))?|[-+]?\d+(?:\.\d+)?)))",
+        RegexOptions.Compiled);
+
+    private static readonly Regex XpaNotLikeOperatorRegex = new(
+        $@"(?<left>{XpaLikeOperandPattern})\s+NOT\s+LIKE\s+(?<right>{XpaLikeOperandPattern})",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    private static readonly Regex XpaLikeOperatorRegex = new(
+        $@"(?<left>{XpaLikeOperandPattern})\s+LIKE\s+(?<right>{XpaLikeOperandPattern})",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     private static string RewriteIndexLiteralsForOrderBy(
         string rawSyntax,
         string translatedExpression,
@@ -56,13 +71,13 @@ internal static partial class ProjectGenerator
 
     private static string ApplyXpaNumericOperators(string expr)
     {
+        if (expr.IndexOf('^') < 0)
+            return expr;
+
         // XPA exponentiation operator: a ^ b -> u.Pow(a, b)
-        var powRx = new Regex(
-            @"(?<left>(?:[-+]?\s*(?:\([^\(\)]*\)|[_A-Za-z][A-Za-z0-9_\.]*(?:\([^\(\)]*\))?|[-+]?\d+(?:\.\d+)?)))\s*\^\s*(?<right>(?:[-+]?\s*(?:\([^\(\)]*\)|[_A-Za-z][A-Za-z0-9_\.]*(?:\([^\(\)]*\))?|[-+]?\d+(?:\.\d+)?)))",
-            RegexOptions.Compiled);
         for (var i = 0; i < 32; i++)
         {
-            var replaced = powRx.Replace(expr, m => $"u.Pow({m.Groups["left"].Value.Trim()}, {m.Groups["right"].Value.Trim()})");
+            var replaced = XpaPowOperatorRegex.Replace(expr, m => $"u.Pow({m.Groups["left"].Value.Trim()}, {m.Groups["right"].Value.Trim()})");
             if (string.Equals(replaced, expr, StringComparison.Ordinal))
                 break;
             expr = replaced;
@@ -72,24 +87,17 @@ internal static partial class ProjectGenerator
 
     private static string ApplyXpaLikeOperators(string expr)
     {
+        if (expr.IndexOf("LIKE", StringComparison.OrdinalIgnoreCase) < 0)
+            return expr;
+
         // XPA infix LIKE/NOT LIKE operators:
         //   a LIKE b     -> u.Like(a, b)
         //   a NOT LIKE b -> u.Not(u.Like(a, b))
         // Keep this conservative to avoid rewriting unrelated tokens.
-        const string operand =
-            @"(?:\([^\(\)]*\)|@?""(?:[^""]|"""")*""|'[^']*'|[_A-Za-z][A-Za-z0-9_\.]*(?:\([^\(\)]*\))?|[-+]?\d+(?:\.\d+)?)";
-
-        var notLikeRx = new Regex(
-            $@"(?<left>{operand})\s+NOT\s+LIKE\s+(?<right>{operand})",
-            RegexOptions.Compiled | RegexOptions.IgnoreCase);
-        var likeRx = new Regex(
-            $@"(?<left>{operand})\s+LIKE\s+(?<right>{operand})",
-            RegexOptions.Compiled | RegexOptions.IgnoreCase);
-
         for (var i = 0; i < 32; i++)
         {
-            var replaced = notLikeRx.Replace(expr, m => $"u.Not(u.Like({m.Groups["left"].Value}, {m.Groups["right"].Value}))");
-            replaced = likeRx.Replace(replaced, m => $"u.Like({m.Groups["left"].Value}, {m.Groups["right"].Value})");
+            var replaced = XpaNotLikeOperatorRegex.Replace(expr, m => $"u.Not(u.Like({m.Groups["left"].Value}, {m.Groups["right"].Value}))");
+            replaced = XpaLikeOperatorRegex.Replace(replaced, m => $"u.Like({m.Groups["left"].Value}, {m.Groups["right"].Value})");
             if (string.Equals(replaced, expr, StringComparison.Ordinal))
                 break;
             expr = replaced;

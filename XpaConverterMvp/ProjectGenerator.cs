@@ -61,7 +61,6 @@ internal static partial class ProjectGenerator
         ["mTVal"] = "u.MTVal",
         ["MTVal"] = "u.MTVal",
         ["MVal"] = "u.MVal",
-        ["Not"] = "u.Not",
         ["OEM2ANSI"] = "u.OEM2ANSI",
         ["Rep"] = "u.Rep",
         ["RepStr"] = "u.RepStr",

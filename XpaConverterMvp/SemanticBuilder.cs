@@ -7,10 +7,28 @@ namespace XpaConverterMvp;
 internal static class SemanticBuilder
 {
     private static IReadOnlyList<TaskDef> _taskDefs = Array.Empty<TaskDef>();
+    private static IReadOnlyDictionary<int, TaskDef> _taskDefsByOrdinal = new Dictionary<int, TaskDef>();
+    private static IReadOnlyDictionary<int, IReadOnlyList<TaskDef>> _childTaskDefsByParentOrdinal = new Dictionary<int, IReadOnlyList<TaskDef>>();
+    private static IReadOnlyDictionary<(int ParentOrdinal, int SubtaskIndex), TaskDef> _childTaskDefByParentAndSubtaskIndex = new Dictionary<(int ParentOrdinal, int SubtaskIndex), TaskDef>();
+    private static IReadOnlyDictionary<int, TaskDef> _topLevelTaskDefsByProgramIndex = new Dictionary<int, TaskDef>();
+    private static IReadOnlyList<TaskDef> _topLevelTaskDefsByOrdinal = Array.Empty<TaskDef>();
+    private static IReadOnlyDictionary<int, DataObjectDef> _dataObjectsByOrdinal = new Dictionary<int, DataObjectDef>();
+    private static IReadOnlyDictionary<int, bool> _shouldGenerateViewByTaskOrdinal = new Dictionary<int, bool>();
+    private static IReadOnlyDictionary<int, string> _viewClassBaseNameByTaskOrdinal = new Dictionary<int, string>();
+    private static IReadOnlyDictionary<int, int> _viewClassDuplicateIndexByTaskOrdinal = new Dictionary<int, int>();
+    private static TaskDef? _applicationTask;
 
     public static ProjectSemantic Build(ParsedXpa parsed)
     {
         _taskDefs = parsed.Tasks;
+        BuildTaskIndexes(parsed.Tasks);
+        _dataObjectsByOrdinal = parsed.DataObjects
+            .GroupBy(d => d.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First());
+        BuildViewIndexes(parsed.Tasks);
+        ConversionTelemetry.Log(
+            "SEMANTIC",
+            $"build input tasks={parsed.Tasks.Count} dataObjects={parsed.DataObjects.Count} fieldModels={parsed.FieldModels.Count} components={parsed.Components.Count}");
         var semantic = new ProjectSemantic
         {
             ProjectMenuSettings = parsed.ProjectMenuSettings,
@@ -33,7 +51,19 @@ internal static class SemanticBuilder
         semantic.DotNetComponentReferences.AddRange(parsed.DotNetComponentReferences);
         semantic.ComponentFunctions.AddRange(parsed.ComponentFunctions);
         semantic.Menus.AddRange(parsed.Menus);
-        semantic.Tasks.AddRange(parsed.Tasks.Select(task => BuildTaskSemantic(task, parsed.Tasks, parsed.DataObjects, parsed.ControlButtonModels)));
+        for (var i = 0; i < parsed.Tasks.Count; i++)
+        {
+            var task = parsed.Tasks[i];
+            if (i == 0 || (i + 1) % 100 == 0 || i == parsed.Tasks.Count - 1)
+            {
+                ConversionTelemetry.Log(
+                    "SEMANTIC",
+                    $"task semantic {i + 1}/{parsed.Tasks.Count} ordinal={task.Ordinal} parent={task.ParentOrdinal?.ToString(CultureInfo.InvariantCulture) ?? ""} description={QuoteTelemetry(task.Description)}");
+            }
+
+            semantic.Tasks.Add(BuildTaskSemantic(task, parsed.Tasks, parsed.DataObjects, parsed.ControlButtonModels));
+        }
+        ConversionTelemetry.Log("SEMANTIC", $"task semantic done count={semantic.Tasks.Count}");
         foreach (var task in parsed.Tasks)
         {
             if (task.Form?.Controls is null)
@@ -41,13 +71,96 @@ internal static class SemanticBuilder
             foreach (var control in task.Form.Controls.Where(c => c.Model == "CTRL_GUI0_PUSH_BUTTON" && c.ModelRefObj.HasValue))
                 semantic.UsedButtonModelObjectIds.Add(control.ModelRefObj!.Value);
         }
+        ConversionTelemetry.Log("SEMANTIC", "application select map start");
         foreach (var kv in BuildApplicationSelectMap(semantic.Tasks))
             semantic.ApplicationSelectMap[kv.Key] = kv.Value;
+        ConversionTelemetry.Log("SEMANTIC", $"application select map done count={semantic.ApplicationSelectMap.Count}");
+        ConversionTelemetry.Log("SEMANTIC", "parent select maps start");
+        var semanticTasksByOrdinal = semantic.Tasks
+            .GroupBy(t => t.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First());
         foreach (var task in semantic.Tasks)
-            semantic.ParentSelectMapByTaskOrdinal[task.Ordinal] = BuildParentSelectMap(task, semantic.Tasks, semantic.ApplicationSelectMap);
+            semantic.ParentSelectMapByTaskOrdinal[task.Ordinal] = BuildParentSelectMap(task, semanticTasksByOrdinal, semantic.ApplicationSelectMap);
+        ConversionTelemetry.Log("SEMANTIC", $"parent select maps done count={semantic.ParentSelectMapByTaskOrdinal.Count}");
         foreach (var rr in parsed.ComponentRightRefs)
             semantic.ComponentRightsByLiteral[$"{rr.ComponentId},{rr.RightId}"] = new ComponentRightSemantic(rr.ComponentName, ToRoleMemberIdentifier(rr.RightName));
+        ConversionTelemetry.Log("SEMANTIC", "build done");
         return semantic;
+    }
+
+    private static void BuildTaskIndexes(IReadOnlyList<TaskDef> tasks)
+    {
+        _taskDefsByOrdinal = tasks
+            .GroupBy(t => t.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First());
+        _childTaskDefsByParentOrdinal = tasks
+            .Where(t => t.ParentOrdinal.HasValue)
+            .GroupBy(t => t.ParentOrdinal!.Value)
+            .ToDictionary(
+                g => g.Key,
+                g => (IReadOnlyList<TaskDef>)g
+                    .OrderBy(t => t.SubtaskIndex ?? int.MaxValue)
+                    .ThenBy(t => t.Ordinal)
+                    .ToList());
+        _childTaskDefByParentAndSubtaskIndex = tasks
+            .Where(t => t.ParentOrdinal.HasValue && t.SubtaskIndex.HasValue)
+            .GroupBy(t => (t.ParentOrdinal!.Value, t.SubtaskIndex!.Value))
+            .ToDictionary(g => g.Key, g => g.First());
+        _topLevelTaskDefsByOrdinal = tasks
+            .Where(t => t.ParentOrdinal is null)
+            .OrderBy(t => t.Ordinal)
+            .ToList();
+        _topLevelTaskDefsByProgramIndex = _topLevelTaskDefsByOrdinal
+            .Where(t => t.TopLevelProgramIndex.HasValue)
+            .GroupBy(t => t.TopLevelProgramIndex!.Value)
+            .ToDictionary(g => g.Key, g => g.First());
+        _applicationTask = tasks.FirstOrDefault(t => t.MainProgram) ?? _topLevelTaskDefsByOrdinal.FirstOrDefault();
+    }
+
+    private static TaskDef? GetTaskByOrdinal(int ordinal)
+        => _taskDefsByOrdinal.TryGetValue(ordinal, out var task) ? task : null;
+
+    private static IReadOnlyList<TaskDef> GetChildTasks(int parentOrdinal)
+        => _childTaskDefsByParentOrdinal.TryGetValue(parentOrdinal, out var children)
+            ? children
+            : Array.Empty<TaskDef>();
+
+    private static TaskDef? GetChildTaskBySubtaskIndex(int parentOrdinal, int subtaskIndex)
+        => _childTaskDefByParentAndSubtaskIndex.TryGetValue((parentOrdinal, subtaskIndex), out var task)
+            ? task
+            : null;
+
+    private static DataObjectDef? GetDataObjectByOrdinal(int ordinal)
+        => _dataObjectsByOrdinal.TryGetValue(ordinal, out var dataObject) ? dataObject : null;
+
+    private static void BuildViewIndexes(IReadOnlyList<TaskDef> tasks)
+    {
+        var shouldGenerate = new Dictionary<int, bool>();
+        var baseNames = new Dictionary<int, string>();
+        foreach (var task in tasks)
+        {
+            var generate = ShouldGenerateViewCore(task);
+            shouldGenerate[task.Ordinal] = generate;
+            baseNames[task.Ordinal] = ResolveViewClassBaseNameCore(task);
+        }
+
+        var duplicateIndexes = tasks
+            .Where(t => shouldGenerate.GetValueOrDefault(t.Ordinal))
+            .OrderBy(t => t.Ordinal)
+            .GroupBy(t => baseNames[t.Ordinal], StringComparer.Ordinal)
+            .SelectMany(g => g.Select((task, index) => new { task.Ordinal, Index = index }))
+            .ToDictionary(x => x.Ordinal, x => x.Index);
+
+        _shouldGenerateViewByTaskOrdinal = shouldGenerate;
+        _viewClassBaseNameByTaskOrdinal = baseNames;
+        _viewClassDuplicateIndexByTaskOrdinal = duplicateIndexes;
+    }
+
+    private static string QuoteTelemetry(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return "\"\"";
+        return "\"" + value.Replace("\"", "\"\"") + "\"";
     }
 
     private static TaskSemantic BuildTaskSemantic(
@@ -56,18 +169,45 @@ internal static class SemanticBuilder
         IReadOnlyList<DataObjectDef> dataObjects,
         IReadOnlyList<ControlButtonModelDef> buttonModels)
     {
+        var traceTask = ShouldTraceTask(task);
+        if (traceTask)
+            LogTaskStage(task, "expressions start");
         var expressions = BuildExpressionSemantic(task);
+        if (traceTask)
+            LogTaskStage(task, "events start");
         var events = BuildEventSemantic(task);
+        if (traceTask)
+            LogTaskStage(task, "io start");
         var io = BuildIoSemantic(task);
+        if (traceTask)
+            LogTaskStage(task, "report start");
         var report = BuildReportSemantic(task, io, events, expressions);
+        if (traceTask)
+            LogTaskStage(task, "merge start");
         var merge = BuildMergeSemantic(task);
+        if (traceTask)
+            LogTaskStage(task, "logic start");
         var logic = new LogicSemantic(task.StartLogics, task.StartRaises, task.RowLogics, task.EndLogics, task.EndRaises, task.SavingRowLogics, task.GroupLogics);
+        if (traceTask)
+            LogTaskStage(task, "dataview start");
         var dataView = BuildDataViewSemantic(task);
+        if (traceTask)
+            LogTaskStage(task, "selects start");
         var selectsSemantic = BuildSelectSemantic(task, dataObjects);
+        if (traceTask)
+            LogTaskStage(task, "resources start");
         var resourcesSemantic = BuildResourceSemantic(task);
+        if (traceTask)
+            LogTaskStage(task, "function overrides start");
         var functionOverrides = BuildFunctionOverridesSemantic(task);
+        if (traceTask)
+            LogTaskStage(task, "view start");
         var view = BuildViewSemantic(task, allTasks, dataObjects, buttonModels);
+        if (traceTask)
+            LogTaskStage(task, "layout start");
         var layout = BuildLayoutSemantic(task, allTasks, dataObjects);
+        if (traceTask)
+            LogTaskStage(task, "execution start");
         var activity = ResolveActivityByInitialMode(task.InitialMode);
         var rowLocking = task.LockingStrategy switch
         {
@@ -195,7 +335,9 @@ internal static class SemanticBuilder
             unmappedHandlers,
             bodies);
 
-        return new TaskSemantic(
+        if (traceTask)
+            LogTaskStage(task, "record create");
+        var semantic = new TaskSemantic(
             task.Ordinal,
             task.TopLevelProgramIndex,
             task.TopLevelProgramIndexLocal,
@@ -303,7 +445,18 @@ internal static class SemanticBuilder
             merge,
             report,
             BuildUnhandled(task));
+        if (traceTask)
+            LogTaskStage(task, "done");
+        return semantic;
     }
+
+    private static bool ShouldTraceTask(TaskDef task)
+        => task.Ordinal <= 5 || task.Ordinal % 100 == 0;
+
+    private static void LogTaskStage(TaskDef task, string stage)
+        => ConversionTelemetry.Log(
+            "SEMANTIC",
+            $"task stage ordinal={task.Ordinal} stage={stage} parent={task.ParentOrdinal?.ToString(CultureInfo.InvariantCulture) ?? ""} description={QuoteTelemetry(task.Description)}");
 
     private static DataViewSemantic BuildDataViewSemantic(TaskDef task)
     {
@@ -900,9 +1053,17 @@ internal static class SemanticBuilder
         var selectedUnsupportedControls = selectedFormControls
             .Where(c => !IsSupportedViewControl(c))
             .ToList();
+        var supportedChildParentIds = selectedSupportedControls
+            .Where(c => c.ParentId.HasValue)
+            .Select(c => c.ParentId!.Value)
+            .ToHashSet();
+        var tableColumnControlIds = selectedSupportedControls
+            .Where(IsTableColumnViewControl)
+            .Select(c => c.Id)
+            .ToHashSet();
         var staticContainerIds = selectedSupportedControls
             .Where(c => string.Equals(c.Model, "CTRL_GUI0_STATIC", StringComparison.OrdinalIgnoreCase))
-            .Where(c => selectedSupportedControls.Any(ch => ch.ParentId == c.Id))
+            .Where(c => supportedChildParentIds.Contains(c.Id))
             .Select(c => c.Id)
             .ToHashSet();
         var tableControls = selectedSupportedControls.Where(IsTableViewControl).ToList();
@@ -952,7 +1113,7 @@ internal static class SemanticBuilder
         foreach (var c in selectedSupportedControls.Where(x =>
                      IsLeafViewControl(x) &&
                      x.ParentId.HasValue &&
-                     selectedSupportedControls.Any(p => p.Id == x.ParentId.Value && IsTableColumnViewControl(p))))
+                     tableColumnControlIds.Contains(x.ParentId.Value)))
             columnAttachmentByLeaf[c.Id] = c.ParentId!.Value;
 
         var columnChildIdsByColumn = tableColumnControls.ToDictionary(
@@ -1109,15 +1270,18 @@ internal static class SemanticBuilder
         IReadOnlySet<int>? staticContainerIds = null)
     {
         var map = new Dictionary<int, string>();
+        var baseNameByControlId = controls.ToDictionary(
+            c => c.Id,
+            c => ResolvePreferredViewControlVariableBaseName(c, task, allTasks, dataObjects, staticContainerIds));
         var baseGroups = controls
-            .GroupBy(c => ResolvePreferredViewControlVariableBaseName(c, task, allTasks, dataObjects, staticContainerIds), StringComparer.Ordinal)
+            .GroupBy(c => baseNameByControlId[c.Id], StringComparer.Ordinal)
             .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
         var used = new HashSet<string>(StringComparer.Ordinal);
         var sequenceByBase = new Dictionary<string, int>(StringComparer.Ordinal);
 
         foreach (var c in controls)
         {
-            var baseName = ResolvePreferredViewControlVariableBaseName(c, task, allTasks, dataObjects, staticContainerIds);
+            var baseName = baseNameByControlId[c.Id];
             var hasCollision = baseGroups.TryGetValue(baseName, out var same) && same.Count > 1;
             var candidate = baseName;
             if (hasCollision)
@@ -1322,16 +1486,23 @@ internal static class SemanticBuilder
             return "_controller." + ToLegacyVariableName(rc.Name);
         }
         var remaining = taskColumnIndex - task.ResourceColumns.Count;
-        var parentTask = task.ParentOrdinal.HasValue ? allTasks.FirstOrDefault(x => x.Ordinal == task.ParentOrdinal.Value) : null;
+        var parentTask = task.ParentOrdinal.HasValue ? GetTaskByOrdinal(task.ParentOrdinal.Value) : null;
+        var visitedParents = new HashSet<int> { task.Ordinal };
         while (parentTask is not null)
         {
+            if (!visitedParents.Add(parentTask.Ordinal))
+            {
+                ConversionTelemetry.Log("SEMANTIC", $"parent cycle detected context=data-column-binding taskOrdinal={task.Ordinal} parentOrdinal={parentTask.Ordinal}");
+                break;
+            }
+
             if (remaining <= parentTask.ResourceColumns.Count)
             {
                 var prc = parentTask.ResourceColumns[remaining - 1];
                 return "_controller." + ToLegacyVariableName(prc.Name);
             }
             remaining -= parentTask.ResourceColumns.Count;
-            parentTask = parentTask.ParentOrdinal.HasValue ? allTasks.FirstOrDefault(x => x.Ordinal == parentTask.ParentOrdinal.Value) : null;
+            parentTask = parentTask.ParentOrdinal.HasValue ? GetTaskByOrdinal(parentTask.ParentOrdinal.Value) : null;
         }
         return "";
     }
@@ -1405,13 +1576,13 @@ internal static class SemanticBuilder
 
     private static Dictionary<string, string> BuildParentSelectMap(
         TaskSemantic task,
-        IReadOnlyList<TaskSemantic> allTasks,
+        IReadOnlyDictionary<int, TaskSemantic> allTasksByOrdinal,
         IReadOnlyDictionary<string, string> applicationSelectMap)
     {
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var local = task.SelectsSemantic.NameToExpression;
         var parent = task.ParentOrdinal.HasValue
-            ? allTasks.FirstOrDefault(t => t.Ordinal == task.ParentOrdinal.Value)
+            ? allTasksByOrdinal.GetValueOrDefault(task.ParentOrdinal.Value)
             : null;
         var visited = new HashSet<int>();
         var depth = 1;
@@ -1429,7 +1600,7 @@ internal static class SemanticBuilder
             }
 
             parent = parent.ParentOrdinal.HasValue
-                ? allTasks.FirstOrDefault(t => t.Ordinal == parent.ParentOrdinal.Value)
+                ? allTasksByOrdinal.GetValueOrDefault(parent.ParentOrdinal.Value)
                 : null;
             depth++;
         }
@@ -2437,9 +2608,16 @@ internal static class SemanticBuilder
             return ToTaskClassName(task.Description) + $"C{componentIndex}";
 
         var root = task;
+        var visitedParents = new HashSet<int> { root.Ordinal };
         while (root.ParentOrdinal.HasValue)
         {
-            var parent = allTasks.FirstOrDefault(x => x.Ordinal == root.ParentOrdinal.Value);
+            if (!visitedParents.Add(root.ParentOrdinal.Value))
+            {
+                ConversionTelemetry.Log("SEMANTIC", $"parent cycle detected context=print-layout-class taskOrdinal={task.Ordinal} parentOrdinal={root.ParentOrdinal.Value}");
+                break;
+            }
+
+            var parent = GetTaskByOrdinal(root.ParentOrdinal.Value);
             if (parent is null)
                 break;
             root = parent;
@@ -2473,9 +2651,16 @@ internal static class SemanticBuilder
             return ToTextIoTaskNameToken(task) + $"C{componentIndex}";
 
         var root = task;
+        var visitedParents = new HashSet<int> { root.Ordinal };
         while (root.ParentOrdinal.HasValue)
         {
-            var parent = allTasks.FirstOrDefault(x => x.Ordinal == root.ParentOrdinal.Value);
+            if (!visitedParents.Add(root.ParentOrdinal.Value))
+            {
+                ConversionTelemetry.Log("SEMANTIC", $"parent cycle detected context=text-io-layout-class taskOrdinal={task.Ordinal} parentOrdinal={root.ParentOrdinal.Value}");
+                break;
+            }
+
+            var parent = GetTaskByOrdinal(root.ParentOrdinal.Value);
             if (parent is null)
                 break;
             root = parent;
@@ -2521,14 +2706,21 @@ internal static class SemanticBuilder
     private static string ResolveEffectiveTaskOutputFolder(TaskDef task, IReadOnlyList<TaskDef> allTasks)
     {
         TaskDef? current = task;
+        var visitedParents = new HashSet<int>();
         while (current is not null)
         {
+            if (!visitedParents.Add(current.Ordinal))
+            {
+                ConversionTelemetry.Log("SEMANTIC", $"parent cycle detected context=effective-output-folder taskOrdinal={task.Ordinal} parentOrdinal={current.Ordinal}");
+                break;
+            }
+
             var folder = ResolveTaskOutputFolder(current.Folder);
             if (!string.IsNullOrWhiteSpace(folder))
                 return folder;
             if (!current.ParentOrdinal.HasValue)
                 break;
-            current = allTasks.FirstOrDefault(t => t.Ordinal == current.ParentOrdinal.Value);
+            current = GetTaskByOrdinal(current.ParentOrdinal.Value);
         }
         return string.Empty;
     }
@@ -2547,6 +2739,11 @@ internal static class SemanticBuilder
     }
 
     private static bool ShouldGenerateView(TaskDef task)
+        => _shouldGenerateViewByTaskOrdinal.TryGetValue(task.Ordinal, out var shouldGenerate)
+            ? shouldGenerate
+            : ShouldGenerateViewCore(task);
+
+    private static bool ShouldGenerateViewCore(TaskDef task)
     {
         if (task.IsEmptyTask)
             return false;
@@ -2568,14 +2765,8 @@ internal static class SemanticBuilder
     private static string ResolveViewClassName(TaskDef task, IReadOnlyList<TaskDef> allTasks)
     {
         var baseName = ResolveViewClassBaseName(task, allTasks);
-        var siblings = allTasks
-            .Where(ShouldGenerateView)
-            .OrderBy(x => x.Ordinal)
-            .Where(x => string.Equals(ResolveViewClassBaseName(x, allTasks), baseName, StringComparison.Ordinal))
-            .ToList();
-        if (siblings.Count <= 1)
+        if (!_viewClassDuplicateIndexByTaskOrdinal.TryGetValue(task.Ordinal, out var idx))
             return baseName;
-        var idx = siblings.FindIndex(x => x.Ordinal == task.Ordinal);
         if (idx <= 0)
             return baseName;
         if (idx == 1)
@@ -2584,8 +2775,13 @@ internal static class SemanticBuilder
     }
 
     private static string ResolveViewClassBaseName(TaskDef task, IReadOnlyList<TaskDef> allTasks)
+        => _viewClassBaseNameByTaskOrdinal.TryGetValue(task.Ordinal, out var baseName)
+            ? baseName
+            : ResolveViewClassBaseNameCore(task);
+
+    private static string ResolveViewClassBaseNameCore(TaskDef task)
     {
-        var ownerTask = ResolveViewOwnerTask(task, allTasks);
+        var ownerTask = ResolveViewOwnerTask(task, _taskDefs);
         var ownerTaskName = ToTaskClassName(ownerTask.Description);
         var effectiveFormName = !string.IsNullOrWhiteSpace(task.FormName)
             ? task.FormName
@@ -2620,9 +2816,16 @@ internal static class SemanticBuilder
     private static TaskDef ResolveViewOwnerTask(TaskDef task, IReadOnlyList<TaskDef> allTasks)
     {
         var root = task;
+        var visitedParents = new HashSet<int> { root.Ordinal };
         while (root.ParentOrdinal.HasValue)
         {
-            var parent = allTasks.FirstOrDefault(x => x.Ordinal == root.ParentOrdinal.Value);
+            if (!visitedParents.Add(root.ParentOrdinal.Value))
+            {
+                ConversionTelemetry.Log("SEMANTIC", $"parent cycle detected context=view-owner taskOrdinal={task.Ordinal} parentOrdinal={root.ParentOrdinal.Value}");
+                break;
+            }
+
+            var parent = GetTaskByOrdinal(root.ParentOrdinal.Value);
             if (parent is null)
                 break;
             root = parent;
@@ -2731,7 +2934,7 @@ internal static class SemanticBuilder
         foreach (var control in controls)
         {
             var taskNumber = control.SubformTaskNumber!.Value;
-            var targetTask = allTasks.FirstOrDefault(t => t.ParentOrdinal == task.Ordinal && t.SubtaskIndex == taskNumber)
+            var targetTask = GetChildTaskBySubtaskIndex(task.Ordinal, taskNumber)
                              ?? ResolveTaskByXpaId(taskNumber, allTasks);
             if (targetTask is null)
                 continue;
@@ -2768,17 +2971,16 @@ internal static class SemanticBuilder
 
     private static TaskDef? ResolveTaskByXpaId(int xpaId, IReadOnlyList<TaskDef> allTasks)
     {
-        var byProgramIndex = allTasks.FirstOrDefault(t => t.ParentOrdinal is null && t.TopLevelProgramIndex == xpaId);
+        var byProgramIndex = _topLevelTaskDefsByProgramIndex.TryGetValue(xpaId, out var programTask) ? programTask : null;
         if (byProgramIndex is not null)
             return byProgramIndex;
 
-        var byOrdinal = allTasks.FirstOrDefault(t => t.Ordinal == xpaId);
+        var byOrdinal = GetTaskByOrdinal(xpaId);
         if (byOrdinal is not null)
             return byOrdinal;
 
-        var topLevelByOrdinal = allTasks.Where(t => t.ParentOrdinal is null).OrderBy(t => t.Ordinal).ToList();
-        if (xpaId > 0 && xpaId <= topLevelByOrdinal.Count)
-            return topLevelByOrdinal[xpaId - 1];
+        if (xpaId > 0 && xpaId <= _topLevelTaskDefsByOrdinal.Count)
+            return _topLevelTaskDefsByOrdinal[xpaId - 1];
 
         return null;
     }
@@ -2794,7 +2996,7 @@ internal static class SemanticBuilder
                      (x.Model == "CTRL_GUI0_COMBOBOX" || x.Model == "CTRL_RICH_CLIENT_COMBOBOX" || x.Model == "CTRL_BROWSER_COMBOBOX")
                      && x.SourceTableObj.HasValue))
         {
-            var source = dataObjects.FirstOrDefault(d => d.Ordinal == c.SourceTableObj!.Value);
+            var source = GetDataObjectByOrdinal(c.SourceTableObj!.Value);
             if (source is null)
                 continue;
 
@@ -3037,7 +3239,7 @@ internal static class SemanticBuilder
         if (IsApplicationEventReference(h.EventParent, h.EventPublicComponentId) &&
             int.TryParse(h.EventPublicObject, out var appEventObj))
         {
-            var appTask = _taskDefs.FirstOrDefault(x => x.MainProgram) ?? _taskDefs.FirstOrDefault(x => x.ParentOrdinal is null);
+            var appTask = _applicationTask;
             var appEvent = appTask?.Events.FirstOrDefault(e => e.Ordinal == appEventObj);
             if (appEvent is not null)
                 return ResolveTaskCommandIdentifier(appTask!, appEvent.Description, preserveCase: true);
@@ -3045,7 +3247,7 @@ internal static class SemanticBuilder
 
         if (h.EventParent.HasValue && task.ParentOrdinal.HasValue)
         {
-            var parentTask = _taskDefs.FirstOrDefault(x => x.Ordinal == task.ParentOrdinal.Value);
+            var parentTask = GetTaskByOrdinal(task.ParentOrdinal.Value);
             if (parentTask is not null &&
                 int.TryParse(h.EventPublicObject, out var parentEventObj))
             {
@@ -3073,7 +3275,7 @@ internal static class SemanticBuilder
             return "";
         if (IsApplicationEventReference(eventParent, eventPublicComponentId))
         {
-            var appTask = _taskDefs.FirstOrDefault(x => x.MainProgram) ?? _taskDefs.FirstOrDefault(x => x.ParentOrdinal is null);
+            var appTask = _applicationTask;
             var appEvent = appTask?.Events.FirstOrDefault(e => e.Ordinal == eventObj);
             if (appEvent is not null)
                 return "Application." + ResolveTaskCommandIdentifier(appTask!, appEvent.Description, preserveCase: true);
@@ -3090,7 +3292,7 @@ internal static class SemanticBuilder
     {
         if (!task.ParentOrdinal.HasValue || !int.TryParse(eventPublicObject, out var eventObj))
             return "";
-        var parentTask = _taskDefs.FirstOrDefault(x => x.Ordinal == task.ParentOrdinal.Value);
+        var parentTask = GetTaskByOrdinal(task.ParentOrdinal.Value);
         if (parentTask is null)
             return "";
         var evt = parentTask.Events.FirstOrDefault(e => e.Ordinal == eventObj);
@@ -3105,7 +3307,7 @@ internal static class SemanticBuilder
         reserved.Add(ToTaskClassName(task.Description));
         foreach (var rc in task.ResourceColumns)
             reserved.Add(ResolveTaskResourceMemberName(task, rc));
-        foreach (var child in _taskDefs.Where(x => x.ParentOrdinal == task.Ordinal))
+        foreach (var child in GetChildTasks(task.Ordinal))
             reserved.Add(ToTaskClassName(child.Description));
         return reserved;
     }
@@ -3249,7 +3451,7 @@ internal static class SemanticBuilder
         var primaryMember = modelMembers.FirstOrDefault(m => m.DbObj == primaryObj).MemberName;
         if (string.IsNullOrWhiteSpace(primaryMember))
         {
-            var d = dataObjects.FirstOrDefault(x => x.Ordinal == primaryObj);
+            var d = primaryObj.HasValue ? GetDataObjectByOrdinal(primaryObj.Value) : null;
             if (d is not null)
                 primaryMember = ResolveDataObjectTypeName(d, dataObjects);
         }
@@ -3267,7 +3469,7 @@ internal static class SemanticBuilder
     {
         if (sel.Type == "R" && sel.SourceDbObj.HasValue)
         {
-            var d = dataObjects.FirstOrDefault(x => x.Ordinal == sel.SourceDbObj.Value);
+            var d = GetDataObjectByOrdinal(sel.SourceDbObj.Value);
             var col = d?.Columns.FirstOrDefault(c => c.Id == sel.ColumnId);
             if (d is not null && col is null && sel.ColumnId > 0 && sel.ColumnId <= d.Columns.Count)
                 col = d.Columns[sel.ColumnId - 1];
@@ -3318,7 +3520,7 @@ internal static class SemanticBuilder
         var result = new List<(int DbObj, string ModelType, string MemberName)>();
         foreach (var dbObj in task.ResourceDataObjects.Distinct())
         {
-            var d = dataObjects.FirstOrDefault(x => x.Ordinal == dbObj);
+            var d = GetDataObjectByOrdinal(dbObj);
             if (d is null)
                 continue;
             var modelType = ResolveDataObjectTypeName(d, dataObjects);
@@ -3514,7 +3716,7 @@ internal static class SemanticBuilder
             }
             else if (link.DbObj == primaryObj || n > 1)
             {
-                var d = dataObjects.FirstOrDefault(x => x.Ordinal == link.DbObj);
+                var d = GetDataObjectByOrdinal(link.DbObj);
                 var baseName = d is null ? "Link" + link.DbObj : ResolveDataObjectTypeName(d, dataObjects);
                 member = n == 1 ? baseName : baseName + n;
             }
@@ -3646,7 +3848,7 @@ internal static class SemanticBuilder
             return ResolveMergeStreamVariableName(task);
         if (task.ParentOrdinal.HasValue)
         {
-            var parent = allTasks.FirstOrDefault(x => x.Ordinal == task.ParentOrdinal.Value);
+            var parent = GetTaskByOrdinal(task.ParentOrdinal.Value);
             if (parent is not null)
                 return "_parent." + ResolveMergeStreamExpression(parent, allTasks);
         }

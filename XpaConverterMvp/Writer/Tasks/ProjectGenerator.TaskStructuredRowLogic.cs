@@ -548,12 +548,15 @@ internal static partial class ProjectGenerator
             return $"{functionName}({string.Join(",", normalizedArgs)})";
         }
 
-        return Regex.Replace(text, @"\s+", "");
+        return RemoveWhitespace(text);
     }
 
     private static string CanonicalizeStructuredConditionForComparison(string condition)
     {
         if (string.IsNullOrWhiteSpace(condition))
+            return condition;
+
+        if (!condition.Contains("Rights", StringComparison.OrdinalIgnoreCase))
             return condition;
 
         // Some row/block conditions still arrive in a malformed transitional shape like:
@@ -573,6 +576,32 @@ internal static partial class ProjectGenerator
             RegexOptions.IgnoreCase | RegexOptions.Singleline);
 
         return condition;
+    }
+
+    private static string RemoveWhitespace(string text)
+    {
+        var firstWhitespace = -1;
+        for (var i = 0; i < text.Length; i++)
+        {
+            if (!char.IsWhiteSpace(text[i]))
+                continue;
+
+            firstWhitespace = i;
+            break;
+        }
+
+        if (firstWhitespace < 0)
+            return text;
+
+        var builder = new StringBuilder(text.Length);
+        builder.Append(text, 0, firstWhitespace);
+        for (var i = firstWhitespace + 1; i < text.Length; i++)
+        {
+            if (!char.IsWhiteSpace(text[i]))
+                builder.Append(text[i]);
+        }
+
+        return builder.ToString();
     }
 
     private static bool HasBalancedOuterParentheses(string text)

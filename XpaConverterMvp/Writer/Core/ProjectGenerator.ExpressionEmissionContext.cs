@@ -2427,14 +2427,20 @@ internal static partial class ProjectGenerator
 
     private static IEnumerable<TaskUpdateDef> EnumerateTaskUpdatesForArrayItemInference(TaskSemantic currentTask)
     {
-        return currentTask.StartLogics.SelectMany(x => x.Actions).Select(a => a.Update)
+        if (_taskUpdatesForArrayItemInferenceCache.TryGetValue(currentTask.Ordinal, out var cached))
+            return cached;
+
+        var updates = currentTask.StartLogics.SelectMany(x => x.Actions).Select(a => a.Update)
             .Concat(currentTask.EndLogics.SelectMany(x => x.Actions).Select(a => a.Update))
             .Concat(currentTask.RowLogics.SelectMany(x => x.Actions).Select(a => a.Update))
             .Concat(currentTask.SavingRowLogics.SelectMany(x => x.Actions).Select(a => a.Update))
             .Concat(currentTask.GroupLogics.SelectMany(x => x.Actions).Select(a => a.Update))
             .Concat(currentTask.HandlersSemantic.Bodies.SelectMany(b => b.OrderedActions).Select(a => a.Update))
             .Where(x => x is not null)
-            .Cast<TaskUpdateDef>();
+            .Cast<TaskUpdateDef>()
+            .ToArray();
+        _taskUpdatesForArrayItemInferenceCache[currentTask.Ordinal] = updates;
+        return updates;
     }
 
     private static string ResolveUpdateValueSourceSyntax(TaskUpdateDef update, TaskSemantic currentTask)
@@ -2460,24 +2466,32 @@ internal static partial class ProjectGenerator
 
     private static IEnumerable<string> EnumerateTaskTextsForArrayItemInference(TaskSemantic currentTask)
     {
+        if (_taskTextsForArrayItemInferenceCache.TryGetValue(currentTask.Ordinal, out var cached))
+            return cached;
+
+        var texts = new List<string>();
         foreach (var expression in currentTask.Expressions)
         {
             if (!string.IsNullOrWhiteSpace(expression.Syntax))
-                yield return expression.Syntax;
+                texts.Add(expression.Syntax);
         }
 
         foreach (var update in EnumerateTaskUpdatesForArrayItemInference(currentTask))
         {
             if (!string.IsNullOrWhiteSpace(update.WithValue))
-                yield return update.WithValue;
+                texts.Add(update.WithValue);
 
             var sourceSyntax = ResolveUpdateValueSourceSyntax(update, currentTask);
             if (!string.IsNullOrWhiteSpace(sourceSyntax) &&
                 !string.Equals(sourceSyntax, update.WithValue, StringComparison.Ordinal))
             {
-                yield return sourceSyntax;
+                texts.Add(sourceSyntax);
             }
         }
+
+        var result = texts.ToArray();
+        _taskTextsForArrayItemInferenceCache[currentTask.Ordinal] = result;
+        return result;
     }
 
     private static bool HasStructuredBlobVectorEvidence(TaskResourceColumnDef c, TaskSemantic currentTask, string? memberName = null)
@@ -3725,12 +3739,8 @@ internal static partial class ProjectGenerator
         if (remaining.EndsWith(".Value", StringComparison.Ordinal))
             remaining = remaining[..^".Value".Length];
 
-        foreach (var resource in currentTask.ResourcesSemantic.Ordered)
-        {
-            var memberName = ResolveTaskResourceMemberName(currentTask, resource);
-            if (string.Equals(memberName, remaining, StringComparison.Ordinal))
-                return resource;
-        }
+        if (GetTaskResourcesByMemberName(currentTask).TryGetValue(remaining, out var matchedResource))
+            return matchedResource;
 
         var ancestorResource = ResolveAncestorResourceByMemberPath(task, targetPath);
         if (ancestorResource is not null)
@@ -3761,12 +3771,8 @@ internal static partial class ProjectGenerator
             if (!_tasksByOrdinal.TryGetValue(parentOrdinal.Value, out var parentTask) || parentTask is null)
                 return null;
 
-            foreach (var resource in parentTask.ResourcesSemantic.Ordered)
-            {
-                var memberName = ResolveTaskResourceMemberName(parentTask, resource);
-                if (string.Equals(memberName, remaining, StringComparison.Ordinal))
-                    return resource;
-            }
+            if (GetTaskResourcesByMemberName(parentTask).TryGetValue(remaining, out var resource))
+                return resource;
 
             parentOrdinal = parentTask.ParentOrdinal;
         }

@@ -27,7 +27,7 @@ internal static partial class ProjectGenerator
                 return "ViewCompat.ImageReload";
 
             if (userMethodsMap.TryGetValue(functionName, out var canonicalUserMethod))
-                return QualifyUserMethodInvocationTarget(canonicalUserMethod);
+                return $"u.{canonicalUserMethod}";
 
             if (accessibleParentFunctions.TryGetValue(functionName, out var parentTarget))
                 return parentTarget;
@@ -45,7 +45,7 @@ internal static partial class ProjectGenerator
         {
             if (localFunctionNames.Contains(functionName))
                 return null;
-            return userMethodsMap.TryGetValue(functionName, out var canonical) ? QualifyUserMethodInvocationTarget(canonical) : null;
+            return userMethodsMap.TryGetValue(functionName, out var canonical) ? $"u.{canonical}" : null;
         });
 
         expr = RewriteBareFunctionInvocations(expr, functionName =>
