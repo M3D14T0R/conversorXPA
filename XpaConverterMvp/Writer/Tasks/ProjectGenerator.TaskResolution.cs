@@ -103,7 +103,7 @@ internal static partial class ProjectGenerator
 
     private static void BuildTaskClassNameIndexes(IReadOnlyList<TaskSemantic> allTasks)
     {
-        _taskClassBaseNameByOrdinal = allTasks.ToDictionary(t => t.Ordinal, t => ToTaskClassName(t.Description));
+        _taskClassBaseNameByOrdinal = allTasks.ToDictionary(t => t.Ordinal, ResolveTaskClassBaseNameUncached);
         _taskClassSiblingCollisionIndexByOrdinal = new Dictionary<int, int>();
 
         foreach (var group in allTasks.GroupBy(t => t.ParentOrdinal))
@@ -127,9 +127,28 @@ internal static partial class ProjectGenerator
         if (_taskClassBaseNameByOrdinal.TryGetValue(task.Ordinal, out var cached))
             return cached;
 
-        var baseName = ToTaskClassName(task.Description);
+        var baseName = ResolveTaskClassBaseNameUncached(task);
         _taskClassBaseNameByOrdinal[task.Ordinal] = baseName;
         return baseName;
+    }
+
+    private static string ResolveTaskClassBaseNameUncached(TaskSemantic task)
+    {
+        var descriptionName = ToTaskClassName(task.Description);
+        if (task.ParentOrdinal.HasValue || string.IsNullOrWhiteSpace(task.PublicName))
+            return descriptionName;
+
+        var publicName = ToCodeIdentifierPreservingCase(task.PublicName!.Trim());
+        if (string.IsNullOrWhiteSpace(publicName) || string.Equals(publicName, descriptionName, StringComparison.Ordinal))
+            return descriptionName;
+        if (descriptionName.StartsWith(publicName + "_", StringComparison.Ordinal))
+            return descriptionName;
+
+        var descriptionTail = descriptionName.TrimStart('_');
+        if (string.IsNullOrWhiteSpace(descriptionTail))
+            return publicName;
+
+        return publicName + "_" + descriptionTail;
     }
 
     private static int ResolveTaskSiblingCollisionIndex(TaskSemantic task, IReadOnlyList<TaskSemantic> allTasks, string baseName)
