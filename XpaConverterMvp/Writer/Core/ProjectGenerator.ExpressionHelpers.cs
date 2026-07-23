@@ -6,11 +6,8 @@ internal static partial class ProjectGenerator
 {
 private static string ResolveEventLiteralCommand(string eventDescription)
 {
-    foreach (var task in _allTasks)
-    {
-        if (task.EventsSemantic.CommandByDescription.TryGetValue(eventDescription, out var mapped))
-            return mapped;
-    }
+    if (_eventCommandByDescription.TryGetValue(eventDescription, out var mapped))
+        return mapped;
     return "Command." + ToPascalIdentifier(eventDescription);
 }
 
@@ -18,11 +15,8 @@ private static string ResolveExpressionInvocationLiteral(string ordinalText)
 {
     if (!int.TryParse(ordinalText, out var ordinal))
         return $"Exp_{ordinalText}()";
-    foreach (var task in _allTasks)
-    {
-        if (task.ExpressionsSemantic.InvocationByOrdinal.TryGetValue(ordinal, out var invocation))
-            return invocation;
-    }
+    if (_expressionInvocationByOrdinal.TryGetValue(ordinal, out var invocation))
+        return invocation;
     return $"Exp_{ordinal}()";
 }
 

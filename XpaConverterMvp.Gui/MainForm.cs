@@ -37,12 +37,12 @@ internal sealed class MainForm : Form
     private readonly TextBox _taskFilter = new() { Dock = DockStyle.Fill };
     private readonly TextBox _taskRanges = new() { Dock = DockStyle.Fill, PlaceholderText = "1-100; 101-200" };
     private readonly CheckedListBox _tasks = new() { Dock = DockStyle.Fill, CheckOnClick = true };
-    private readonly CheckBox _withDependencies = new() { Text = "Incluir dependÍncias", AutoSize = true };
-    private readonly CheckBox _incrementalOutput = new() { Text = "Incrementar projeto existente (n„o limpar output)", AutoSize = true };
-    private readonly CheckBox _internalCompat = new() { Text = "Atualizar compat interno para tasks n„o convertidas", AutoSize = true, Checked = true, Enabled = false };
-    private readonly CheckBox _fullSolution = new() { Text = "Gerar soluÁ„o completa", AutoSize = true };
+    private readonly CheckBox _withDependencies = new() { Text = "Incluir depend√™ncias", AutoSize = true };
+    private readonly CheckBox _incrementalOutput = new() { Text = "Incrementar projeto existente (n√£o limpar output)", AutoSize = true };
+    private readonly CheckBox _internalCompat = new() { Text = "Atualizar compat interno para tasks n√£o convertidas", AutoSize = true, Checked = true, Enabled = false };
+    private readonly CheckBox _fullSolution = new() { Text = "Gerar solu√ß√£o completa", AutoSize = true };
     private readonly CheckBox _parallelTaskGeneration = new() { Text = "Paralelizar tasks (experimental)", AutoSize = true };
-    private readonly CheckBox _dynamicWorkers = new() { Text = "Workers din‚micos", AutoSize = true, Checked = true };
+    private readonly CheckBox _dynamicWorkers = new() { Text = "Workers din√¢micos", AutoSize = true, Checked = true };
     private readonly NumericUpDown _parallelMaxWorkers = new() { Minimum = 1, Maximum = 64, Value = 8, Width = 80 };
     private readonly NumericUpDown _parallelMinWorkers = new() { Minimum = 1, Maximum = 64, Value = 2, Width = 80 };
     private readonly NumericUpDown _parallelInitialWorkers = new() { Minimum = 1, Maximum = 64, Value = 4, Width = 80 };
@@ -81,7 +81,7 @@ internal sealed class MainForm : Form
         _outputType.SelectedIndex = 0;
         _runtimeCoreReferenceMode.Items.AddRange(new object[] { "Project", "Dll" });
         _runtimeCoreReferenceMode.SelectedIndex = 0;
-        _referenceFilter.Items.AddRange(new object[] { "Todas", "Somente XPA", "Somente .NET/DLL", "Somente n„o mapeadas" });
+        _referenceFilter.Items.AddRange(new object[] { "Todas", "Somente XPA", "Somente .NET/DLL", "Somente n√£o mapeadas" });
         _referenceFilter.SelectedIndex = 0;
         InitializeProjectRefGrid();
         Text = $"XpaConverterMvp Launcher [{BuildConfigurationLabel}]";
@@ -172,7 +172,7 @@ internal sealed class MainForm : Form
         }
         catch (Exception ex)
         {
-            AppendLogLine($"Aviso ao carregar preferÍncias do usu·rio: {ex.Message}");
+            AppendLogLine($"Aviso ao carregar prefer√™ncias do usu√°rio: {ex.Message}");
         }
     }
 
@@ -208,7 +208,7 @@ internal sealed class MainForm : Form
         }
         catch (Exception ex)
         {
-            AppendLogLine($"Aviso ao salvar preferÍncias do usu·rio: {ex.Message}");
+            AppendLogLine($"Aviso ao salvar prefer√™ncias do usu√°rio: {ex.Message}");
         }
     }
 
@@ -239,7 +239,7 @@ internal sealed class MainForm : Form
         supportTab.Controls.Add(BuildSupportFilesPanel());
         tabs.TabPages.Add(supportTab);
 
-        var refsTab = new TabPage("ReferÍncias");
+        var refsTab = new TabPage("Refer√™ncias");
         refsTab.Controls.Add(BuildReferencesPanel());
         tabs.TabPages.Add(refsTab);
 
@@ -267,7 +267,7 @@ internal sealed class MainForm : Form
         general.Controls.Add(new Label { Text = "Namespace", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
         general.Controls.Add(_namespace, 1, 0);
 
-        general.Controls.Add(new Label { Text = "Tipo saÌda", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 1);
+        general.Controls.Add(new Label { Text = "Tipo sa√≠da", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 1);
         general.Controls.Add(_outputType, 1, 1);
 
         general.Controls.Add(new Label { Text = "XPARuntimeCore", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 2);
@@ -325,15 +325,15 @@ internal sealed class MainForm : Form
 
         panel.Controls.Add(new Label { Text = "Workers", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
         panel.Controls.Add(_dynamicWorkers, 1, 0);
-        panel.Controls.Add(new Label { Text = "M·ximo", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 1);
+        panel.Controls.Add(new Label { Text = "M√°ximo", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 1);
         panel.Controls.Add(_parallelMaxWorkers, 1, 1);
-        panel.Controls.Add(new Label { Text = "MÌnimo", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 2);
+        panel.Controls.Add(new Label { Text = "M√≠nimo", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 2);
         panel.Controls.Add(_parallelMinWorkers, 1, 2);
-        panel.Controls.Add(new Label { Text = "InÌcio", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 3);
+        panel.Controls.Add(new Label { Text = "In√≠cio", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 3);
         panel.Controls.Add(_parallelInitialWorkers, 1, 3);
-        panel.Controls.Add(new Label { Text = "InÌcio atÈ (%)", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 4);
+        panel.Controls.Add(new Label { Text = "In√≠cio at√© (%)", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 4);
         panel.Controls.Add(_parallelInitialUntilPercent, 1, 4);
-        panel.Controls.Add(new Label { Text = "RAM m·xima", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 5);
+        panel.Controls.Add(new Label { Text = "RAM m√°xima", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 5);
         panel.Controls.Add(_parallelMaxMemory, 1, 5);
         panel.Controls.Add(new Label { Text = "Reset cache a cada", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 6);
         panel.Controls.Add(_cacheResetEveryTasks, 1, 6);
@@ -394,7 +394,7 @@ internal sealed class MainForm : Form
         var autoMapProjectRef = new Button { Text = "Auto map", AutoSize = true };
         var clearProjectRef = new Button { Text = "Limpar", AutoSize = true };
         mapProjectRef.Click += (_, _) => BrowseProjectForSelectedComponent();
-        autoMapProjectRef.Click += (_, _) => AutoMapVisibleReferences();
+        autoMapProjectRef.Click += async (_, _) => await AutoMapVisibleReferencesAsync(autoMapProjectRef);
         clearProjectRef.Click += (_, _) => ClearSelectedProjectMapping();
         projectRefButtons.Controls.Add(mapProjectRef);
         projectRefButtons.Controls.Add(autoMapProjectRef);
@@ -419,7 +419,7 @@ internal sealed class MainForm : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
         var statusPanel = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true };
-        _catalogStatus.Text = "Cat·logo n„o carregado.";
+        _catalogStatus.Text = "Cat√°logo n√£o carregado.";
         statusPanel.Controls.Add(_catalogStatus);
         layout.Controls.Add(statusPanel, 0, 0);
 
@@ -529,7 +529,7 @@ internal sealed class MainForm : Form
         var xmlPath = _xmlPath.Text.Trim();
         if (!File.Exists(xmlPath))
         {
-            _catalogStatus.Text = "Cat·logo n„o carregado.";
+            _catalogStatus.Text = "Cat√°logo n√£o carregado.";
             _folder.Items.Clear();
             _tasks.Items.Clear();
             _allTasks.Clear();
@@ -540,7 +540,7 @@ internal sealed class MainForm : Form
         }
 
         _isLoadingCatalog = true;
-        _catalogStatus.Text = "Carregando cat·logo do XML...";
+        _catalogStatus.Text = "Carregando cat√°logo do XML...";
         try
         {
             var catalog = await Task.Run(() => XmlCatalogService.Load(xmlPath));
@@ -557,11 +557,11 @@ internal sealed class MainForm : Form
             ApplyTaskFilter();
             var xpaRefCount = catalog.References.Count(r => string.Equals(r.Kind, "XPA", StringComparison.OrdinalIgnoreCase));
             var dotNetRefCount = catalog.References.Count - xpaRefCount;
-            _catalogStatus.Text = $"Cat·logo carregado: {catalog.Folders.Count} pastas, {catalog.Tasks.Count} tasks, {xpaRefCount} componentes XPA, {dotNetRefCount} refs .NET/DLL.";
+            _catalogStatus.Text = $"Cat√°logo carregado: {catalog.Folders.Count} pastas, {catalog.Tasks.Count} tasks, {xpaRefCount} componentes XPA, {dotNetRefCount} refs .NET/DLL.";
         }
         catch (Exception ex)
         {
-            _catalogStatus.Text = "Falha ao carregar cat·logo.";
+            _catalogStatus.Text = "Falha ao carregar cat√°logo.";
             AppendLogLine(ex.ToString());
         }
         finally
@@ -798,17 +798,17 @@ internal sealed class MainForm : Form
             var options = BuildOptions();
             if (string.IsNullOrWhiteSpace(options.XmlPath) || string.IsNullOrWhiteSpace(options.OutputDir))
             {
-                MessageBox.Show(this, "XML e Output s„o obrigatÛrios.", "ValidaÁ„o", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(this, "XML e Output s√£o obrigat√≥rios.", "Valida√ß√£o", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
             if (_modeFolder.Checked && string.IsNullOrWhiteSpace(options.FolderFilter))
             {
-                MessageBox.Show(this, "Selecione a pasta XPA.", "ValidaÁ„o", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(this, "Selecione a pasta XPA.", "Valida√ß√£o", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
             if (_modeTask.Checked && options.TaskFilters.Count == 0)
             {
-                MessageBox.Show(this, "Selecione ao menos uma task.", "ValidaÁ„o", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(this, "Selecione ao menos uma task.", "Valida√ß√£o", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
             if (_modeTaskRange.Checked)
@@ -816,13 +816,13 @@ internal sealed class MainForm : Form
                 var ranges = GetTaskRanges(ignoreInvalid: false, out var rangeError);
                 if (!string.IsNullOrWhiteSpace(rangeError))
                 {
-                    MessageBox.Show(this, rangeError, "ValidaÁ„o", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    MessageBox.Show(this, rangeError, "Valida√ß√£o", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
 
                 if (ranges.Count == 0)
                 {
-                    MessageBox.Show(this, "Informe ao menos um range de task.", "ValidaÁ„o", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    MessageBox.Show(this, "Informe ao menos um range de task.", "Valida√ß√£o", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
 
@@ -837,16 +837,16 @@ internal sealed class MainForm : Form
             if (options.ParallelTaskGeneration)
             {
                 ApplyPerformanceEnvironment(performanceEnvironment);
-                AppendLogLine("Paralelismo experimental ativado: as tasks ser„o emitidas em paralelo com caches isolados por worker.");
+                AppendLogLine("Paralelismo experimental ativado: as tasks ser√£o emitidas em paralelo com caches isolados por worker.");
                 AppendLogLine("Performance: " + string.Join("; ", performanceEnvironment.Select(kv => $"{kv.Key}={kv.Value}")));
             }
             if (options.IncrementalOutput)
-                AppendLogLine("Modo incremental ativado: o output existente ser· preservado e os arquivos desta execuÁ„o ser„o sobrescritos quando tiverem o mesmo nome.");
+                AppendLogLine("Modo incremental ativado: o output existente ser√° preservado e os arquivos desta execu√ß√£o ser√£o sobrescritos quando tiverem o mesmo nome.");
 #if DEBUG
-            AppendLogLine("Aviso: a GUI est· rodando em Debug. Para medir performance real, prefira buildar/executar em Release.");
+            AppendLogLine("Aviso: a GUI est√° rodando em Debug. Para medir performance real, prefira buildar/executar em Release.");
 #endif
             if ((_modeTask.Checked || _modeTaskRange.Checked || _modeFolder.Checked) && !options.FullSolution)
-                AppendLogLine("Aviso: sem 'Gerar soluÁ„o completa', o output n„o materializa XPARuntimeCore, XPARuntimeCore.Box.dll nem lib.");
+                AppendLogLine("Aviso: sem 'Gerar solu√ß√£o completa', o output n√£o materializa XPARuntimeCore, XPARuntimeCore.Box.dll nem lib.");
             ToggleRunningState(true);
 
             var writer = new UiTextWriter(AppendLogLine);
@@ -855,9 +855,9 @@ internal sealed class MainForm : Form
         }
         catch (Exception ex)
         {
-            AppendLogLine("Falha durante a convers„o:");
+            AppendLogLine("Falha durante a convers√£o:");
             AppendLogLine(ex.ToString());
-            MessageBox.Show(this, ex.Message, "Erro na convers„o", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(this, ex.Message, "Erro na convers√£o", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
         finally
         {
@@ -868,6 +868,7 @@ internal sealed class MainForm : Form
     private Dictionary<string, string> BuildPerformanceEnvironment(ConversionOptions options)
     {
         var env = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        env["XPA_CONVERTER_TELEMETRY_LEVEL"] = "minimal";
         if (!options.ParallelTaskGeneration)
             return env;
 
@@ -1025,7 +1026,7 @@ internal sealed class MainForm : Form
         _projectRefMap.Columns.Add(new DataGridViewTextBoxColumn
         {
             Name = "Reference",
-            HeaderText = "ReferÍncia XML",
+            HeaderText = "Refer√™ncia XML",
             ReadOnly = true,
             AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill,
             FillWeight = 34
@@ -1069,7 +1070,7 @@ internal sealed class MainForm : Form
         foreach (var reference in FilterReferences(references, existing).OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase))
         {
             existing.TryGetValue(reference.Name, out var path);
-            var rowIndex = _projectRefMap.Rows.Add(reference.Kind, reference.Name, reference.XmlHint ?? "", path ?? "", TryResolveAssemblyIdentity(path));
+            var rowIndex = _projectRefMap.Rows.Add(reference.Kind, reference.Name, reference.XmlHint ?? "", path ?? "", TryResolveAssemblyIdentity(path) ?? "");
             RefreshReferenceMetadataRow(_projectRefMap.Rows[rowIndex]);
         }
         if (_projectRefMap.Rows.Count > 0)
@@ -1100,7 +1101,7 @@ internal sealed class MainForm : Form
         {
             "Somente XPA" => references.Where(r => string.Equals(r.Kind, "XPA", StringComparison.OrdinalIgnoreCase)),
             "Somente .NET/DLL" => references.Where(r => string.Equals(r.Kind, ".NET/DLL", StringComparison.OrdinalIgnoreCase)),
-            "Somente n„o mapeadas" => references.Where(r => !existingMappings.ContainsKey(r.Name)),
+            "Somente n√£o mapeadas" => references.Where(r => !existingMappings.ContainsKey(r.Name)),
             _ => references
         };
     }
@@ -1110,7 +1111,7 @@ internal sealed class MainForm : Form
         var row = GetActiveProjectReferenceRow();
         if (row is null)
         {
-            MessageBox.Show(this, "Nenhuma referÍncia disponÌvel para mapear.", "Mapeamento", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show(this, "Nenhuma refer√™ncia dispon√≠vel para mapear.", "Mapeamento", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -1132,9 +1133,9 @@ internal sealed class MainForm : Form
         RefreshCommandPreview();
     }
 
-    private void AutoMapVisibleReferences()
+    private async Task AutoMapVisibleReferencesAsync(Button autoMapButton)
     {
-        var updated = 0;
+        var pending = new List<(DataGridViewRow Row, string? Kind, string? Name, string? XmlHint)>();
         foreach (DataGridViewRow row in _projectRefMap.Rows)
         {
             if (row.IsNewRow)
@@ -1147,10 +1148,75 @@ internal sealed class MainForm : Form
             var kind = row.Cells["Kind"].Value?.ToString();
             var name = row.Cells["Reference"].Value?.ToString();
             var xmlHint = row.Cells["XmlHint"].Value?.ToString();
-            var resolved = ResolveReferenceCandidate(kind, name, xmlHint);
+            pending.Add((row, kind, name, xmlHint));
+        }
+
+        if (pending.Count == 0)
+        {
+            MessageBox.Show(this, "Nenhuma refer√É¬™ncia vis√É¬≠vel precisa ser mapeada.", "Auto map", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        // Capture all values owned by WinForms before leaving the UI thread.
+        // Recursive filesystem discovery can be slow and must never read a
+        // TextBox/DataGridView from the worker thread.
+        var roots = EnumerateReferenceRoots().ToArray();
+        var requests = pending
+            .Select(item => (item.Kind, item.Name, item.XmlHint))
+            .ToArray();
+
+        var oldText = autoMapButton.Text;
+        autoMapButton.Enabled = false;
+        autoMapButton.Text = "Mapeando...";
+        UseWaitCursor = true;
+
+        string?[] resolvedPaths;
+        try
+        {
+            resolvedPaths = await Task.Run(() =>
+            {
+                var result = new string?[requests.Length];
+                var recursiveIndex = new Lazy<ReferenceCandidateIndex>(
+                    () => BuildReferenceCandidateIndex(roots),
+                    LazyThreadSafetyMode.ExecutionAndPublication);
+                for (var index = 0; index < requests.Length; index++)
+                {
+                    var request = requests[index];
+                    result[index] = ResolveReferenceCandidate(
+                        request.Kind,
+                        request.Name,
+                        request.XmlHint,
+                        roots,
+                        recursiveIndex);
+                }
+                return result;
+            });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                this,
+                $"Falha ao pesquisar projetos e DLLs:{Environment.NewLine}{ex.Message}",
+                "Auto map",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+        finally
+        {
+            UseWaitCursor = false;
+            autoMapButton.Text = oldText;
+            autoMapButton.Enabled = true;
+        }
+
+        var updated = 0;
+        for (var index = 0; index < pending.Count; index++)
+        {
+            var resolved = resolvedPaths[index];
             if (string.IsNullOrWhiteSpace(resolved))
                 continue;
 
+            var row = pending[index].Row;
             row.Cells["Project"].Value = resolved;
             RefreshReferenceMetadataRow(row);
             updated++;
@@ -1158,8 +1224,8 @@ internal sealed class MainForm : Form
 
         RefreshCommandPreview();
         var message = updated == 0
-            ? "Nenhuma referÍncia visÌvel foi resolvida automaticamente."
-            : $"{updated} referÍncia(s) foram mapeadas automaticamente.";
+            ? "Nenhuma refer√™ncia vis√≠vel foi resolvida automaticamente."
+            : $"{updated} refer√™ncia(s) foram mapeadas automaticamente.";
         MessageBox.Show(this, message, "Auto map", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
@@ -1286,7 +1352,12 @@ internal sealed class MainForm : Form
         }
     }
 
-    private string? ResolveReferenceCandidate(string? kind, string? name, string? xmlHint)
+    private static string? ResolveReferenceCandidate(
+        string? kind,
+        string? name,
+        string? xmlHint,
+        IReadOnlyList<string> referenceRoots,
+        Lazy<ReferenceCandidateIndex> recursiveIndex)
     {
         if (string.IsNullOrWhiteSpace(name))
             return null;
@@ -1295,7 +1366,9 @@ internal sealed class MainForm : Form
         if (!string.IsNullOrWhiteSpace(xmlHint))
         {
             var normalizedHint = xmlHint.Trim();
-            if (Path.IsPathRooted(normalizedHint) && File.Exists(normalizedHint))
+            if (Path.IsPathRooted(normalizedHint) &&
+                File.Exists(normalizedHint) &&
+                IsSupportedReferenceMapPath(normalizedHint))
                 return normalizedHint;
 
             if (normalizedHint.StartsWith("%WorkingDir%", StringComparison.OrdinalIgnoreCase))
@@ -1303,16 +1376,24 @@ internal sealed class MainForm : Form
                 var relative = normalizedHint["%WorkingDir%".Length..].TrimStart('\\', '/')
                     .Replace('\\', Path.DirectorySeparatorChar)
                     .Replace('/', Path.DirectorySeparatorChar);
-                foreach (var root in EnumerateReferenceRoots())
+                foreach (var root in referenceRoots)
                     candidates.Add(Path.Combine(root, relative));
             }
         }
 
-        if (string.Equals(kind, ".NET/DLL", StringComparison.OrdinalIgnoreCase))
+        var isDotNetReference = string.Equals(kind, ".NET/DLL", StringComparison.OrdinalIgnoreCase);
+        var isXpaReference = string.Equals(kind, "XPA", StringComparison.OrdinalIgnoreCase);
+        if (isDotNetReference || isXpaReference)
         {
             var fileName = name.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) ? name : name + ".dll";
-            foreach (var root in EnumerateReferenceRoots())
+            foreach (var root in referenceRoots)
             {
+                if (isXpaReference)
+                {
+                    var projectName = Path.GetFileNameWithoutExtension(name) + ".csproj";
+                    candidates.Add(Path.Combine(root, projectName));
+                    candidates.Add(Path.Combine(root, Path.GetFileNameWithoutExtension(name), projectName));
+                }
                 candidates.Add(Path.Combine(root, fileName));
                 candidates.Add(Path.Combine(root, "Resources", fileName));
                 candidates.Add(Path.Combine(root, "Resources", "PushSharp", fileName));
@@ -1322,47 +1403,69 @@ internal sealed class MainForm : Form
             if (!string.IsNullOrWhiteSpace(exactMatch))
                 return exactMatch;
 
-            var recursiveMatch = ResolveDllByRecursiveSearch(name, xmlHint);
+            if (isXpaReference)
+            {
+                var recursiveProjectMatch = ResolveIndexedReference(
+                    recursiveIndex.Value.ProjectByName,
+                    name,
+                    xmlHint);
+                if (!string.IsNullOrWhiteSpace(recursiveProjectMatch))
+                    return recursiveProjectMatch;
+            }
+
+            var recursiveMatch = ResolveIndexedReference(
+                recursiveIndex.Value.DllByName,
+                name,
+                xmlHint);
             if (!string.IsNullOrWhiteSpace(recursiveMatch))
                 return recursiveMatch;
         }
 
-        return candidates.FirstOrDefault(File.Exists);
+        return candidates.FirstOrDefault(path => File.Exists(path) && IsSupportedReferenceMapPath(path));
     }
 
-    private string? ResolveDllByRecursiveSearch(string referenceName, string? xmlHint)
-    {
-        var lookupNames = BuildDllLookupNames(referenceName, xmlHint);
-        if (lookupNames.Count == 0)
-            return null;
+    private sealed record ReferenceCandidateIndex(
+        IReadOnlyDictionary<string, string> ProjectByName,
+        IReadOnlyDictionary<string, string> DllByName);
 
-        foreach (var root in EnumerateReferenceRoots())
+    private static ReferenceCandidateIndex BuildReferenceCandidateIndex(IReadOnlyList<string> referenceRoots)
+    {
+        var projects = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var dlls = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var visitedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var root in referenceRoots)
         {
             if (!Directory.Exists(root))
                 continue;
 
-            foreach (var lookupName in lookupNames)
+            try
             {
-                try
+                foreach (var projectPath in Directory.EnumerateFiles(root, "*.csproj", SearchOption.AllDirectories))
                 {
-                    var matchedByFileName = Directory.EnumerateFiles(root, lookupName + ".dll", SearchOption.AllDirectories)
-                        .FirstOrDefault();
-                    if (!string.IsNullOrWhiteSpace(matchedByFileName))
-                        return matchedByFileName;
+                    if (!visitedFiles.Add(projectPath))
+                        continue;
+                    var projectName = Path.GetFileNameWithoutExtension(projectPath);
+                    projects.TryAdd(projectName, projectPath);
                 }
-                catch
-                {
-                }
+            }
+            catch
+            {
             }
 
             try
             {
                 foreach (var dllPath in Directory.EnumerateFiles(root, "*.dll", SearchOption.AllDirectories))
                 {
+                    if (!visitedFiles.Add(dllPath))
+                        continue;
+
+                    var fileName = Path.GetFileNameWithoutExtension(dllPath);
+                    dlls.TryAdd(fileName, dllPath);
+
                     var assemblyIdentity = TryResolveAssemblyIdentity(dllPath);
-                    if (!string.IsNullOrWhiteSpace(assemblyIdentity) &&
-                        lookupNames.Contains(assemblyIdentity))
-                        return dllPath;
+                    if (!string.IsNullOrWhiteSpace(assemblyIdentity))
+                        dlls.TryAdd(assemblyIdentity, dllPath);
                 }
             }
             catch
@@ -1370,8 +1473,27 @@ internal sealed class MainForm : Form
             }
         }
 
+        return new ReferenceCandidateIndex(projects, dlls);
+    }
+
+    private static string? ResolveIndexedReference(
+        IReadOnlyDictionary<string, string> indexedPaths,
+        string referenceName,
+        string? xmlHint)
+    {
+        var lookupNames = BuildDllLookupNames(referenceName, xmlHint);
+        foreach (var lookupName in lookupNames)
+        {
+            if (indexedPaths.TryGetValue(lookupName, out var path))
+                return path;
+        }
+
         return null;
     }
+
+    private static bool IsSupportedReferenceMapPath(string path)
+        => path.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase) ||
+           path.EndsWith(".dll", StringComparison.OrdinalIgnoreCase);
 
     private static HashSet<string> BuildDllLookupNames(string referenceName, string? xmlHint)
     {

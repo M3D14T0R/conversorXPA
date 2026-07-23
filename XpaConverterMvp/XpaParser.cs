@@ -70,7 +70,7 @@ internal static class XpaParser
 
     private sealed class ParseContext
     {
-        public required XDocument Document { get; init; }
+        public XDocument? Document { get; set; }
         public int ComponentId { get; init; }
         public string Name { get; init; } = "";
         public string XmlPath { get; init; } = "";
@@ -96,34 +96,167 @@ internal static class XpaParser
     {
         var parsed = new ParsedXpa();
         var contexts = BuildContexts(xmlPath, parsed, componentXmlPaths, tablesXmlPaths, useImplicitComponentXmlResolution, mainXmlBaseDirectoryOverride, projectReferenceMap);
-        parsed.HasRepositoryProperties = contexts.Any(c => c.Document.Descendants("RepositoryProperties").Any());
-        parsed.HasDataRepositoryProperties = contexts.Any(c => c.Document.Descendants("DataRepositoryProperties").Any());
-        parsed.HasHelpRepository = contexts.Any(c => c.Document.Descendants("HelpRepository").Any());
-        parsed.HasXsdUnderViewCompound = contexts.Any(c => c.Document.Descendants("_XsdUnderViewCompound").Any());
 
         var modelOrdinal = 0;
         var controlButtonObj = 0;
         var dataObjectOrdinal = 0;
         foreach (var ctx in contexts)
-        {
-            ParseFieldModels(ctx, parsed, ref modelOrdinal);
-            ParseControlButtonModels(ctx.Document, parsed, ref controlButtonObj);
-            ParseDataObjects(ctx, parsed, ref dataObjectOrdinal);
-            ParseRights(ctx, parsed);
-        }
+            ParseContextRepositories(ctx, parsed, ref modelOrdinal, ref controlButtonObj, ref dataObjectOrdinal);
 
         InjectExternalManifestDataObjects(contexts, parsed, projectReferenceMap, ref dataObjectOrdinal);
 
         var taskOrdinal = 0;
         var topLevelProgramIndex = 0;
         foreach (var ctx in contexts)
-            ParseTasks(ctx, contexts, parsed, ref taskOrdinal, ref topLevelProgramIndex);
+            ParseTasksStreaming(ctx, contexts, parsed, ref taskOrdinal, ref topLevelProgramIndex);
 
         var main = contexts.FirstOrDefault(c => c.IsMain);
         if (main is not null)
-            ParseMenus(main.Document, parsed);
+            ParseMenusStreaming(main.XmlPath, parsed);
 
         return parsed;
+    }
+
+    private static void CacheReferencedComponentMetadata(ParseContext context, XDocument document)
+    {
+        if (document.Root is null || context.ReferencedComponentMetadataCache.Count > 0)
+            return;
+
+        var components = document
+            .Descendants("ComponentsRepository")
+            .Descendants("Components")
+            .Elements("Component")
+            .ToList();
+        for (var i = 0; i < components.Count; i++)
+            context.ReferencedComponentMetadataCache[i + 1] = ParseComponentMetadata(components[i]);
+    }
+
+    private static void ParseContextRepositories(
+        ParseContext context,
+        ParsedXpa parsed,
+        ref int modelOrdinal,
+        ref int controlButtonObj,
+        ref int dataObjectOrdinal)
+    {
+        if (string.IsNullOrWhiteSpace(context.XmlPath) || !File.Exists(context.XmlPath))
+            return;
+
+        using var stream = OpenSequentialRead(context.XmlPath);
+        using var reader = CreateXmlReader(stream);
+        while (reader.Read())
+        {
+            if (reader.NodeType != XmlNodeType.Element)
+                continue;
+
+            switch (reader.LocalName)
+            {
+                case "RepositoryProperties":
+                    parsed.HasRepositoryProperties = true;
+                    break;
+                case "DataRepositoryProperties":
+                    parsed.HasDataRepositoryProperties = true;
+                    break;
+                case "HelpRepository":
+                    parsed.HasHelpRepository = true;
+                    break;
+                case "_XsdUnderViewCompound":
+                    parsed.HasXsdUnderViewCompound = true;
+                    break;
+                case "ComponentsRepository":
+                {
+                    var document = ReadCurrentElementDocument(reader);
+                    CacheReferencedComponentMetadata(context, document);
+                    break;
+                }
+                case "ModelsRepository":
+                {
+                    ParseModelsRepositoryStreaming(reader, context, parsed, ref modelOrdinal, ref controlButtonObj);
+                    break;
+                }
+                case "DataSourceRepository":
+                {
+                    ParseDataSourceRepositoryStreaming(reader, context, parsed, ref dataObjectOrdinal);
+                    break;
+                }
+                case "RightsRepository":
+                {
+                    ParseRightsRepositoryStreaming(reader, context, parsed);
+                    break;
+                }
+            }
+        }
+    }
+
+    private static void ParseModelsRepositoryStreaming(
+        XmlReader reader,
+        ParseContext context,
+        ParsedXpa parsed,
+        ref int modelOrdinal,
+        ref int controlButtonObj)
+    {
+        using var repository = reader.ReadSubtree();
+        var localIndex = 0;
+        while (repository.Read())
+        {
+            if (repository.NodeType != XmlNodeType.Element || repository.LocalName != "Object")
+                continue;
+            localIndex++;
+            var item = ReadCurrentElement(repository);
+            item.SetAttributeValue("_xpa_converter_stream_index", localIndex);
+            var document = new XDocument(new XElement("ModelsRepository", item));
+            context.Document = document;
+            ParseFieldModels(context, parsed, ref modelOrdinal);
+            ParseControlButtonModels(document, parsed, ref controlButtonObj);
+        }
+        context.Document = null;
+    }
+
+    private static void ParseDataSourceRepositoryStreaming(
+        XmlReader reader,
+        ParseContext context,
+        ParsedXpa parsed,
+        ref int dataObjectOrdinal)
+    {
+        using var repository = reader.ReadSubtree();
+        var localIndex = 0;
+        while (repository.Read())
+        {
+            if (repository.NodeType != XmlNodeType.Element || repository.LocalName != "DataObject")
+                continue;
+            localIndex++;
+            var item = ReadCurrentElement(repository);
+            item.SetAttributeValue("_xpa_converter_stream_index", localIndex);
+            context.Document = new XDocument(new XElement("DataSourceRepository", item));
+            ParseDataObjects(context, parsed, ref dataObjectOrdinal);
+        }
+        context.Document = null;
+    }
+
+    private static void ParseRightsRepositoryStreaming(XmlReader reader, ParseContext context, ParsedXpa parsed)
+    {
+        using var repository = reader.ReadSubtree();
+        while (repository.Read())
+        {
+            if (repository.NodeType != XmlNodeType.Element || repository.LocalName != "Right")
+                continue;
+            var item = ReadCurrentElement(repository);
+            context.Document = new XDocument(
+                new XElement("RightsRepository", new XElement("Rights", item)));
+            ParseRights(context, parsed);
+        }
+        context.Document = null;
+    }
+
+    private static XElement ReadCurrentElement(XmlReader reader)
+    {
+        using var subtree = reader.ReadSubtree();
+        subtree.MoveToContent();
+        return XElement.Load(subtree, LoadOptions.PreserveWhitespace | LoadOptions.SetLineInfo);
+    }
+
+    private static XDocument ReadCurrentElementDocument(XmlReader reader)
+    {
+        return new XDocument(ReadCurrentElement(reader));
     }
 
     private static List<ParseContext> BuildContexts(
@@ -136,7 +269,8 @@ internal static class XpaParser
         IReadOnlyDictionary<string, string>? projectReferenceMap = null)
     {
         var result = new List<ParseContext>();
-        var mainDoc = LoadXmlDocument(mainXmlPath);
+        var mainDoc = LoadNamedElementDocument(mainXmlPath, "ComponentsRepository")
+                      ?? new XDocument(new XElement("ComponentsRepository"));
         var mainDir = string.IsNullOrWhiteSpace(mainXmlBaseDirectoryOverride)
             ? Path.GetDirectoryName(mainXmlPath) ?? ""
             : mainXmlBaseDirectoryOverride!;
@@ -170,10 +304,8 @@ internal static class XpaParser
             if (hasFullComponentXml)
             {
                 metadata.XmlPath = componentPath!;
-                var doc = LoadXmlDocument(componentPath!);
                 result.Add(new ParseContext
                 {
-                    Document = doc,
                     ComponentId = i + 1,
                     Name = metadata.Name,
                     XmlPath = componentPath!,
@@ -192,7 +324,6 @@ internal static class XpaParser
                     metadata.XmlPath = tableCandidate.Path;
                     result.Add(new ParseContext
                     {
-                        Document = tableCandidate.Document,
                         ComponentId = i + 1,
                         Name = metadata.Name,
                         XmlPath = tableCandidate.Path,
@@ -205,7 +336,6 @@ internal static class XpaParser
                 {
                     result.Add(new ParseContext
                     {
-                        Document = new XDocument(new XElement("Application")),
                         ComponentId = i + 1,
                         Name = metadata.Name,
                         XmlPath = metadata.XmlPath,
@@ -233,7 +363,6 @@ internal static class XpaParser
 
         result.Add(new ParseContext
         {
-            Document = mainDoc,
             ComponentId = 0,
             Name = Path.GetFileNameWithoutExtension(mainXmlPath),
             XmlPath = mainXmlPath,
@@ -300,44 +429,55 @@ internal static class XpaParser
         }
     }
 
-    private static XDocument LoadXmlDocument(string path)
+    private static XDocument? LoadNamedElementDocument(string path, string elementName)
     {
-        var options = LoadOptions.PreserveWhitespace | LoadOptions.SetLineInfo;
         try
         {
-            return XDocument.Load(path, options);
+            using var stream = OpenSequentialRead(path);
+            using var reader = CreateXmlReader(stream);
+            while (reader.Read())
+            {
+                if (reader.NodeType == XmlNodeType.Element && reader.LocalName == elementName)
+                    return ReadCurrentElementDocument(reader);
+            }
+            return null;
         }
         catch (XmlException)
         {
-            return LoadSanitizedXmlDocument(path, options);
+            var tempPath = CreateSanitizedXmlTempFile(path);
+            try
+            {
+                using var stream = OpenSequentialRead(tempPath);
+                using var reader = CreateXmlReader(stream);
+                while (reader.Read())
+                {
+                    if (reader.NodeType == XmlNodeType.Element && reader.LocalName == elementName)
+                        return ReadCurrentElementDocument(reader);
+                }
+                return null;
+            }
+            finally
+            {
+                try { File.Delete(tempPath); } catch { }
+            }
         }
     }
 
-    private static XDocument LoadSanitizedXmlDocument(string path, LoadOptions options)
+    private static FileStream OpenSequentialRead(string path) => new(path, new FileStreamOptions
     {
-        var tempPath = CreateSanitizedXmlTempFile(path);
-        try
-        {
-            using var fs = File.OpenRead(tempPath);
-            using var xmlReader = XmlReader.Create(fs, new XmlReaderSettings
-            {
-                CheckCharacters = false,
-                DtdProcessing = DtdProcessing.Parse
-            });
-            return XDocument.Load(xmlReader, options);
-        }
-        finally
-        {
-            try
-            {
-                if (File.Exists(tempPath))
-                    File.Delete(tempPath);
-            }
-            catch
-            {
-            }
-        }
-    }
+        Mode = FileMode.Open,
+        Access = FileAccess.Read,
+        Share = FileShare.Read,
+        Options = FileOptions.SequentialScan,
+        BufferSize = 1024 * 1024
+    });
+
+    private static XmlReader CreateXmlReader(Stream stream) => XmlReader.Create(stream, new XmlReaderSettings
+    {
+        CheckCharacters = false,
+        DtdProcessing = DtdProcessing.Parse,
+        CloseInput = false
+    });
 
     internal static string CreateSanitizedXmlTempFile(string sourcePath)
     {
@@ -418,7 +558,6 @@ internal static class XpaParser
     private sealed class TableXmlCandidate
     {
         public required string Path { get; init; }
-        public required XDocument Document { get; init; }
         public required HashSet<string> PublicNames { get; init; }
         public bool Claimed { get; set; }
     }
@@ -444,21 +583,55 @@ internal static class XpaParser
         {
             if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
                 continue;
-            var doc = LoadXmlDocument(path);
-            var publicNames = doc.Descendants("DataSourceRepository")
-                .Descendants("DataObject")
-                .Select(d => d.Attribute("Public")?.Value)
-                .Where(v => !string.IsNullOrWhiteSpace(v))
-                .Select(v => v!)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var publicNames = ReadDataObjectPublicNames(path);
             result.Add(new TableXmlCandidate
             {
                 Path = path,
-                Document = doc,
                 PublicNames = publicNames
             });
         }
         return result;
+    }
+
+    private static HashSet<string> ReadDataObjectPublicNames(string path)
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            using var stream = OpenSequentialRead(path);
+            using var reader = CreateXmlReader(stream);
+            while (reader.Read())
+            {
+                if (reader.NodeType != XmlNodeType.Element || reader.LocalName != "DataObject")
+                    continue;
+                var publicName = reader.GetAttribute("Public");
+                if (!string.IsNullOrWhiteSpace(publicName))
+                    result.Add(publicName);
+            }
+            return result;
+        }
+        catch (XmlException)
+        {
+            var tempPath = CreateSanitizedXmlTempFile(path);
+            try
+            {
+                using var stream = OpenSequentialRead(tempPath);
+                using var reader = CreateXmlReader(stream);
+                while (reader.Read())
+                {
+                    if (reader.NodeType != XmlNodeType.Element || reader.LocalName != "DataObject")
+                        continue;
+                    var publicName = reader.GetAttribute("Public");
+                    if (!string.IsNullOrWhiteSpace(publicName))
+                        result.Add(publicName);
+                }
+                return result;
+            }
+            finally
+            {
+                try { File.Delete(tempPath); } catch { }
+            }
+        }
     }
 
     private static string? ResolveSuppliedComponentXmlPath(IReadOnlyDictionary<string, string> lookup, ComponentMetadata metadata)
@@ -557,7 +730,7 @@ internal static class XpaParser
 
     private static void ParseFieldModels(ParseContext ctx, ParsedXpa parsed, ref int modelOrdinal)
     {
-        var models = ctx.Document.Descendants("ModelsRepository")
+        var models = ctx.Document!.Descendants("ModelsRepository")
             .Descendants("Object");
 
         var ordered = models.ToList();
@@ -585,7 +758,8 @@ internal static class XpaParser
             if (model == null)
                 continue;
             modelOrdinal++;
-            ctx.ModelLocalToGlobal[i + 1] = modelOrdinal;
+            var localIndex = ParseInt(obj.Attribute("_xpa_converter_stream_index")?.Value) ?? (i + 1);
+            ctx.ModelLocalToGlobal[localIndex] = modelOrdinal;
 
             var publicName = obj.Attribute("Public")?.Value;
             if (!string.IsNullOrWhiteSpace(publicName))
@@ -639,7 +813,7 @@ internal static class XpaParser
 
     private static void ParseDataObjects(ParseContext ctx, ParsedXpa parsed, ref int dataObjectOrdinal)
     {
-        var dataObjects = ctx.Document.Descendants("DataSourceRepository")
+        var dataObjects = ctx.Document!.Descendants("DataSourceRepository")
             .Descendants("DataObject")
             .ToList();
 
@@ -648,9 +822,10 @@ internal static class XpaParser
             var d = dataObjects[i];
             TouchKnownXmlAttributes(d);
             var columns = ParseColumns(ctx, d);
-            var indexes = ParseIndexes(d);
+            var indexes = ParseIndexes(d, columns);
             dataObjectOrdinal++;
-            ctx.DataObjectLocalToGlobal[i + 1] = dataObjectOrdinal;
+            var localIndex = ParseInt(d.Attribute("_xpa_converter_stream_index")?.Value) ?? (i + 1);
+            ctx.DataObjectLocalToGlobal[localIndex] = dataObjectOrdinal;
             var resident = ParseBool(d.Attribute("Resident")?.Value);
             var comment = d.Attribute("Comment")?.Value;
 
@@ -795,7 +970,9 @@ internal static class XpaParser
         return result;
     }
 
-    private static IReadOnlyList<DataIndexDef> ParseIndexes(XElement dataObject)
+    private static IReadOnlyList<DataIndexDef> ParseIndexes(
+        XElement dataObject,
+        IReadOnlyList<DataColumnDef> columns)
     {
         var result = new List<DataIndexDef>();
         var indexes = dataObject.Element("Indexes")?.Elements("Index") ?? Enumerable.Empty<XElement>();
@@ -810,8 +987,17 @@ internal static class XpaParser
             foreach (var seg in idx.Descendants("Segment"))
             {
                 var colStr = XmlHelpers.Attr(seg.Element("Column") ?? new XElement("x"), "val");
-                if (!int.TryParse(colStr, out var colId))
+                if (!int.TryParse(colStr, out var columnPosition) ||
+                    columnPosition < 1 ||
+                    columnPosition > columns.Count)
                     continue;
+
+                // Magic stores an index segment's Column value as the 1-based
+                // position in the DataObject/Columns collection, not as the
+                // value of the Column id attribute. Those values often happen
+                // to match, which hid the problem until tables such as Menu
+                // declared their columns in a different physical order.
+                var colId = columns[columnPosition - 1].Id;
                 segments.Add(new IndexSegmentDef(
                     ColumnId: colId,
                     Order: XmlHelpers.Attr(seg.Element("Order") ?? new XElement("x"), "val", "A")
@@ -829,22 +1015,149 @@ internal static class XpaParser
         return result;
     }
 
-    private static void ParseTasks(ParseContext ctx, IReadOnlyList<ParseContext> contexts, ParsedXpa parsed, ref int ordinal, ref int topLevelProgramIndex)
+    private static void ParseTasksStreaming(
+        ParseContext ctx,
+        IReadOnlyList<ParseContext> contexts,
+        ParsedXpa parsed,
+        ref int ordinal,
+        ref int topLevelProgramIndex)
     {
-        var repo = ctx.Document.Descendants("ProgramsRepository").FirstOrDefault();
-        if (repo is null)
+        if (string.IsNullOrWhiteSpace(ctx.XmlPath) || !File.Exists(ctx.XmlPath))
             return;
 
-        var rootTasks = repo.Element("Programs")?.Elements("Task").ToList() ?? new List<XElement>();
-        for (var i = 0; i < rootTasks.Count; i++)
+        using var stream = OpenSequentialRead(ctx.XmlPath);
+        using var reader = CreateXmlReader(stream);
+        var programsRepositoryDepth = -1;
+        var programsDepth = -1;
+        var localOrdinal = 0;
+
+        while (reader.Read())
         {
-            var originalTopLevelIndex = ParseInt(rootTasks[i].Attribute("_xpa_converter_original_top_level_index")?.Value);
-            var localTopLevelIndex = originalTopLevelIndex ?? (i + 1);
-            var globalTopLevelIndex = originalTopLevelIndex ?? (topLevelProgramIndex + 1);
-            topLevelProgramIndex = Math.Max(topLevelProgramIndex + (originalTopLevelIndex.HasValue ? 0 : 1), globalTopLevelIndex);
-            ctx.ProgramLocalTopLevelToGlobal[localTopLevelIndex] = globalTopLevelIndex;
-            ParseTaskNode(ctx, contexts, rootTasks[i], parsed, ref ordinal, globalTopLevelIndex, localTopLevelIndex, null, null);
+            if (reader.NodeType == XmlNodeType.Element)
+            {
+                if (reader.LocalName is "ProgramsRepository" or "ProgramRepository")
+                {
+                    programsRepositoryDepth = reader.Depth;
+                    continue;
+                }
+
+                if (programsRepositoryDepth >= 0 && reader.LocalName == "Programs")
+                {
+                    programsDepth = reader.Depth;
+                    continue;
+                }
+
+                if (programsDepth >= 0 && reader.LocalName == "Task" && reader.Depth == programsDepth + 1)
+                {
+                    localOrdinal++;
+                    using var subtree = reader.ReadSubtree();
+                    subtree.MoveToContent();
+                    var originalTopLevelIndex = ParseInt(subtree.GetAttribute("_xpa_converter_original_top_level_index"));
+                    var localTopLevelIndex = originalTopLevelIndex ?? localOrdinal;
+                    var globalTopLevelIndex = originalTopLevelIndex ?? (topLevelProgramIndex + 1);
+                    topLevelProgramIndex = Math.Max(
+                        topLevelProgramIndex + (originalTopLevelIndex.HasValue ? 0 : 1),
+                        globalTopLevelIndex);
+                    ctx.ProgramLocalTopLevelToGlobal[localTopLevelIndex] = globalTopLevelIndex;
+                    ParseTaskNodeStreaming(ctx, contexts, subtree, parsed, ref ordinal, globalTopLevelIndex, localTopLevelIndex, null, null);
+                }
+            }
+            else if (reader.NodeType == XmlNodeType.EndElement)
+            {
+                if (reader.Depth == programsDepth && reader.LocalName == "Programs")
+                    programsDepth = -1;
+                if (reader.Depth == programsRepositoryDepth && reader.LocalName is "ProgramsRepository" or "ProgramRepository")
+                    programsRepositoryDepth = -1;
+            }
         }
+    }
+
+    // A Task can contain thousands of controls, logic operations and nested
+    // tasks. Loading the top-level Task with XElement.Load retained the whole
+    // program XML tree while its domain objects were being built. Read only
+    // one direct section at a time, like the v2 reader does, and parse nested
+    // tasks recursively without attaching them to the parent's XElement.
+    private static void ParseTaskNodeStreaming(
+        ParseContext ctx,
+        IReadOnlyList<ParseContext> contexts,
+        XmlReader reader,
+        ParsedXpa parsed,
+        ref int ordinal,
+        int? topLevelProgramIndex,
+        int? topLevelProgramIndexLocal,
+        int? parentOrdinal,
+        int? subtaskIndex)
+    {
+        if (reader.NodeType != XmlNodeType.Element || reader.LocalName != "Task")
+            return;
+
+        ordinal++;
+        var currentOrdinal = ordinal;
+        var insertionIndex = parsed.Tasks.Count;
+        var task = new XElement(reader.LocalName);
+        if (reader.HasAttributes)
+        {
+            while (reader.MoveToNextAttribute())
+                task.SetAttributeValue(XName.Get(reader.LocalName, reader.NamespaceURI), reader.Value);
+            reader.MoveToElement();
+        }
+
+        var rootDepth = reader.Depth;
+        var childIndex = 0;
+        if (!reader.IsEmptyElement)
+        {
+            while (reader.Read())
+            {
+                if (reader.NodeType == XmlNodeType.EndElement &&
+                    reader.Depth == rootDepth &&
+                    reader.LocalName == "Task")
+                    break;
+
+                if (reader.NodeType != XmlNodeType.Element || reader.Depth != rootDepth + 1)
+                    continue;
+
+                if (reader.LocalName == "Task")
+                {
+                    childIndex++;
+                    using var childReader = reader.ReadSubtree();
+                    childReader.MoveToContent();
+                    ParseTaskNodeStreaming(
+                        ctx,
+                        contexts,
+                        childReader,
+                        parsed,
+                        ref ordinal,
+                        topLevelProgramIndex,
+                        topLevelProgramIndexLocal,
+                        currentOrdinal,
+                        childIndex);
+                    continue;
+                }
+
+                using var sectionReader = reader.ReadSubtree();
+                sectionReader.MoveToContent();
+                var section = XElement.Load(sectionReader, LoadOptions.PreserveWhitespace | LoadOptions.SetLineInfo);
+                task.Add(section);
+                if (section.Name.LocalName == "Header" && topLevelProgramIndex.HasValue)
+                {
+                    var publicName = section.Element("Public")?.Attribute("val")?.Value;
+                    if (!string.IsNullOrWhiteSpace(publicName))
+                        ctx.ProgramPublicToGlobalTopLevel[publicName] = topLevelProgramIndex.Value;
+                }
+            }
+        }
+
+        ParseTaskElement(
+            ctx,
+            contexts,
+            task,
+            parsed,
+            currentOrdinal,
+            insertionIndex,
+            topLevelProgramIndex,
+            topLevelProgramIndexLocal,
+            parentOrdinal,
+            subtaskIndex);
     }
 
     private static void ParseTaskNode(
@@ -858,14 +1171,34 @@ internal static class XpaParser
         int? parentOrdinal,
         int? subtaskIndex)
     {
+        ordinal++;
+        var currentOrdinal = ordinal;
+        var insertionIndex = parsed.Tasks.Count;
+        ParseTaskElement(ctx, contexts, t, parsed, currentOrdinal, insertionIndex, topLevelProgramIndex, topLevelProgramIndexLocal, parentOrdinal, subtaskIndex);
+
+        var children = t.Elements("Task").ToList();
+        for (var i = 0; i < children.Count; i++)
+            ParseTaskNode(ctx, contexts, children[i], parsed, ref ordinal, topLevelProgramIndex, topLevelProgramIndexLocal, currentOrdinal, i + 1);
+    }
+
+    private static void ParseTaskElement(
+        ParseContext ctx,
+        IReadOnlyList<ParseContext> contexts,
+        XElement t,
+        ParsedXpa parsed,
+        int currentOrdinal,
+        int insertionIndex,
+        int? topLevelProgramIndex,
+        int? topLevelProgramIndexLocal,
+        int? parentOrdinal,
+        int? subtaskIndex)
+    {
         TouchKnownXmlAttributes(t);
         var header = t.Element("Header");
         if (header == null)
             return;
         TouchKnownXmlAttributes(header);
-        ordinal++;
 
-        var currentOrdinal = ordinal;
         var resourceDataObjects = ParseTaskResourceDataObjects(ctx, contexts, t);
         var resourceDbs = ParseTaskResourceDbs(ctx, contexts, t);
         var resourceColumns = ParseTaskResourceColumns(ctx, contexts, t);
@@ -938,7 +1271,7 @@ internal static class XpaParser
         if (!string.IsNullOrWhiteSpace(taskPublicName) && topLevelProgramIndex.HasValue)
             ctx.ProgramPublicToGlobalTopLevel[taskPublicName] = topLevelProgramIndex.Value;
 
-        parsed.Tasks.Add(new TaskDef(
+        var taskDef = new TaskDef(
             Ordinal: currentOrdinal,
             TopLevelProgramIndex: topLevelProgramIndex,
             TopLevelProgramIndexLocal: topLevelProgramIndexLocal,
@@ -1035,11 +1368,12 @@ internal static class XpaParser
             Io: io,
             Ios: ios,
             SourceComponent: ctx.IsMain ? null : ctx.Name
-        ));
+        );
 
-        var children = t.Elements("Task").ToList();
-        for (var i = 0; i < children.Count; i++)
-            ParseTaskNode(ctx, contexts, children[i], parsed, ref ordinal, topLevelProgramIndex, topLevelProgramIndexLocal, currentOrdinal, i + 1);
+        // Nested tasks are parsed before the parent section has been fully
+        // consumed. Insert the completed parent at its reserved position so
+        // the public task order remains identical to the XML order.
+        parsed.Tasks.Insert(Math.Min(insertionIndex, parsed.Tasks.Count), taskDef);
     }
 
     private static IReadOnlyList<int> ParseTaskResourceDataObjects(ParseContext ctx, IReadOnlyList<ParseContext> contexts, XElement task)
@@ -1295,10 +1629,13 @@ internal static class XpaParser
                 .Select((control, index) => ParseInt(control.Attribute("_test_id")?.Value) ?? (index + 1))
                 .DefaultIfEmpty(0)
                 .Max() + 1;
+
+            // Resolve a identidade de todos os controles antes da leitura das
+            // propriedades. ISN_FATHER referencia a posicao no form e pode apontar
+            // para um controle declarado mais adiante no XML.
             for (var controlIndex = 0; controlIndex < rawControls.Count; controlIndex++)
             {
                 var c = rawControls[controlIndex];
-                TouchKnownXmlAttributes(c);
                 var id = ParseInt(c.Attribute("_test_id")?.Value) ?? (controlIndex + 1);
                 if (!usedControlIds.Add(id))
                 {
@@ -1308,15 +1645,19 @@ internal static class XpaParser
                     usedControlIds.Add(id);
                 }
                 controlOrdinalToId[controlIndex + 1] = id;
+            }
+
+            for (var controlIndex = 0; controlIndex < rawControls.Count; controlIndex++)
+            {
+                var c = rawControls[controlIndex];
+                TouchKnownXmlAttributes(c);
+                var id = controlOrdinalToId[controlIndex + 1];
                 var parentOrdinal = ParseInt(c.Attribute("ISN_FATHER")?.Value);
                 int? parentId = null;
-                if (parentOrdinal.HasValue)
-                {
-                    if (controlOrdinalToId.TryGetValue(parentOrdinal.Value, out var mappedParent))
-                        parentId = mappedParent;
-                    else
-                        parentId = parentOrdinal;
-                }
+                if (parentOrdinal.HasValue &&
+                    controlOrdinalToId.TryGetValue(parentOrdinal.Value, out var mappedParent) &&
+                    mappedParent != id)
+                    parentId = mappedParent;
                 var cp = c.Element("PropertyList");
                 if (cp is null)
                     continue;
@@ -1330,6 +1671,11 @@ internal static class XpaParser
                 var y = ParseInt((isLine ? cp.Element("Y1") : cp.Element("Y"))?.Attribute("val")?.Value) ?? 0;
                 var w = ParseInt((isLine ? cp.Element("X2") : cp.Element("Width"))?.Attribute("val")?.Value) ?? (isLine ? x + 80 : 80);
                 var h = ParseInt((isLine ? cp.Element("Y2") : cp.Element("Height"))?.Attribute("val")?.Value) ?? (isLine ? y : 20);
+                var controlPlacement = cp.Element("Placement");
+                var placementX = ParseInt(controlPlacement?.Attribute("left")?.Value);
+                var placementWidth = ParseInt(controlPlacement?.Attribute("right")?.Value ?? controlPlacement?.Attribute("width")?.Value);
+                var placementY = ParseInt(controlPlacement?.Attribute("top")?.Value);
+                var placementHeight = ParseInt(controlPlacement?.Attribute("bottom")?.Value ?? controlPlacement?.Attribute("height")?.Value);
                 var controlLayer = ParseInt(cp.Element("ControlLayer")?.Attribute("val")?.Value);
                 var borderStyle = XmlHelpers.Attr(cp.Element("BorderStyle") ?? new XElement("x"), "val");
                 var titleHeight = ParseInt(cp.Element("TitleHeight")?.Attribute("val")?.Value);
@@ -1456,6 +1802,7 @@ internal static class XpaParser
                     .ToList();
 
                 controls.Add(new TaskFormControlDef(
+                    FormEntryIndex: i + 1,
                     Id: id,
                     ParentId: parentId,
                     Model: model,
@@ -1463,6 +1810,10 @@ internal static class XpaParser
                     Y: y,
                     Width: w,
                     Height: h,
+                    PlacementX: placementX,
+                    PlacementWidth: placementWidth,
+                    PlacementY: placementY,
+                    PlacementHeight: placementHeight,
                     ControlLayer: controlLayer,
                     BorderStyle: string.IsNullOrWhiteSpace(borderStyle) ? null : borderStyle,
                     TitleHeight: titleHeight,
@@ -1648,7 +1999,7 @@ internal static class XpaParser
         for (var i = 0; i < menus.Count; i++)
         {
             var menu = menus[i];
-            var entries = menu.Elements("MenuEntry").Select(x => ParseMenuEntry(doc, x)).ToList();
+            var entries = menu.Elements("MenuEntry").Select(x => ParseMenuEntry(parsed, x)).ToList();
             parsed.Menus.Add(new MenuDef(
                 Obj: i + 1,
                 Name: XmlHelpers.Attr(menu.Element("Name") ?? new XElement("x"), "val"),
@@ -1665,9 +2016,38 @@ internal static class XpaParser
         );
     }
 
+    private static void ParseMenusStreaming(string path, ParsedXpa parsed)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            return;
+
+        XElement? menusRepository = null;
+        XElement? projectProperties = null;
+        using (var stream = OpenSequentialRead(path))
+        using (var reader = CreateXmlReader(stream))
+        {
+            while (reader.Read())
+            {
+                if (reader.NodeType != XmlNodeType.Element)
+                    continue;
+                if (reader.LocalName == "MenusRepository")
+                    menusRepository = ReadCurrentElementDocument(reader).Root;
+                else if (reader.LocalName == "ProjectProperties")
+                    projectProperties = ReadCurrentElementDocument(reader).Root;
+            }
+        }
+
+        var root = new XElement("Application");
+        if (menusRepository is not null)
+            root.Add(menusRepository);
+        if (projectProperties is not null)
+            root.Add(projectProperties);
+        ParseMenus(new XDocument(root), parsed);
+    }
+
     private static void ParseRights(ParseContext ctx, ParsedXpa parsed)
     {
-        var rights = ctx.Document.Descendants("RightsRepository")
+        var rights = ctx.Document!.Descendants("RightsRepository")
             .Descendants("Rights")
             .Elements("Right")
             .ToList();
@@ -1687,7 +2067,7 @@ internal static class XpaParser
         }
     }
 
-    private static MenuEntryDef ParseMenuEntry(XDocument doc, XElement menuEntry)
+    private static MenuEntryDef ParseMenuEntry(ParsedXpa parsed, XElement menuEntry)
     {
         var eventNode = menuEntry.Element("Event");
         var ev = eventNode is null
@@ -1699,12 +2079,12 @@ internal static class XpaParser
             );
 
         var programObj = ParseInt(menuEntry.Element("Program")?.Attribute("obj")?.Value);
-        var subEntries = menuEntry.Element("Menu")?.Elements("MenuEntry").Select(x => ParseMenuEntry(doc, x)).ToList() ?? new List<MenuEntryDef>();
+        var subEntries = menuEntry.Element("Menu")?.Elements("MenuEntry").Select(x => ParseMenuEntry(parsed, x)).ToList() ?? new List<MenuEntryDef>();
         return new MenuEntryDef(
             MenuType: XmlHelpers.Attr(menuEntry.Element("MenuType") ?? new XElement("x"), "val"),
             Description: menuEntry.Element("Description_U")?.Attribute("val")?.Value,
             ProgramObj: programObj,
-            ProgramDescription: ResolveMenuProgramDescription(doc, programObj),
+            ProgramDescription: ResolveMenuProgramDescription(parsed, programObj),
             Event: ev,
             ToolNumber: ParseInt(menuEntry.Element("Tool")?.Element("ToolNumber")?.Attribute("val")?.Value),
             ToolGroup: ParseInt(menuEntry.Element("Tool")?.Element("ToolGroup")?.Attribute("val")?.Value),
@@ -1712,16 +2092,19 @@ internal static class XpaParser
         );
     }
 
-    private static string? ResolveMenuProgramDescription(XDocument doc, int? programObj)
+    private static string? ResolveMenuProgramDescription(ParsedXpa parsed, int? programObj)
     {
         if (!programObj.HasValue || programObj.Value <= 0)
             return null;
 
-        var rootTasks = doc.Descendants("ProgramsRepository").Elements("Programs").Elements("Task").ToList();
+        var rootTasks = parsed.Tasks
+            .Where(t => t.ParentOrdinal is null && string.IsNullOrWhiteSpace(t.SourceComponent))
+            .OrderBy(t => t.TopLevelProgramIndexLocal ?? int.MaxValue)
+            .ToList();
         if (programObj.Value > rootTasks.Count)
             return null;
 
-        return rootTasks[programObj.Value - 1].Element("Header")?.Attribute("Description")?.Value;
+        return rootTasks[programObj.Value - 1].Description;
     }
 
     private static (int? PrimaryDbObj, IReadOnlyList<TaskLogicSelectDef> Selects, IReadOnlyList<TaskLogicLinkDef> Links, IReadOnlyList<TaskDataViewSourceDef> DataViewSources, IReadOnlyList<TaskBlockDef> Blocks, IReadOnlyList<TaskEndBlockDef> EndBlocks, IReadOnlyList<TaskEndLinkDef> EndLinks, IReadOnlyList<TaskCallDef> TabCalls, IReadOnlyList<TaskRowLogicDef> StartLogics, IReadOnlyList<TaskRaiseEventDef> StartRaises, IReadOnlyList<TaskRowLogicDef> EndLogics, IReadOnlyList<TaskRaiseEventDef> EndRaises, bool HasStartLogicUnit, bool HasEndLogicUnit, IReadOnlyList<TaskRowLogicDef> RowLogics, IReadOnlyList<TaskRowLogicDef> SavingRowLogics, IReadOnlyList<TaskValidationDef> FlowValidations, IReadOnlyList<TaskFunctionOverrideDef> FunctionOverrides, IReadOnlyList<TaskHandlerDef> Handlers, IReadOnlyList<TaskGroupLogicDef> GroupLogics, IReadOnlyList<TaskGapDef> Gaps, IReadOnlyList<TaskFormIoDef> FormIos) ParseTaskLogic(
@@ -1972,7 +2355,15 @@ internal static class XpaParser
                         var idxStr = XmlHelpers.Attr(first, "IDX");
                         var dataViewSourceType = XmlHelpers.Attr(first, "Type");
                         var idx = ParseInt(idxStr);
-                        dataViewSources.Add(new TaskDataViewSourceDef(idx, string.IsNullOrWhiteSpace(dataViewSourceType) ? null : dataViewSourceType, xmlTrace));
+                        var sourceCondition = first.Element("Condition");
+                        var sourceEnabled = ParseBool(sourceCondition?.Attribute("val")?.Value);
+                        var sourceConditionExpressionId = ParseInt(sourceCondition?.Attribute("Exp")?.Value);
+                        dataViewSources.Add(new TaskDataViewSourceDef(
+                            idx,
+                            string.IsNullOrWhiteSpace(dataViewSourceType) ? null : dataViewSourceType,
+                            sourceEnabled,
+                            sourceConditionExpressionId,
+                            xmlTrace));
                         if (idx.HasValue)
                         {
                             if (idx.Value > 0 && idx.Value <= resourceDataObjects.Count)
@@ -2808,20 +3199,7 @@ internal static class XpaParser
         if (ctx.ReferencedComponentMetadataCache.TryGetValue(compId, out var cached))
             return cached;
 
-        if (ctx.Document.Root is null)
-            return null;
-
-        var component = ctx.Document
-            .Descendants("ComponentsRepository")
-            .Descendants("Components")
-            .Elements("Component")
-            .ElementAtOrDefault(compId - 1);
-        if (component is null)
-            return null;
-
-        var parsed = ParseComponentMetadata(component);
-        ctx.ReferencedComponentMetadataCache[compId] = parsed;
-        return parsed;
+        return null;
     }
 
     private static int? ResolveComponentAwareRef(

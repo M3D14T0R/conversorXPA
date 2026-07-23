@@ -12,7 +12,7 @@ internal static partial class ProjectGenerator
             int.TryParse(h.EventPublicObject, out var appEventObj))
         {
             var allTasks = _allTasks ?? Array.Empty<TaskSemantic>();
-            var appTask = allTasks.FirstOrDefault(x => x.MainProgram) ?? allTasks.FirstOrDefault(x => x.ParentOrdinal is null);
+            var appTask = _applicationTask;
             if (appTask is not null &&
                 appTask.EventsSemantic.ItemsByOrdinal.TryGetValue(appEventObj, out var appEvt) &&
                 !string.IsNullOrWhiteSpace(appEvt.Description))
@@ -22,7 +22,7 @@ internal static partial class ProjectGenerator
         if (h.EventParent.HasValue && task.ParentOrdinal.HasValue)
         {
             var relativePrefix = "_parent.";
-            var currentTask = (_allTasks ?? Array.Empty<TaskSemantic>()).FirstOrDefault(x => x.Ordinal == task.ParentOrdinal.Value);
+            var currentTask = GetTaskByOrdinal(task.ParentOrdinal.Value, _allTasks);
             if (int.TryParse(h.EventPublicObject, out var parentEventObj))
             {
                 while (currentTask is not null)
@@ -34,7 +34,7 @@ internal static partial class ProjectGenerator
                     relativePrefix += "_parent.";
                     if (!currentTask.ParentOrdinal.HasValue)
                         break;
-                    currentTask = (_allTasks ?? Array.Empty<TaskSemantic>()).FirstOrDefault(x => x.Ordinal == currentTask.ParentOrdinal.Value);
+                    currentTask = GetTaskByOrdinal(currentTask.ParentOrdinal.Value, _allTasks);
                 }
             }
         }
@@ -55,7 +55,7 @@ internal static partial class ProjectGenerator
             return "";
         if (IsApplicationEventReference(eventParent, eventPublicComponentId))
         {
-            var appTask = _allTasks?.FirstOrDefault(x => x.MainProgram) ?? _allTasks?.FirstOrDefault(x => x.ParentOrdinal is null);
+            var appTask = _applicationTask;
             if (appTask is not null && appTask.EventsSemantic.DescriptionByOrdinal.TryGetValue(eventObj, out var appDescription))
                 return "Application." + ResolveTaskCommandIdentifier(appTask, appDescription, preserveCase: true);
         }
@@ -86,7 +86,7 @@ internal static partial class ProjectGenerator
 
         if (IsApplicationEventReference(raise.EventParent, raise.EventPublicComponentId))
         {
-            var appTask = _allTasks?.FirstOrDefault(x => x.MainProgram) ?? _allTasks?.FirstOrDefault(x => x.ParentOrdinal is null);
+            var appTask = _applicationTask;
             if (appTask is not null && appTask.EventsSemantic.ItemsByOrdinal.TryGetValue(eventObj, out var appEvent))
                 return appEvent.Parameters.Count;
             return null;
@@ -122,7 +122,7 @@ internal static partial class ProjectGenerator
         IReadOnlyList<TaskEventParameterDef>? parameters = null;
         if (IsApplicationEventReference(raise.EventParent, raise.EventPublicComponentId))
         {
-            var appTask = _allTasks?.FirstOrDefault(x => x.MainProgram) ?? _allTasks?.FirstOrDefault(x => x.ParentOrdinal is null);
+            var appTask = _applicationTask;
             if (appTask is not null && appTask.EventsSemantic.ItemsByOrdinal.TryGetValue(eventObj, out var appEvent))
                 parameters = appEvent.Parameters;
         }
@@ -169,25 +169,32 @@ internal static partial class ProjectGenerator
     }
 
     private static HashSet<string> CollectReservedCommandNames(TaskSemantic task)
+        => new(BuildReservedCommandNames(task), StringComparer.Ordinal);
+
+    private static HashSet<string> BuildReservedCommandNames(TaskSemantic task)
     {
+        if (_reservedTaskCommandNameCache.TryGetValue(task.Ordinal, out var cached))
+            return cached;
+
         var reserved = new HashSet<string>(StringComparer.Ordinal);
         reserved.Add(ResolveTaskClassName(task, _allTasks ?? Array.Empty<TaskSemantic>()));
         foreach (var rc in task.ResourcesSemantic.Ordered)
             reserved.Add(ResolveTaskResourceMemberName(task, rc));
-        foreach (var child in (_allTasks ?? Array.Empty<TaskSemantic>()).Where(x => x.ParentOrdinal == task.Ordinal))
+        foreach (var child in GetChildTasks(task.Ordinal, _allTasks))
             reserved.Add(ResolveTaskClassName(child, _allTasks ?? Array.Empty<TaskSemantic>()));
         foreach (var fn in task.FunctionOverridesSemantic)
         {
             if (!string.IsNullOrWhiteSpace(fn.MethodName))
                 reserved.Add(fn.MethodName);
         }
+        _reservedTaskCommandNameCache[task.Ordinal] = reserved;
         return reserved;
     }
 
     private static string ResolveTaskCommandIdentifier(TaskSemantic task, string raw, bool preserveCase = false)
     {
         var id = ToCustomCommandIdentifier(raw, preserveCase);
-        var reserved = CollectReservedCommandNames(task);
+        var reserved = BuildReservedCommandNames(task);
         if (!reserved.Contains(id))
             return id;
 

@@ -38,7 +38,8 @@ internal static partial class ProjectGenerator
         IReadOnlyList<TaskSemantic> allTasks,
         string pad,
         string className,
-        Stopwatch totalStopwatch)
+        Stopwatch totalStopwatch,
+        bool suppressForcedUndo = false)
     {
         var rowIos = GetPrintRowIos(t);
         var readRowIos = GetTextIoReadRowIos(t);
@@ -123,7 +124,7 @@ internal static partial class ProjectGenerator
                     "LEAVEROW_ITEM",
                     $"{className} index={itemIndex} phase=\"before-direct-update\" kind={QuoteTelemetry(item.Action.Kind)} xml={QuoteTelemetry(item.Action.XmlTrace)}");
                 var directStopwatch = Stopwatch.StartNew();
-                var emittedDirect = EmitDirectResourceAssignment(sb, item.Action, t, dataObjects, allTasks, pad);
+                var emittedDirect = EmitDirectResourceAssignment(sb, item.Action, t, dataObjects, allTasks, pad, suppressForcedUndo);
                 directStopwatch.Stop();
                 emitDirectTotal += directStopwatch.Elapsed;
                 emitDirectCount++;
@@ -137,7 +138,7 @@ internal static partial class ProjectGenerator
                         "LEAVEROW_ITEM",
                         $"{className} index={itemIndex} phase=\"before-row-action\" label={QuoteTelemetry(actionLabel)} kind={QuoteTelemetry(item.Action.Kind)} xml={QuoteTelemetry(item.Action.XmlTrace)}");
                     var rowActionStopwatch = Stopwatch.StartNew();
-                    EmitRowAction(sb, item.Action, t, dataObjects, allTasks, pad);
+                    EmitRowAction(sb, item.Action, t, dataObjects, allTasks, pad, suppressForcedUndo);
                     rowActionStopwatch.Stop();
                     emitActionTotal += rowActionStopwatch.Elapsed;
                     emitActionCount++;

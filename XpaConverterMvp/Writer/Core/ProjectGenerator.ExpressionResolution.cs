@@ -695,7 +695,7 @@ internal static partial class ProjectGenerator
               string.Equals(NormalizeReturnTypeToken(ResolveSimpleReturnTypeForExpressionAttribute(expr.Attribute)), "Bool", StringComparison.Ordinal))) &&
             TryTranslateSourceBooleanExpression(booleanSourceSyntax, task, dataObjects, out var booleanCode, expr.Syntax))
         {
-            var emittedBoolean = NormalizeStatementBooleanConditionSyntax(booleanCode);
+            var emittedBoolean = NormalizeSourceBooleanCode(booleanCode, task);
             var typedBoolean = new EmittedExpression(
                 emittedBoolean,
                 "Bool",
@@ -951,7 +951,7 @@ internal static partial class ProjectGenerator
         if (context.SinkKind == ExpressionSinkKind.BooleanCondition &&
             TryTranslateSourceBooleanExpression(ResolveExpressionEntrySourceSyntax(expr), task, dataObjects, out var booleanCode, expr.Syntax))
         {
-            var emittedBoolean = NormalizeStatementBooleanConditionSyntax(booleanCode);
+            var emittedBoolean = NormalizeSourceBooleanCode(booleanCode, task);
             RegisterContextualExpressionReturnType(task, emittedBoolean, context);
             return CreateSourceTranslatedExpression(expr, emittedBoolean, "Bool", "source-boolean");
         }
@@ -1757,7 +1757,7 @@ internal static partial class ProjectGenerator
         if (string.Equals(normalizedExpectedReturnType, "Bool", StringComparison.Ordinal))
         {
             if (TryTranslateSourceBooleanExpression(trimmed, task, dataObjects, out var booleanCode, trimmed, preferApplicationDatabaseBinding))
-                return NormalizeStatementBooleanConditionSyntax(booleanCode);
+                return NormalizeSourceBooleanCode(booleanCode, task);
 
             if (TryTranslateWholeKnownSourceFunctionCall(trimmed, task, dataObjects, out var sourceFunctionTranslated, "Bool", depth + 1, preferApplicationDatabaseBinding))
             {
@@ -2328,7 +2328,7 @@ internal static partial class ProjectGenerator
             return false;
 
         var allTasks = _allTasks ?? Array.Empty<TaskSemantic>();
-        var appTask = allTasks.FirstOrDefault(t => t.MainProgram) ?? allTasks.FirstOrDefault(t => t.ParentOrdinal is null);
+        var appTask = _applicationTask;
         if (appTask is null)
             return false;
 
@@ -3093,7 +3093,7 @@ internal static partial class ProjectGenerator
     {
         var trimmed = StripRedundantOuterParentheses(syntax.Trim());
         if (TryTranslateSourceBooleanExpression(trimmed, task, dataObjects, out var nested, preferApplicationDatabaseBinding: preferApplicationDatabaseBinding))
-            return nested;
+            return NormalizeSourceBooleanCode(nested, task);
 
         if (TryTranslateSourceComparisonExpression(trimmed, task, dataObjects, out var comparisonCode, preferApplicationDatabaseBinding))
             return comparisonCode;
@@ -3184,7 +3184,16 @@ internal static partial class ProjectGenerator
         var rightOperand = TranslateSourceBooleanScalarOperandExpression(right, task, dataObjects, rightExpectedType, preferApplicationDatabaseBinding);
         var leftCode = leftOperand.Code;
         var rightCode = rightOperand.Code;
-        code = $"{leftCode} {comparisonOperator} {rightCode}";
+        var isOrderedComparison =
+            comparisonOperator is "<" or ">" or "<=" or ">=";
+        var comparesText =
+            SourceReturnTypeMatchesExpected(leftExpectedType, "Text") ||
+            SourceReturnTypeMatchesExpected(rightExpectedType, "Text") ||
+            SourceReturnTypeMatchesExpected(leftType, "Text") ||
+            SourceReturnTypeMatchesExpected(rightType, "Text");
+        code = isOrderedComparison && comparesText
+            ? $"string.Compare(u.CastToText({leftCode}).ToString(), u.CastToText({rightCode}).ToString(), System.StringComparison.Ordinal) {comparisonOperator} 0"
+            : $"{leftCode} {comparisonOperator} {rightCode}";
         code = CollapseRedundantScalarCastWrappersDeep(code);
         return true;
     }
@@ -4851,7 +4860,7 @@ internal static partial class ProjectGenerator
         if (string.Equals(select.Type, "R", StringComparison.OrdinalIgnoreCase) &&
             select.SourceDbObj.HasValue)
         {
-            var dataObject = dataObjects.FirstOrDefault(x => x.Ordinal == select.SourceDbObj.Value);
+            var dataObject = ResolveDataObjectByOrdinal(dataObjects, select.SourceDbObj.Value);
             var column = dataObject?.Columns.FirstOrDefault(c => c.Id == select.ColumnId);
             if (dataObject is not null &&
                 column is null &&
@@ -5022,7 +5031,7 @@ internal static partial class ProjectGenerator
         var allTasks = _allTasks ?? Array.Empty<TaskSemantic>();
         if (normalizedToken.Length == 1)
         {
-            var appTask = allTasks.FirstOrDefault(t => t.MainProgram) ?? allTasks.FirstOrDefault(t => t.ParentOrdinal is null);
+            var appTask = _applicationTask;
             if (appTask is not null)
             {
                 if (appTask.SelectsSemantic.ItemsByName.TryGetValue(normalizedToken, out var appSelect) &&

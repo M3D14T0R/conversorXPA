@@ -54,28 +54,7 @@ internal static partial class ProjectGenerator
         if (string.IsNullOrWhiteSpace(candidate))
             return false;
 
-        foreach (var task in allTasks)
-        {
-            foreach (var formEntry in task.FormEntries)
-            {
-                if (ReferenceEquals(task, ownerTask) && formEntry.Index == ownerFormEntry.Index)
-                    continue;
-                if (!string.Equals(formEntry.Model, "FORM_GUI0", StringComparison.OrdinalIgnoreCase) ||
-                    formEntry.Form is null ||
-                    string.IsNullOrWhiteSpace(formEntry.Form.FormName))
-                    continue;
-                if (task.View.SelectedFormEntry?.Index == formEntry.Index &&
-                    !string.IsNullOrWhiteSpace(task.View.ClassName))
-                    continue;
-
-                var ownerTaskName = ToTaskClassName(ResolveViewOwnerTask(task, allTasks).Description);
-                var otherCandidate = ownerTaskName + ToPascalIdentifier(formEntry.Form.FormName);
-                if (string.Equals(candidate, otherCandidate, StringComparison.Ordinal))
-                    return true;
-            }
-        }
-
-        return false;
+        return _multiFormCandidateCounts.TryGetValue(candidate, out var count) && count > 1;
     }
 
     private static string EnsureUniqueMultiFormViewClassName(TaskSemantic ownerTask, string candidate, IReadOnlyList<TaskSemantic> allTasks)
@@ -83,15 +62,8 @@ internal static partial class ProjectGenerator
         if (string.IsNullOrWhiteSpace(candidate))
             return candidate;
 
-        var reserved = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var task in allTasks)
-        {
-            if (!string.IsNullOrWhiteSpace(task.View.ClassName))
-                reserved.Add(task.View.ClassName);
-        }
-
         var unique = candidate;
-        while (reserved.Contains(unique) &&
+        while (_reservedViewClassNames.Contains(unique) &&
                !string.Equals(ownerTask.View.ClassName, unique, StringComparison.Ordinal))
             unique += "_";
 
@@ -99,6 +71,28 @@ internal static partial class ProjectGenerator
             unique += "_";
 
         return unique;
+    }
+
+    private static Dictionary<string, int> BuildMultiFormCandidateCounts(IReadOnlyList<TaskSemantic> allTasks)
+    {
+        var result = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var task in allTasks)
+        {
+            foreach (var formEntry in task.FormEntries)
+            {
+                if (!string.Equals(formEntry.Model, "FORM_GUI0", StringComparison.OrdinalIgnoreCase) ||
+                    formEntry.Form is null ||
+                    string.IsNullOrWhiteSpace(formEntry.Form.FormName) ||
+                    (task.View.SelectedFormEntry?.Index == formEntry.Index &&
+                     !string.IsNullOrWhiteSpace(task.View.ClassName)))
+                    continue;
+
+                var ownerTaskName = ToTaskClassName(ResolveViewOwnerTask(task, allTasks).Description);
+                var candidate = ownerTaskName + ToPascalIdentifier(formEntry.Form.FormName);
+                result[candidate] = result.TryGetValue(candidate, out var count) ? count + 1 : 1;
+            }
+        }
+        return result;
     }
 
     private static string ResolveViewClassBaseName(TaskSemantic t, IReadOnlyList<TaskSemantic> allTasks)
@@ -111,7 +105,7 @@ internal static partial class ProjectGenerator
         var root = t;
         while (root.ParentOrdinal.HasValue)
         {
-            var parent = allTasks.FirstOrDefault(x => x.Ordinal == root.ParentOrdinal.Value);
+            var parent = GetTaskByOrdinal(root.ParentOrdinal.Value, allTasks);
             if (parent is null)
                 break;
             root = parent;

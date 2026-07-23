@@ -42,12 +42,29 @@ internal static partial class ProjectGenerator
         var taskEvaluatedLinks = linkMembers
             .Where(lb => lb.Link.ConditionExpressionId.HasValue && string.Equals(lb.Link.EvaluateConditionMode, "T", StringComparison.OrdinalIgnoreCase))
             .ToList();
+        var reloadAfterDataCreationConditions = t.Logic.StartLogics
+            .SelectMany(row => row.Actions)
+            .Where(action => action.Call is not null)
+            .Select(action => new
+            {
+                Action = action,
+                ConditionId = action.ConditionExpressionId ?? action.Call?.ConditionExpressionId
+            })
+            .Where(item => item.ConditionId.HasValue &&
+                           t.ExpressionsSemantic.EntriesByOrdinal.TryGetValue(item.ConditionId.Value, out var expression) &&
+                           expression.Syntax.Contains("DBRecs", StringComparison.OrdinalIgnoreCase))
+            .Select(item => ResolveActionConditionCode(item.Action, t, dataObjects))
+            .Where(condition => !string.IsNullOrWhiteSpace(condition))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
         if (t.Logic.StartLogics.Count == 0 && t.Logic.StartRaises.Count == 0 && startIos.Count == 0 && !t.HasStartLogicUnit && taskEvaluatedLinks.Count == 0)
             return;
 
         sb.AppendLine();
         sb.AppendLine("    protected override void OnStart()");
         sb.AppendLine("    {");
+        if (reloadAfterDataCreationConditions.Count > 0 && t.DataView.HasFrom)
+            sb.AppendLine($"        var reloadDataAfterStart = {string.Join(" || ", reloadAfterDataCreationConditions.Select(condition => $"({condition})"))};");
         if (ShouldEmitCheckExitOnStart(t, dataObjects))
             sb.AppendLine("        CheckExit();");
         foreach (var row in t.Logic.StartLogics)
@@ -75,6 +92,11 @@ internal static partial class ProjectGenerator
             var enabledExpr = ResolveExpressionCode(lb.Link.ConditionExpressionId!.Value.ToString(), t, dataObjects, CreateBooleanConditionEmissionContext());
             if (!string.IsNullOrWhiteSpace(enabledExpr))
                 sb.AppendLine($"        Relations[{lb.MemberName}].Enabled = {enabledExpr};");
+        }
+        if (reloadAfterDataCreationConditions.Count > 0 && t.DataView.HasFrom)
+        {
+            sb.AppendLine("        if (reloadDataAfterStart)");
+            sb.AppendLine("            Raise(Command.ReloadData);");
         }
         sb.AppendLine("    }");
     }

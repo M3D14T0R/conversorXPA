@@ -20,7 +20,7 @@ internal static partial class ProjectGenerator
         if (!task.ParentOrdinal.HasValue)
             return false;
 
-        var parentTask = allTasks.FirstOrDefault(t => t.Ordinal == task.ParentOrdinal.Value);
+        var parentTask = GetTaskByOrdinal(task.ParentOrdinal.Value, allTasks);
         if (parentTask?.MainProgram == true && task.Execution.TaskType == "B")
             return true;
 

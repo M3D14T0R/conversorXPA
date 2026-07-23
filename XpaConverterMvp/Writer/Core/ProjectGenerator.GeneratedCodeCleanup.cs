@@ -479,7 +479,7 @@ internal static partial class ProjectGenerator
             code.IndexOf("Application.Instance.Counter_", StringComparison.Ordinal) < 0)
             return code;
 
-        var appTask = _allTasks?.FirstOrDefault(t => t.MainProgram) ?? _allTasks?.FirstOrDefault(t => t.ParentOrdinal is null);
+        var appTask = _applicationTask;
         var hasApplicationCounterResource = appTask?.ResourcesSemantic.Ordered.Any(resource =>
             string.Equals(ResolveTaskResourceMemberName(appTask, resource), "Counter_", StringComparison.Ordinal)) == true;
         if (hasApplicationCounterResource)
@@ -512,7 +512,7 @@ internal static partial class ProjectGenerator
 
         foreach (var modelMember in BuildModelMembers(task, dataObjects))
         {
-            var dataObject = dataObjects.FirstOrDefault(d => d.Ordinal == modelMember.DbObj);
+            var dataObject = ResolveDataObjectByOrdinal(dataObjects, modelMember.DbObj);
             var keys = new[]
             {
                 dataObject?.Name,
@@ -790,7 +790,7 @@ internal static partial class ProjectGenerator
 
     private static string[] GetApplicationTextResourceMembers()
     {
-        var appTask = _allTasks?.FirstOrDefault(t => t.MainProgram) ?? _allTasks?.FirstOrDefault(t => t.ParentOrdinal is null);
+        var appTask = _applicationTask;
         if (appTask is null)
             return Array.Empty<string>();
 

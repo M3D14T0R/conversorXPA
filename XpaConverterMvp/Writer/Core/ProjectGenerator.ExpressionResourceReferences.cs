@@ -108,7 +108,7 @@ internal static partial class ProjectGenerator
             if (!currentTask.ParentOrdinal.HasValue)
                 return null;
 
-            currentTask = _allTasks.FirstOrDefault(x => x.Ordinal == currentTask.ParentOrdinal.Value);
+            currentTask = GetTaskByOrdinal(currentTask.ParentOrdinal.Value, _allTasks);
             if (currentTask is null)
                 return null;
 

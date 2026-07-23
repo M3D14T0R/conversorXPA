@@ -32,7 +32,8 @@ internal static partial class ProjectGenerator
             if (string.Equals(h.Level, "C", StringComparison.OrdinalIgnoreCase) && h.Type is "P" or "S" or "V")
                 continue;
             EmitXmlTraceComment(sb, h.XmlTrace, "        ");
-            if (t.HandlersSemantic.ValueChangedHandlers.Contains(h))
+            _handlerKindByReference.TryGetValue(h, out var handlerKind);
+            if (handlerKind == 1)
             {
                 var monitorExpr = ResolveSelectExpressionByName(h.Reference!, t, dataObjects);
                 if (string.IsNullOrWhiteSpace(monitorExpr))
@@ -46,7 +47,7 @@ internal static partial class ProjectGenerator
                 sb.AppendLine("        };");
                 continue;
             }
-            if (t.HandlersSemantic.UserCommandHandlers.Contains(h))
+            if (handlerKind == 2)
             {
                 var commandName = ResolveHandlerCommandName(h, t);
                 var ancestorCommandTarget = ResolveAncestorCommandTarget(commandName, t, allTasks);
@@ -84,7 +85,7 @@ internal static partial class ProjectGenerator
                 sb.AppendLine($"            e.Handled = {ResolveHandlerHandledExpression(h, t, dataObjects)};");
                 sb.AppendLine("        };");
             }
-            else if (t.HandlersSemantic.InternalHandlers.Contains(h))
+            else if (handlerKind == 3)
             {
                 var cmd = ResolveInternalHandlerCommand(h, t);
                 if (string.IsNullOrWhiteSpace(cmd))
@@ -117,7 +118,7 @@ internal static partial class ProjectGenerator
                 sb.AppendLine($"            e.Handled = {ResolveHandlerHandledExpression(h, t, dataObjects)};");
                 sb.AppendLine("        };");
             }
-            else if (t.HandlersSemantic.ExpressionHandlers.Contains(h))
+            else if (handlerKind == 4)
             {
                 var exprCode = ResolveExpressionCode(h.EventExpression, t, dataObjects, CreateBooleanConditionEmissionContext());
                 var exprComment = ResolveExpressionComment(h.EventExpression, t);
@@ -129,7 +130,7 @@ internal static partial class ProjectGenerator
                 sb.AppendLine($"            e.Handled = {ResolveHandlerHandledExpression(h, t, dataObjects)};");
                 sb.AppendLine("        };");
             }
-            else if (t.HandlersSemantic.TimerHandlers.Contains(h))
+            else if (handlerKind == 5)
             {
                 var interval = h.EventTime.GetValueOrDefault(1);
                 if (interval <= 0)
@@ -140,11 +141,11 @@ internal static partial class ProjectGenerator
                 sb.AppendLine($"            e.Handled = {ResolveHandlerHandledExpression(h, t, dataObjects)};");
                 sb.AppendLine("        };");
             }
-            else if (t.HandlersSemantic.SystemHandlers.Contains(h))
+            else if (handlerKind == 6)
             {
                 EmitSystemEventHandler(sb, h, t, dataObjects);
             }
-            else if (t.HandlersSemantic.RecordHandlers.Contains(h))
+            else if (handlerKind == 7)
             {
                 var handlerVar = $"h{i + 1}";
                 if (string.Equals(h.EventType, "R", StringComparison.OrdinalIgnoreCase))

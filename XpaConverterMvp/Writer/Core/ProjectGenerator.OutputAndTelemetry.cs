@@ -116,7 +116,7 @@ internal static partial class ProjectGenerator
                 return folder;
             if (!current.ParentOrdinal.HasValue)
                 break;
-            current = allTasks.FirstOrDefault(t => t.Ordinal == current.ParentOrdinal.Value);
+            current = GetTaskByOrdinal(current.ParentOrdinal.Value, allTasks);
         }
         return string.Empty;
     }

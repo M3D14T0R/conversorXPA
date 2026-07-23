@@ -22,7 +22,7 @@ internal static partial class ProjectGenerator
 
         if (sel.Type == "R" && sel.SourceDbObj.HasValue)
         {
-            var d = dataObjects.FirstOrDefault(x => x.Ordinal == sel.SourceDbObj.Value);
+            var d = ResolveDataObjectByOrdinal(dataObjects, sel.SourceDbObj.Value);
             var col = d?.Columns.FirstOrDefault(c => c.Id == sel.ColumnId);
             if (d is not null && col is null && sel.ColumnId > 0 && sel.ColumnId <= d.Columns.Count)
                 col = d.Columns[sel.ColumnId - 1];

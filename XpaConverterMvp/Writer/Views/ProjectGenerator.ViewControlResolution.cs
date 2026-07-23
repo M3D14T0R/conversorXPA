@@ -565,6 +565,7 @@ internal static partial class ProjectGenerator
         return c.Model is not "CTRL_GUI0_STATIC"
             and not "CTRL_GUI0_COLUMN"
             and not "CTRL_GUI0_SUBFORM"
+            and not "CTRL_GUI0_TREE"
             and not "CTRL_GUI0_DOTNET"
             and not "CTRL_GUI0_BROWSER";
     }
@@ -713,7 +714,7 @@ internal static partial class ProjectGenerator
             return "";
 
         var relativePrefix = "";
-        var currentTask = _allTasks?.FirstOrDefault(x => x.Ordinal == task.ParentOrdinal.Value);
+        var currentTask = GetTaskByOrdinal(task.ParentOrdinal.Value, _allTasks);
         while (currentTask is not null)
         {
             if (!string.IsNullOrWhiteSpace(task.Description) &&
@@ -730,7 +731,7 @@ internal static partial class ProjectGenerator
             relativePrefix += "_parent.";
             if (!currentTask.ParentOrdinal.HasValue)
                 break;
-            currentTask = _allTasks?.FirstOrDefault(x => x.Ordinal == currentTask.ParentOrdinal.Value);
+            currentTask = GetTaskByOrdinal(currentTask.ParentOrdinal.Value, _allTasks);
         }
         return "";
     }

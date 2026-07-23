@@ -22,7 +22,7 @@ internal static partial class ProjectGenerator
         foreach (var control in controls)
         {
             var taskNumber = control.SubformTaskNumber!.Value;
-            var targetTask = allTasks.FirstOrDefault(t => t.ParentOrdinal == currentTask.Ordinal && t.SubtaskIndex == taskNumber)
+            var targetTask = GetChildTasks(currentTask.Ordinal, allTasks).FirstOrDefault(t => t.SubtaskIndex == taskNumber)
                              ?? ResolveTaskByXpaId(taskNumber, allTasks);
             if (targetTask is null)
                 continue;
@@ -83,7 +83,7 @@ internal static partial class ProjectGenerator
             if (control is null)
                 continue;
 
-            var targetTask = allTasks.FirstOrDefault(t => t.Ordinal == binding.TargetTaskOrdinal);
+            var targetTask = GetTaskByOrdinal(binding.TargetTaskOrdinal, allTasks);
             if (targetTask is null)
                 continue;
 

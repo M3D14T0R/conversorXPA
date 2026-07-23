@@ -265,7 +265,8 @@ internal static partial class ProjectGenerator
             TryResolveNewClrExpressionReturnType(normalized, out var newClrReturnType))
             return NormalizeDotNetAssignmentExpression(normalized, newClrReturnType);
 
-        if (IsKnownExpressionReturnTypeCompatible(normalized, expectedReturnType, task))
+        if (!(expected.IsBooleanCondition && SplitTopLevelComparisonExpression(normalized) is not null) &&
+            IsKnownExpressionReturnTypeCompatible(normalized, expectedReturnType, task))
             return normalized;
 
         if (TrySplitLeadingOpaqueInlineComment(normalized, out var leadingComment, out var uncommented))
@@ -290,10 +291,6 @@ internal static partial class ProjectGenerator
             return normalized;
         }
 
-        _contextualInferenceCache[cacheKey] = normalized;
-        return normalized;
-
-#pragma warning disable CS0162
         normalized = ApplyExpectedTypeToInternalOperators(normalized, task, expected);
 
         if (expected.IsBooleanCondition)
@@ -327,7 +324,6 @@ internal static partial class ProjectGenerator
             nameof(ApplyExpectedTypeContextCentral),
             original,
             normalized);
-#pragma warning restore CS0162
     }
 
     private static string NormalizeVariantGetExpression(string value)
@@ -1971,7 +1967,29 @@ internal static partial class ProjectGenerator
         if (IsDotNetTaskResource(resource))
             return "";
 
-        ownerTask ??= _allTasks.FirstOrDefault(t => t.ResourcesSemantic.Ordered.Any(r => r.Id == resource.Id));
+        if (ownerTask is null)
+            _resourceOwnerByReference.TryGetValue(resource, out ownerTask);
+        if (ownerTask is not null)
+        {
+            if (!_effectiveTaskResourceAttrObjCache.TryGetValue(ownerTask.Ordinal, out var taskCache))
+            {
+                taskCache = new Dictionary<TaskResourceColumnDef, string>(ReferenceEqualityComparer.Instance);
+                _effectiveTaskResourceAttrObjCache[ownerTask.Ordinal] = taskCache;
+            }
+
+            if (taskCache.TryGetValue(resource, out var cached))
+                return cached;
+
+            var resolved = ResolveEffectiveTaskResourceAttrObjCore(resource, ownerTask);
+            taskCache[resource] = resolved;
+            return resolved;
+        }
+
+        return ResolveEffectiveTaskResourceAttrObjCore(resource, null);
+    }
+
+    private static string ResolveEffectiveTaskResourceAttrObjCore(TaskResourceColumnDef resource, TaskSemantic? ownerTask)
+    {
         if (ownerTask is not null &&
             string.Equals(resource.AttrObj, "FIELD_NUMERIC", StringComparison.OrdinalIgnoreCase) &&
             HasStrongTextScalarUsageEvidence(resource, ownerTask))
@@ -2028,6 +2046,10 @@ internal static partial class ProjectGenerator
             return "";
 
         var normalizedType = resolvedType.Trim();
+        var cacheKey = currentTask.Ordinal.ToString(System.Globalization.CultureInfo.InvariantCulture) + "\0" + normalizedType;
+        if (_attrObjForColumnTypeCache.TryGetValue(cacheKey, out var cached))
+            return cached;
+
         var directAttrObj = normalizedType switch
         {
             "TextColumn" => "FIELD_ALPHA",
@@ -2039,7 +2061,7 @@ internal static partial class ProjectGenerator
             _ => ""
         };
         if (!string.IsNullOrWhiteSpace(directAttrObj))
-            return directAttrObj;
+            return _attrObjForColumnTypeCache[cacheKey] = directAttrObj;
 
         var matchingFieldModel = fieldModels.FirstOrDefault(fm =>
         {
@@ -2054,12 +2076,28 @@ internal static partial class ProjectGenerator
                    string.Equals(resolvedTypeName, normalizedTypeName, StringComparison.Ordinal);
         });
         if (matchingFieldModel is not null)
-            return NormalizeAttrObjKind(matchingFieldModel.AttrObj);
+            return _attrObjForColumnTypeCache[cacheKey] = NormalizeAttrObjKind(matchingFieldModel.AttrObj);
 
-        return "";
+        return _attrObjForColumnTypeCache[cacheKey] = "";
     }
 
     private static string ResolveTaskResourceColumnType(TaskResourceColumnDef c, IReadOnlyList<FieldModelDef> fieldModels, TaskSemantic currentTask)
+    {
+        if (!_taskResourceColumnTypeCache.TryGetValue(currentTask.Ordinal, out var taskCache))
+        {
+            taskCache = new Dictionary<TaskResourceColumnDef, string>(ReferenceEqualityComparer.Instance);
+            _taskResourceColumnTypeCache[currentTask.Ordinal] = taskCache;
+        }
+
+        if (taskCache.TryGetValue(c, out var cached))
+            return cached;
+
+        var resolved = ResolveTaskResourceColumnTypeCore(c, fieldModels, currentTask);
+        taskCache[c] = resolved;
+        return resolved;
+    }
+
+    private static string ResolveTaskResourceColumnTypeCore(TaskResourceColumnDef c, IReadOnlyList<FieldModelDef> fieldModels, TaskSemantic currentTask)
     {
         if (IsDotNetTaskResource(c))
             return NormalizeDotNetObjectType(c.ObjectType!);
@@ -3202,8 +3240,7 @@ internal static partial class ProjectGenerator
 
         var remaining = targetPath.Trim();
         if (remaining.StartsWith("Application.Instance.", StringComparison.Ordinal))
-            return (_allTasks ?? Array.Empty<TaskSemantic>()).FirstOrDefault(t => t.MainProgram) ??
-                   (_allTasks ?? Array.Empty<TaskSemantic>()).FirstOrDefault(t => t.ParentOrdinal is null);
+            return _applicationTask;
 
         var currentTask = task;
         var sawParentPrefix = false;
@@ -3229,8 +3266,7 @@ internal static partial class ProjectGenerator
         if (_allTasks is null)
             return null;
 
-        var ownerByReference = _allTasks.FirstOrDefault(t => t.ResourcesSemantic.Ordered.Any(r => ReferenceEquals(r, resource)));
-        if (ownerByReference is not null)
+        if (_resourceOwnerByReference.TryGetValue(resource, out var ownerByReference))
             return ownerByReference;
 
         return _allTasks.FirstOrDefault(t => t.ResourcesSemantic.Ordered.Any(r => r.Id == resource.Id));
@@ -3442,7 +3478,8 @@ internal static partial class ProjectGenerator
         if (resource is null)
             return false;
 
-        ownerTask ??= _allTasks?.FirstOrDefault(t => t.ResourcesSemantic.Ordered.Any(r => r.Id == resource.Id));
+        if (ownerTask is null)
+            _resourceOwnerByReference.TryGetValue(resource, out ownerTask);
         if (ownerTask is not null)
         {
             var resolvedType = ResolveTaskResourceColumnType(resource, _allFieldModels, ownerTask);
@@ -3714,7 +3751,7 @@ internal static partial class ProjectGenerator
         const string applicationInstancePrefix = "Application.Instance.";
         if (remaining.StartsWith(applicationInstancePrefix, StringComparison.Ordinal))
         {
-            var appTask = allTasks.FirstOrDefault(t => t.MainProgram) ?? allTasks.FirstOrDefault(t => t.ParentOrdinal is null);
+            var appTask = _applicationTask;
             if (appTask is null)
                 return null;
 

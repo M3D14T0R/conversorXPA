@@ -55,18 +55,20 @@ internal static partial class ProjectGenerator
             }
         }
 
+        var ownedMergeIo = ResolveOwnedMergeIoDefinition(t);
+        if (ownedMergeIo is not null)
+        {
+            sb.AppendLine("    #region Streams");
+            var mergeStreamType = string.Equals(ownedMergeIo.Media, "S", StringComparison.OrdinalIgnoreCase)
+                ? "FileWriter"
+                : "WebWriter";
+            sb.AppendLine($"    {mergeStreamType} {ResolveMergeStreamVariableName(t)};");
+            sb.AppendLine("    #endregion");
+            sb.AppendLine();
+        }
+
         if (HasMergeLayout(t))
         {
-            if (t.Io is not null)
-            {
-                sb.AppendLine("    #region Streams");
-                var mergeStreamType = string.Equals(t.Io?.Media, "S", StringComparison.OrdinalIgnoreCase)
-                    ? "FileWriter"
-                    : "WebWriter";
-                sb.AppendLine($"    {mergeStreamType} {ResolveMergeStreamVariableName(t)};");
-                sb.AppendLine("    #endregion");
-                sb.AppendLine();
-            }
             sb.AppendLine("    #region Layouts");
             foreach (var formEntry in t.Layout.MergeForms.OrderBy(x => x.Index))
             {

@@ -109,6 +109,11 @@ internal static partial class ProjectGenerator
 
         var result = new List<(TaskLogicLinkDef Link, string MemberName)>();
         var seqByObj = new Dictionary<int, int>();
+        var reservedNames = new HashSet<string>(GetReservedTaskMemberNames(t), StringComparer.Ordinal);
+        foreach (var resource in t.ResourcesSemantic.Ordered)
+            reservedNames.Add(ResolveTaskResourceMemberName(t, resource));
+        foreach (var modelMember in modelMembers)
+            reservedNames.Add(modelMember.MemberName);
         foreach (var link in t.DataView.Links)
         {
             if (!seqByObj.ContainsKey(link.DbObj))
@@ -124,12 +129,28 @@ internal static partial class ProjectGenerator
             }
             else if (link.DbObj == primaryObj || n > 1)
             {
-                var d = dataObjects.FirstOrDefault(x => x.Ordinal == link.DbObj);
+                var d = ResolveDataObjectByOrdinal(dataObjects, link.DbObj);
                 var baseName = d is null ? "Link" + link.DbObj : ToEntityTypeName(d.Name);
                 member = n == 1 ? baseName : baseName + n;
             }
             if (string.IsNullOrWhiteSpace(member))
                 member = "Link" + link.DbObj;
+
+            var sharesExistingModel =
+                !string.IsNullOrWhiteSpace(existing) &&
+                string.Equals(member, existing, StringComparison.Ordinal);
+            if (!sharesExistingModel)
+            {
+                var baseMember = member;
+                var suffix = 2;
+                while (reservedNames.Contains(member))
+                {
+                    member = baseMember + suffix;
+                    suffix++;
+                }
+
+                reservedNames.Add(member);
+            }
             result.Add((link, member));
         }
         _linkMembersCache[cacheKey] = result;
@@ -541,7 +562,7 @@ internal static partial class ProjectGenerator
 
         foreach (var mm in modelMembers)
         {
-            var d = dataObjects.FirstOrDefault(x => x.Ordinal == mm.DbObj);
+            var d = ResolveDataObjectByOrdinal(dataObjects, mm.DbObj);
             if (d is null)
                 continue;
             var col = d.Columns.FirstOrDefault(c => NormalizeKey(c.Name) == keyNorm || NormalizeKey(c.DbColumnName ?? "") == keyNorm);
@@ -559,7 +580,7 @@ internal static partial class ProjectGenerator
         for (var i = 0; i < linkIndex; i++)
         {
             var lm = linkMembers[i];
-            var d = dataObjects.FirstOrDefault(x => x.Ordinal == lm.Link.DbObj);
+            var d = ResolveDataObjectByOrdinal(dataObjects, lm.Link.DbObj);
             if (d is null)
                 continue;
             var col = d.Columns.FirstOrDefault(c => NormalizeKey(c.Name) == keyNorm || NormalizeKey(c.DbColumnName ?? "") == keyNorm);

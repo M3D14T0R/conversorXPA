@@ -30,7 +30,10 @@ internal static partial class ProjectGenerator
             string.Equals(baseClass, "BusinessProcessBase", StringComparison.Ordinal) &&
             t.ResourceDbs.Any(db => db.Cache == true))
         {
-            foreach (var db in t.ResourceDbs.Where(db => db.Cache == true))
+            var relationEntityIds = t.Links
+                .Select(link => link.DbObj)
+                .ToHashSet();
+            foreach (var db in t.ResourceDbs.Where(db => db.Cache == true && !relationEntityIds.Contains(db.DataObject)))
             {
                 var mm = modelMembers.FirstOrDefault(m => m.DbObj == db.DataObject);
                 if (!string.IsNullOrWhiteSpace(mm.MemberName))
@@ -40,7 +43,7 @@ internal static partial class ProjectGenerator
         string? primaryMember = null;
         if (!suppressImplicitDataView && t.DataView.HasFrom && primaryObj > 0)
         {
-            var d = dataObjects.FirstOrDefault(x => x.Ordinal == primaryObj);
+            var d = ResolveDataObjectByOrdinal(dataObjects, primaryObj!.Value);
             if (d is not null)
             {
                 var mm = modelMembers.FirstOrDefault(m => m.DbObj == primaryObj);
@@ -224,7 +227,7 @@ internal static partial class ProjectGenerator
 
         if (!suppressImplicitDataView && !string.IsNullOrWhiteSpace(primaryMember))
         {
-            var primaryEntity = dataObjects.FirstOrDefault(x => x.Ordinal == primaryObj);
+            var primaryEntity = ResolveDataObjectByOrdinal(dataObjects, primaryObj!.Value);
             if (primaryEntity is not null)
             {
                 TimeSection(() =>

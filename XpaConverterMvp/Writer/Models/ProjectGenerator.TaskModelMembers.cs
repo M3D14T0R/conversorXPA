@@ -19,7 +19,7 @@ internal static partial class ProjectGenerator
         foreach (var mm in modelMembers)
         {
             var modelInit = ResolveTaskModelInitializer(t, mm.DbObj, primaryObj);
-            var d = dataObjects.FirstOrDefault(x => x.Ordinal == mm.DbObj);
+            var d = ResolveDataObjectByOrdinal(dataObjects, mm.DbObj);
             if (d is null)
                 continue;
             var modelTypeRef = ResolveModelTypeReference(d, t);
@@ -29,7 +29,7 @@ internal static partial class ProjectGenerator
         {
             if (modelMembers.Any(m => string.Equals(m.MemberName, lm.MemberName, StringComparison.Ordinal)))
                 continue;
-            var d = dataObjects.FirstOrDefault(x => x.Ordinal == lm.Link.DbObj);
+            var d = ResolveDataObjectByOrdinal(dataObjects, lm.Link.DbObj);
             if (d is null)
                 continue;
             var modelInit = ResolveTaskModelInitializer(t, lm.Link.DbObj, primaryObj, isLinkMember: true);

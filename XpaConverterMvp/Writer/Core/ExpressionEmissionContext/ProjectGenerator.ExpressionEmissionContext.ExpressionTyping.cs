@@ -192,6 +192,15 @@ internal static partial class ProjectGenerator
             return false;
 
         var trimmed = StripRedundantOuterParentheses(expression.Trim());
+        // VarPrev/VarCurr carry XPA type evidence through their indexed column,
+        // but the runtime method itself returns object. Treating that evidence as
+        // CLR assignment compatibility skips the scalar materialization required
+        // by typed parameters and operators. Keep the evidence for choosing the
+        // destination type, while forcing the central normalizer to emit the cast.
+        if (TryParseFunctionCall(trimmed, out var materializedFunctionName, out _) &&
+            IsVarCurrentLikeFunctionName(materializedFunctionName))
+            return false;
+
         if (string.Equals(normalizedExpected, "Number", StringComparison.Ordinal) &&
             (string.Equals(trimmed, "Counter", StringComparison.Ordinal) ||
              string.Equals(trimmed, "u.LoopCounter()", StringComparison.Ordinal) ||
@@ -221,7 +230,11 @@ internal static partial class ProjectGenerator
 
         if (task is not null &&
             TryResolveRegisteredTypedExpressionInfo(task, trimmed, out var registeredTypeInfo) &&
-            !string.IsNullOrWhiteSpace(registeredTypeInfo.ReturnType))
+            !string.IsNullOrWhiteSpace(registeredTypeInfo.ReturnType) &&
+            !string.Equals(
+                NormalizeReturnTypeToken(registeredTypeInfo.ReturnType),
+                "object",
+                StringComparison.Ordinal))
         {
             returnType = registeredTypeInfo.ReturnType;
             return true;
@@ -232,17 +245,24 @@ internal static partial class ProjectGenerator
             !string.IsNullOrWhiteSpace(returnType))
             return true;
 
-        if (task is null &&
-            TryResolveSimpleSourceReturnTypeByUniqueMemberName(trimmed, out returnType) &&
+        if (task is not null &&
+            TryResolveDataViewMemberColumn(task, trimmed, out _, out var taskDataColumn))
+        {
+            var taskColumnAttrObj = ResolveEffectiveDataColumnAttrObj(taskDataColumn);
+            returnType = NormalizeReturnTypeToken(MapAttrObjToReturnType(taskColumnAttrObj));
+            if (!string.IsNullOrWhiteSpace(returnType))
+                return true;
+        }
+
+        if (TryResolveSimpleSourceReturnTypeByDataObjectMemberPath(trimmed, out returnType) &&
             !string.IsNullOrWhiteSpace(returnType))
             return true;
 
-        if (task is null &&
-            TryResolveSimpleSourceReturnTypeByDataObjectMemberPath(trimmed, out returnType) &&
+        if (TryResolveSimpleSourceReturnTypeByUniqueMemberName(trimmed, out returnType) &&
             !string.IsNullOrWhiteSpace(returnType))
             return true;
 
-        if (task is null &&
+        if (
             trimmed.Contains('.', StringComparison.Ordinal) &&
             TryResolveSimpleSourceReturnTypeByUniqueMemberName(trimmed[(trimmed.LastIndexOf('.') + 1)..], out returnType) &&
             !string.IsNullOrWhiteSpace(returnType))
@@ -348,6 +368,29 @@ internal static partial class ProjectGenerator
 
         if (TryParseFunctionCall(trimmed, out var functionName, out var args))
         {
+            if (task is not null &&
+                IsVarCurrentLikeFunctionName(functionName) &&
+                args.Count == 1 &&
+                TryParseFunctionCall(args[0].Trim(), out var indexFunction, out var indexArgs) &&
+                IsTopLevelCall(indexFunction, "u.IndexOf") &&
+                indexArgs.Count >= 1)
+            {
+                if (TryResolveKnownExpressionReturnTypeWithoutLegacy(task, indexArgs[0].Trim(), out var indexedReturnType) &&
+                    !string.IsNullOrWhiteSpace(indexedReturnType))
+                {
+                    returnType = indexedReturnType;
+                    return true;
+                }
+
+                var indexedAttrObj = ResolveModelColumnAttrObj(task, indexArgs[0].Trim());
+                var indexedModelReturnType = NormalizeReturnTypeToken(MapAttrObjToReturnType(indexedAttrObj));
+                if (!string.IsNullOrWhiteSpace(indexedModelReturnType))
+                {
+                    returnType = indexedModelReturnType;
+                    return true;
+                }
+            }
+
             if (task is not null &&
                 TryGetAccessibleFunctionContract(task, functionName, out var functionContract, out _) &&
                 !string.IsNullOrWhiteSpace(functionContract.ReturnType))
@@ -580,8 +623,20 @@ internal static partial class ProjectGenerator
             args.Count == 3)
         {
             var condition = CollapseRedundantScalarCastWrappersDeep(args[0].Trim());
-            var whenTrue = NormalizeExpressionForExpectedScalarReturnTypeUsingResolvedTypeCentral(args[1].Trim(), expectedReturnType, task);
-            var whenFalse = NormalizeExpressionForExpectedScalarReturnTypeUsingResolvedTypeCentral(args[2].Trim(), expectedReturnType, task);
+            string NormalizeBranch(string branch)
+            {
+                var candidate = branch.Trim();
+                if (IsNullCallExpression(candidate))
+                {
+                    var expectedAttrObj = MapReturnTypeToAttrObj(expectedReturnType);
+                    if (!string.IsNullOrWhiteSpace(expectedAttrObj))
+                        return ApplyAttributeCastCentral(candidate, expectedAttrObj);
+                }
+                return NormalizeExpressionForExpectedScalarReturnTypeUsingResolvedTypeCentral(candidate, expectedReturnType, task);
+            }
+
+            var whenTrue = NormalizeBranch(args[1]);
+            var whenFalse = NormalizeBranch(args[2]);
             return CollapseRedundantScalarCastWrappersDeep($"u.If({condition}, {whenTrue}, {whenFalse})");
         }
 
@@ -607,6 +662,19 @@ internal static partial class ProjectGenerator
         {
             var normalizedInner = NormalizeExpressionForExpectedScalarReturnTypeUsingResolvedTypeCentral(args[0].Trim(), "Number", task);
             return $"{functionName}({normalizedInner})";
+        }
+
+        if (string.Equals(expectedReturnType, "Number", StringComparison.Ordinal) &&
+            trimmed.StartsWith("-", StringComparison.Ordinal) &&
+            trimmed.Length > 1)
+        {
+            var unaryOperand = StripRedundantOuterParentheses(trimmed[1..].Trim());
+            var normalizedOperand = NormalizeExpressionForExpectedScalarReturnTypeUsingResolvedTypeCentral(
+                unaryOperand,
+                "Number",
+                task);
+            if (!string.Equals(normalizedOperand, unaryOperand, StringComparison.Ordinal))
+                return $"-({normalizedOperand})";
         }
 
         if (string.Equals(expectedReturnType, "Number", StringComparison.Ordinal) &&
@@ -905,7 +973,7 @@ internal static partial class ProjectGenerator
             _allTasks is null)
             return false;
 
-        var task = _allTasks.FirstOrDefault(t => t.MainProgram) ?? _allTasks.FirstOrDefault();
+        var task = _applicationTask;
         if (task is null ||
             !TryResolveDataViewMemberColumn(task, expression.Trim(), out _, out var dataColumn))
             return false;
@@ -933,15 +1001,23 @@ internal static partial class ProjectGenerator
         if (string.IsNullOrWhiteSpace(memberName) || memberName.Contains('.', StringComparison.Ordinal))
             return false;
 
-        string? resolvedReturnType = null;
+        if (_uniqueResourceReturnTypeByMemberName.TryGetValue(memberName, out var indexedReturnType))
+        {
+            returnType = indexedReturnType ?? "";
+            return indexedReturnType is not null;
+        }
+
+        return false;
+    }
+
+    private static Dictionary<string, string?> BuildUniqueResourceReturnTypeByMemberNameIndex()
+    {
+        var result = new Dictionary<string, string?>(StringComparer.Ordinal);
         foreach (var candidateTask in _allTasks)
         {
             foreach (var resource in candidateTask.ResourcesSemantic.Ordered)
             {
                 var candidateMember = ResolveTaskResourceMemberName(candidateTask, resource);
-                if (!string.Equals(candidateMember, memberName, StringComparison.Ordinal))
-                    continue;
-
                 var resolvedType = ResolveTaskResourceColumnType(resource, _allFieldModels, candidateTask);
                 var attrObj = ResolveAttrObjForColumnType(resolvedType, _allFieldModels, candidateTask);
                 if (string.IsNullOrWhiteSpace(attrObj))
@@ -951,19 +1027,19 @@ internal static partial class ProjectGenerator
                 if (string.IsNullOrWhiteSpace(candidateReturnType))
                     continue;
 
-                if (resolvedReturnType is null)
+                if (!result.TryGetValue(candidateMember, out var resolvedReturnType))
                 {
-                    resolvedReturnType = candidateReturnType;
+                    result[candidateMember] = candidateReturnType;
                     continue;
                 }
 
-                if (!string.Equals(resolvedReturnType, candidateReturnType, StringComparison.Ordinal))
-                    return false;
+                if (resolvedReturnType is not null &&
+                    !string.Equals(resolvedReturnType, candidateReturnType, StringComparison.Ordinal))
+                    result[candidateMember] = null;
             }
         }
 
-        returnType = resolvedReturnType ?? "";
-        return !string.IsNullOrWhiteSpace(returnType);
+        return result;
     }
 
     private static bool TryNormalizeTemporalScalarExpectedExpressionWithoutLegacy(

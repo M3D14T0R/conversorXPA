@@ -172,7 +172,7 @@ internal static partial class ProjectGenerator
         }
         else if (t.View.ShouldGenerate && !ShouldSuppressViewForBusinessProcessTextIo(t))
         {
-            var viewClass = t.View.ClassName;
+            var viewClass = ResolveViewClassName(t, allTasks);
             sb.AppendLine($"        View = () => new Views.{viewClass}(this);");
         }
         if (DeclaresPrintStream(t))
@@ -258,21 +258,23 @@ internal static partial class ProjectGenerator
             }
             EmitAllowUserAbortIfNeeded();
         }
-        if (HasMergeLayout(t))
+        var ownedMergeIo = ResolveOwnedMergeIoDefinition(t);
+        if (HasMergeLayout(t) || ownedMergeIo is not null)
         {
             var streamVar = ResolveMergeStreamVariableName(t);
             var effectiveStreamExpr = ResolveMergeStreamExpression(t, allTasks);
-            if (t.Io is not null)
+            var mergeIo = ownedMergeIo;
+            if (mergeIo is not null)
             {
-                var ioName = !string.IsNullOrWhiteSpace(t.Io.Description) ? t.Io.Description! : t.Description;
-                var ioExpr = t.Io.IoExpressionId.HasValue
-                    ? ResolveOnLoadExpression(t.Io.IoExpressionId.Value, CreateIoArgumentEmissionContext())
+                var ioName = !string.IsNullOrWhiteSpace(mergeIo.Description) ? mergeIo.Description! : t.Description;
+                var ioExpr = mergeIo.IoExpressionId.HasValue
+                    ? ResolveOnLoadExpression(mergeIo.IoExpressionId.Value, CreateIoArgumentEmissionContext())
                     : "\"\"";
                 if (string.IsNullOrWhiteSpace(ioExpr))
                     ioExpr = "\"\"";
-                if (string.Equals(t.Io.Media, "S", StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(mergeIo.Media, "S", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (t.Io.IoToUseColumnId.HasValue)
+                    if (mergeIo.IoToUseColumnId.HasValue)
                     {
                         var ioNameExpr = "";
                         var ioNameResource = t.ResourcesSemantic.Ordered.FirstOrDefault(x => LooksLikeIoNameResource(x.Name));
@@ -282,7 +284,7 @@ internal static partial class ProjectGenerator
                         if (ioToUseParam is not null && string.IsNullOrWhiteSpace(ioNameExpr))
                             ioNameExpr = ResolveSelectExpression(ioToUseParam, t, dataObjects, "");
                         if (string.IsNullOrWhiteSpace(ioNameExpr) &&
-                            ResolveTaskResourceColumn(t, t.Io.IoToUseColumnId.Value) is TaskResourceColumnDef ioToUseColumn)
+                            ResolveTaskResourceColumn(t, mergeIo.IoToUseColumnId.Value) is TaskResourceColumnDef ioToUseColumn)
                         {
                             ioNameExpr = ToLegacyVariableName(ioToUseColumn.Name);
                         }
@@ -318,7 +320,7 @@ internal static partial class ProjectGenerator
                 var viewVar = t.Layout.MergeTemplateVariableNamesByFormEntryIndex.TryGetValue(formEntry.Index, out var mappedTemplateVar)
                     ? mappedTemplateVar
                     : ResolveMergeTemplateVariableName(formEntry);
-                var fileExprId = formEntry.Form.MergeFileNameExpressionId ?? t.Io?.IoExpressionId;
+                var fileExprId = formEntry.Form.MergeFileNameExpressionId ?? mergeIo?.IoExpressionId;
                 var fileExpr = fileExprId.HasValue ? ResolveOnLoadExpression(fileExprId.Value, CreateIoArgumentEmissionContext()) : "";
                 if (string.IsNullOrWhiteSpace(fileExpr) && !string.IsNullOrWhiteSpace(formEntry.Form.MergeFileName))
                     fileExpr = ToCSharpLiteral(formEntry.Form.MergeFileName!);

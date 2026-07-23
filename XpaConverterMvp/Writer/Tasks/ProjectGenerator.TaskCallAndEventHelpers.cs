@@ -20,22 +20,19 @@ internal static partial class ProjectGenerator
 
     private static TaskSemantic? ResolveTaskByXpaId(int xpaId, IReadOnlyList<TaskSemantic> allTasks)
     {
-        var byDeclaredTaskId = allTasks.FirstOrDefault(t =>
-            !string.IsNullOrWhiteSpace(t.TaskId) &&
-            int.TryParse(t.TaskId, out var taskId) &&
-            taskId == xpaId);
-        if (byDeclaredTaskId is not null)
+        if (_tasksByDeclaredTaskId.TryGetValue(xpaId, out var byDeclaredTaskId))
             return byDeclaredTaskId;
 
-        var byProgramIndex = allTasks.FirstOrDefault(t => t.ParentOrdinal is null && t.TopLevelProgramIndex == xpaId);
-        if (byProgramIndex is not null)
+        if (_topLevelTasksByProgramIndex.TryGetValue(xpaId, out var byProgramIndex))
             return byProgramIndex;
 
-        var byOrdinal = allTasks.FirstOrDefault(t => t.Ordinal == xpaId);
+        var byOrdinal = GetTaskByOrdinal(xpaId, allTasks);
         if (byOrdinal is not null)
             return byOrdinal;
 
-        var topLevelByOrdinal = allTasks.Where(t => t.ParentOrdinal is null).OrderBy(t => t.Ordinal).ToList();
+        var topLevelByOrdinal = _topLevelTasks.Count > 0
+            ? _topLevelTasks
+            : allTasks.Where(t => t.ParentOrdinal is null).OrderBy(t => t.Ordinal).ToList();
         if (xpaId > 0 && xpaId <= topLevelByOrdinal.Count)
             return topLevelByOrdinal[xpaId - 1];
 

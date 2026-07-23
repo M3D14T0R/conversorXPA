@@ -12,7 +12,8 @@ internal static partial class ProjectGenerator
         TaskSemantic t,
         IReadOnlyList<DataObjectDef> dataObjects,
         IReadOnlyList<TaskSemantic> allTasks,
-        string pad)
+        string pad,
+        bool suppressForcedUndo = false)
     {
         var className = ResolveTaskClassName(t, allTasks);
         var actionLabel = ResolveRowActionTelemetryLabel(action);
@@ -31,11 +32,11 @@ internal static partial class ProjectGenerator
                 if (!string.IsNullOrWhiteSpace(loopActionCond) &&
                     loopActionCond.Contains("u.LoopCounter()", StringComparison.Ordinal))
                 {
-                    EmitRowActionCore(sb, StripActionCondition(loopAction), t, dataObjects, allTasks, pad + "    ", preferValueForResourceAssignments: true);
+                    EmitRowActionCore(sb, StripActionCondition(loopAction), t, dataObjects, allTasks, pad + "    ", preferValueForResourceAssignments: true, suppressForcedUndo: suppressForcedUndo);
                 }
                 else
                 {
-                    EmitRowAction(sb, loopAction, t, dataObjects, allTasks, pad + "    ");
+                    EmitRowAction(sb, loopAction, t, dataObjects, allTasks, pad + "    ", suppressForcedUndo);
                 }
                 sb.AppendLine($"{pad}}}");
                 sb.AppendLine($"{pad}u.EndBlockLoop();");
@@ -56,7 +57,7 @@ internal static partial class ProjectGenerator
             sb.AppendLine($"{pad}while(u.AdvanceBlockLoop() &&({actionCond}))");
             sb.AppendLine($"{pad}{{");
             var loopAction = action with { ConditionExpressionId = null, Call = action.Call with { ConditionExpressionId = null } };
-            EmitRowActionCore(sb, loopAction, t, dataObjects, allTasks, pad + "    ");
+            EmitRowActionCore(sb, loopAction, t, dataObjects, allTasks, pad + "    ", suppressForcedUndo: suppressForcedUndo);
             sb.AppendLine($"{pad}}}");
             sb.AppendLine($"{pad}u.EndBlockLoop();");
             if (totalStopwatch.ElapsedMilliseconds >= 250)
@@ -67,13 +68,13 @@ internal static partial class ProjectGenerator
         {
             sb.AppendLine($"{pad}if ({actionCond})");
             sb.AppendLine($"{pad}{{");
-            EmitRowActionCore(sb, StripActionCondition(action), t, dataObjects, allTasks, pad + "    ");
+            EmitRowActionCore(sb, StripActionCondition(action), t, dataObjects, allTasks, pad + "    ", suppressForcedUndo: suppressForcedUndo);
             sb.AppendLine($"{pad}}}");
             if (totalStopwatch.ElapsedMilliseconds >= 250)
                 ConversionTelemetry.LogDuration("ROWACTION", className, totalStopwatch.Elapsed, $"section={QuoteTelemetry(actionLabel)}");
             return;
         }
-        EmitRowActionCore(sb, action, t, dataObjects, allTasks, pad);
+        EmitRowActionCore(sb, action, t, dataObjects, allTasks, pad, suppressForcedUndo: suppressForcedUndo);
         if (totalStopwatch.ElapsedMilliseconds >= 250)
             ConversionTelemetry.LogDuration("ROWACTION", className, totalStopwatch.Elapsed, $"section={QuoteTelemetry(actionLabel)}");
     }

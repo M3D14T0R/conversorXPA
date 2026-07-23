@@ -15,4 +15,10 @@
     <None Remove="out\**" />
     <Content Remove="out\**" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Keep large conversions inside a reusable managed-heap budget. Without
+         a runtime limit the GC kept reserving commit after each large program
+         and eventually exhausted the Windows page file. -->
+    <RuntimeHostConfigurationOption Include="System.GC.HeapHardLimit" Value="12884901888" />
+  </ItemGroup>
 </Project>

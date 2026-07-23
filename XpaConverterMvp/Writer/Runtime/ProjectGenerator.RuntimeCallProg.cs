@@ -58,7 +58,7 @@ private static string? ResolveCallProgReplacement(IReadOnlyList<string> args)
         if (progIdxMatch.Success)
         {
             var publicName = progIdxMatch.Groups["name"].Value;
-            targetTask = _allTasks.FirstOrDefault(t => string.Equals(t.PublicName, publicName, StringComparison.OrdinalIgnoreCase));
+            _tasksByPublicName.TryGetValue(publicName, out targetTask);
         }
     }
 

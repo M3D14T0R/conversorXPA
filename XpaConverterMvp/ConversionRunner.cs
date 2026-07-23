@@ -130,9 +130,13 @@ public static class ConversionRunner
             }
             finally
             {
+                SemanticBuilder.ReleaseBuildState();
                 semanticStopwatch.Stop();
                 Log(stdOut, "PHASE", $"semantic build done elapsedMs={semanticStopwatch.Elapsed.TotalMilliseconds:F0}");
             }
+            // TaskSemantic contains the generation-ready representation. Keep
+            // no second, equally large TaskDef graph alive during code output.
+            parsed.Tasks.Clear();
             if (!string.IsNullOrWhiteSpace(reducedXmlPath) && folderScopedReduction && !taskScopedReduction)
             {
                 var sharedAssetsParseStopwatch = Stopwatch.StartNew();
@@ -147,7 +151,15 @@ public static class ConversionRunner
                         mainXmlBaseDirectoryOverride: sourceRoot,
                         projectReferenceMap: manifestReferenceMap);
                     Log(stdOut, "PHASE", "shared assets semantic build start");
-                    sharedAssetsSemantic = SemanticBuilder.Build(fullParsed);
+                    try
+                    {
+                        sharedAssetsSemantic = SemanticBuilder.Build(fullParsed);
+                    }
+                    finally
+                    {
+                        SemanticBuilder.ReleaseBuildState();
+                        fullParsed.Tasks.Clear();
+                    }
                 }
                 finally
                 {
@@ -1435,6 +1447,12 @@ public static class ConversionRunner
 
     private static void CopyFileReplacingReadOnly(string sourcePath, string destinationPath)
     {
+        // Loaded runtime assemblies are commonly locked by Visual Studio. Avoid
+        // replacing an identical file so incremental reconversions can proceed
+        // while the generated solution remains open.
+        if (File.Exists(destinationPath) && FilesHaveSameContent(sourcePath, destinationPath))
+            return;
+
         if (File.Exists(destinationPath))
         {
             var attributes = File.GetAttributes(destinationPath);
@@ -1443,6 +1461,31 @@ public static class ConversionRunner
         }
 
         File.Copy(sourcePath, destinationPath, overwrite: true);
+    }
+
+    private static bool FilesHaveSameContent(string firstPath, string secondPath)
+    {
+        var firstInfo = new FileInfo(firstPath);
+        var secondInfo = new FileInfo(secondPath);
+        if (firstInfo.Length != secondInfo.Length)
+            return false;
+
+        const int bufferSize = 81920;
+        using var first = new FileStream(firstPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, bufferSize, FileOptions.SequentialScan);
+        using var second = new FileStream(secondPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, bufferSize, FileOptions.SequentialScan);
+        var firstBuffer = new byte[bufferSize];
+        var secondBuffer = new byte[bufferSize];
+        while (true)
+        {
+            var firstRead = first.Read(firstBuffer, 0, firstBuffer.Length);
+            var secondRead = second.Read(secondBuffer, 0, secondBuffer.Length);
+            if (firstRead != secondRead)
+                return false;
+            if (firstRead == 0)
+                return true;
+            if (!firstBuffer.AsSpan(0, firstRead).SequenceEqual(secondBuffer.AsSpan(0, secondRead)))
+                return false;
+        }
     }
 
     private static void NormalizeEnvProject(string envProjectPath, bool useRuntimeCoreAssemblyName = true)

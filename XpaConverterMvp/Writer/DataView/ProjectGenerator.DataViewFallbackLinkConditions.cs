@@ -34,7 +34,7 @@ internal static partial class ProjectGenerator
         while (ancestor.ParentOrdinal.HasValue)
         {
             depth++;
-            var parent = _allTasks.FirstOrDefault(x => x.Ordinal == ancestor.ParentOrdinal.Value);
+            var parent = GetTaskByOrdinal(ancestor.ParentOrdinal.Value, _allTasks);
             if (parent is null)
                 break;
             var prefix = string.Concat(Enumerable.Repeat("_parent.", depth));
@@ -44,7 +44,7 @@ internal static partial class ProjectGenerator
             var primaryMember = parentMembers.FirstOrDefault(m => m.DbObj == parentPrimary).MemberName;
             if (!string.IsNullOrWhiteSpace(primaryMember))
             {
-                var pd = dataObjects.FirstOrDefault(x => x.Ordinal == parentPrimary);
+                var pd = ResolveDataObjectByOrdinal(dataObjects, parentPrimary!.Value);
                 if (pd is not null)
                 {
                     foreach (var c in pd.Columns)
@@ -53,7 +53,7 @@ internal static partial class ProjectGenerator
             }
             foreach (var pm in parentMembers)
             {
-                var pd = dataObjects.FirstOrDefault(x => x.Ordinal == pm.DbObj);
+                var pd = ResolveDataObjectByOrdinal(dataObjects, pm.DbObj);
                 if (pd is null)
                     continue;
                 foreach (var c in pd.Columns)
@@ -127,7 +127,7 @@ internal static partial class ProjectGenerator
                 for (var i = 0; i < linkIndex; i++)
                 {
                     var prev = linkMembers[i];
-                    var pd = dataObjects.FirstOrDefault(x => x.Ordinal == prev.Link.DbObj);
+                    var pd = ResolveDataObjectByOrdinal(dataObjects, prev.Link.DbObj);
                     if (pd is null)
                         continue;
                     var pc = pd.Columns.FirstOrDefault(c => NormalizeKey(c.Name) == NormalizeKey(chainedKeyCol.Name));
@@ -143,7 +143,7 @@ internal static partial class ProjectGenerator
         for (var i = 0; i < linkIndex; i++)
         {
             var lm = linkMembers[i];
-            var d = dataObjects.FirstOrDefault(x => x.Ordinal == lm.Link.DbObj);
+            var d = ResolveDataObjectByOrdinal(dataObjects, lm.Link.DbObj);
             if (d is null)
                 continue;
             foreach (var tc in targetCols)

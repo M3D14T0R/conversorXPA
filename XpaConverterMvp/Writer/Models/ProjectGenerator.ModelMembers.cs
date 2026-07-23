@@ -17,14 +17,13 @@ internal static partial class ProjectGenerator
         try
         {
         var result = new List<(int DbObj, string ModelType, string MemberName)>();
-        var reservedNames = new HashSet<string>(StringComparer.Ordinal);
         var allTasks = _allTasks ?? Array.Empty<TaskSemantic>();
-        reservedNames.Add(ResolveTaskClassName(t, allTasks));
+        var reservedNames = new HashSet<string>(GetReservedTaskMemberNames(t), StringComparer.Ordinal);
         foreach (var rc in t.ResourcesSemantic.Ordered)
             reservedNames.Add(ResolveTaskResourceMemberName(t, rc));
         foreach (var dbObj in t.ResourceDataObjects.Distinct())
         {
-            var d = dataObjects.FirstOrDefault(x => x.Ordinal == dbObj);
+            var d = ResolveDataObjectByOrdinal(dataObjects, dbObj);
             if (d is null)
                 continue;
             var modelType = ResolveDataObjectTypeName(d);

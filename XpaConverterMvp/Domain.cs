@@ -198,6 +198,8 @@ internal sealed record TaskDef(
 internal sealed record TaskDataViewSourceDef(
     int? Index,
     string? Type,
+    bool? Enabled,
+    int? ConditionExpressionId,
     string? XmlTrace
 );
 
@@ -337,6 +339,7 @@ internal sealed record ProjectMenuSettingsDef(
 );
 
 internal sealed record TaskFormControlDef(
+    int FormEntryIndex,
     int Id,
     int? ParentId,
     string Model,
@@ -344,6 +347,10 @@ internal sealed record TaskFormControlDef(
     int Y,
     int Width,
     int Height,
+    int? PlacementX,
+    int? PlacementWidth,
+    int? PlacementY,
+    int? PlacementHeight,
     int? ControlLayer,
     string? BorderStyle,
     int? TitleHeight,
@@ -1205,6 +1212,7 @@ internal sealed record ViewBindListHandler(
     int ControlId,
     string HandlerName,
     string ComboVarName,
+    int DataObjectOrdinal,
     string EntityTypeName,
     string EntityVarName,
     string ValueColumnName,

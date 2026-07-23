@@ -13,7 +13,7 @@ internal static partial class ProjectGenerator
     {
         if (!task.ParentOrdinal.HasValue || _allTasks is null || _allTasks.Count == 0)
             return false;
-        var parent = _allTasks.FirstOrDefault(t => t.Ordinal == task.ParentOrdinal.Value);
+        var parent = GetTaskByOrdinal(task.ParentOrdinal.Value, _allTasks);
         if (parent is null)
             return false;
         return parent.Handlers.Any(h => string.Equals(h.EventType, "R", StringComparison.OrdinalIgnoreCase));

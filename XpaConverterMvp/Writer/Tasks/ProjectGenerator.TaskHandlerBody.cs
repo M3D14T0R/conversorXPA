@@ -95,7 +95,7 @@ internal static partial class ProjectGenerator
         }
         if (h.Actions.Count > 0)
         {
-            var body = task.HandlersSemantic.Bodies.FirstOrDefault(b => Equals(b.Handler, h));
+            _handlerBodyByReference.TryGetValue(h, out var body);
             var orderedActions = body?.OrderedActions ?? h.Actions.OrderBy(a => ExtractLogicLineOrder(a.XmlTrace) ?? int.MaxValue).ToList();
             var blocks = body?.Blocks;
             if (CanEmitStructuredActionBody(orderedActions, h.Blocks, h.EndBlocks))
@@ -183,7 +183,6 @@ internal static partial class ProjectGenerator
                 if (!string.IsNullOrWhiteSpace(externalTargetClass))
                 {
                     var externalParameterTypes = ResolveCompatCallParameterTypes(call, targetTask);
-                    var externalParameterDirections = ResolveCompatCallParameterDirections(targetTask);
                     var argsResolvedValues = externalParameterTypes is { Count: 0 }
                         ? Array.Empty<string>()
                         : ResolveCallArgumentExpressionsPreservingPositions(
@@ -192,9 +191,11 @@ internal static partial class ProjectGenerator
                             task,
                             dataObjects,
                             selectMap,
-                            allTasks,
-                            externalParameterTypes,
-                            externalParameterDirections);
+                            allTasks);
+                    argsResolvedValues = AlignAndCoerceExternalCallArguments(
+                        argsResolvedValues,
+                        externalParameterTypes,
+                        task);
                     if (externalParameterTypes is not null &&
                         argsResolvedValues.Count > externalParameterTypes.Count)
                     {

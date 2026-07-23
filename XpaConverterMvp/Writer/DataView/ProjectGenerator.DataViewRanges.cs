@@ -462,6 +462,7 @@ internal static partial class ProjectGenerator
                 }
 
                 var predicateExpr = ResolveSourceFragmentCode(sourceSyntax, task, dataObjects, CreateBooleanConditionEmissionContext());
+                predicateExpr = NormalizeChainedBooleanComparisonsCentral(task, predicateExpr);
                 if (!string.IsNullOrWhiteSpace(predicateExpr))
                     sb.AppendLine($"        Where.Add(() => {predicateExpr});");
                 continue;

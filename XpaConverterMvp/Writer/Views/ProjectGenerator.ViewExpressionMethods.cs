@@ -5,6 +5,7 @@ using System.Globalization;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
+using XpaConverterMvp.TypeSystem;
 
 namespace XpaConverterMvp;
 
@@ -125,10 +126,16 @@ internal static partial class ProjectGenerator
                 returnTypeStopwatch.Stop();
                 resolveReturnTypeElapsed += returnTypeStopwatch.Elapsed;
 
-                if (string.Equals(ScalarReturnType(CanonicalReturnType(returnType)), "Text", StringComparison.Ordinal))
+                var scalarReturnType = ScalarReturnType(CanonicalReturnType(returnType));
+                if (!string.IsNullOrWhiteSpace(scalarReturnType) &&
+                    XpaTypeEngine.MapExpectedToXpaType(GetValueReturnType(scalarReturnType)) != XpaType.Unknown)
                 {
                     var normalizeReturnStopwatch = Stopwatch.StartNew();
-                    var bridgedCode = RenderStrictFunctionArgumentBridges(code, task);
+                    var bridgedCode = EmitExpressionForContext(
+                        code,
+                        task,
+                        CreateReturnValueEmissionContext(scalarReturnType));
+                    bridgedCode = RenderStrictFunctionArgumentBridges(bridgedCode, task);
                     normalizeReturnStopwatch.Stop();
                     normalizeReturnElapsed += normalizeReturnStopwatch.Elapsed;
                     if (!string.Equals(bridgedCode, code, StringComparison.Ordinal))

@@ -18,6 +18,21 @@ internal static class SemanticBuilder
     private static IReadOnlyDictionary<int, int> _viewClassDuplicateIndexByTaskOrdinal = new Dictionary<int, int>();
     private static TaskDef? _applicationTask;
 
+    public static void ReleaseBuildState()
+    {
+        _taskDefs = Array.Empty<TaskDef>();
+        _taskDefsByOrdinal = new Dictionary<int, TaskDef>();
+        _childTaskDefsByParentOrdinal = new Dictionary<int, IReadOnlyList<TaskDef>>();
+        _childTaskDefByParentAndSubtaskIndex = new Dictionary<(int ParentOrdinal, int SubtaskIndex), TaskDef>();
+        _topLevelTaskDefsByProgramIndex = new Dictionary<int, TaskDef>();
+        _topLevelTaskDefsByOrdinal = Array.Empty<TaskDef>();
+        _dataObjectsByOrdinal = new Dictionary<int, DataObjectDef>();
+        _shouldGenerateViewByTaskOrdinal = new Dictionary<int, bool>();
+        _viewClassBaseNameByTaskOrdinal = new Dictionary<int, string>();
+        _viewClassDuplicateIndexByTaskOrdinal = new Dictionary<int, int>();
+        _applicationTask = null;
+    }
+
     public static ProjectSemantic Build(ParsedXpa parsed)
     {
         _taskDefs = parsed.Tasks;
@@ -147,7 +162,10 @@ internal static class SemanticBuilder
         var duplicateIndexes = tasks
             .Where(t => shouldGenerate.GetValueOrDefault(t.Ordinal))
             .OrderBy(t => t.Ordinal)
-            .GroupBy(t => baseNames[t.Ordinal], StringComparer.Ordinal)
+            // Generated view files share a Windows directory. C# identifiers are
+            // case-sensitive, but the filesystem is not, so case-only variants
+            // must receive different generated names before files are written.
+            .GroupBy(t => baseNames[t.Ordinal], StringComparer.OrdinalIgnoreCase)
             .SelectMany(g => g.Select((task, index) => new { task.Ordinal, Index = index }))
             .ToDictionary(x => x.Ordinal, x => x.Index);
 
@@ -462,6 +480,12 @@ internal static class SemanticBuilder
     {
         var ranges = task.Selects.Where(s => s.HasRange).ToList();
         var locates = task.Selects.Where(s => s.Type.Contains("Locate", StringComparison.OrdinalIgnoreCase)).ToList();
+        var mainDataViewSource = task.DataViewSources.FirstOrDefault(s =>
+            string.Equals(s.Type, "M", StringComparison.OrdinalIgnoreCase));
+        // A DATAVIEW_SRC M without IDX represents the synthetic/virtual record
+        // section. The resource entity may still be cached or used by relations,
+        // but it must not become the controller's From source.
+        var hasVirtualOnlyMainSource = mainDataViewSource is not null && !mainDataViewSource.Index.HasValue;
         var hasEntityOnlyDataViewSource =
             string.Equals(task.TaskType, "B", StringComparison.OrdinalIgnoreCase) &&
             task.Selects.Count == 0 &&
@@ -477,6 +501,7 @@ internal static class SemanticBuilder
             ranges,
             locates,
             !hasEntityOnlyDataViewSource &&
+            !hasVirtualOnlyMainSource &&
             (task.ResourceDataObjects.Count > 0 || task.PrimaryDbObj.HasValue || task.InformationDbObj.HasValue),
             task.SortSegments.Count > 0);
     }
@@ -2295,7 +2320,7 @@ internal static class SemanticBuilder
         });
         expr = RewriteFunctionCalls(expr, name => string.Equals(name, "u.Counter", StringComparison.OrdinalIgnoreCase) || string.Equals(name, "Counter", StringComparison.OrdinalIgnoreCase), (name, args) =>
         {
-            return args.Count == 1 && string.Equals(args[0].Trim(), "0", StringComparison.Ordinal) ? "Counter" : null;
+            return args.Count == 1 && string.Equals(args[0].Trim(), "0", StringComparison.Ordinal) ? "u.Counter(0)" : null;
         });
         expr = RewriteFunctionCalls(expr, name => string.Equals(name, "Level", StringComparison.OrdinalIgnoreCase), (name, args) =>
         {
@@ -3032,6 +3057,7 @@ internal static class SemanticBuilder
                 c.Id,
                 handlerName,
                 comboVar,
+                source.Ordinal,
                 entityType,
                 entityVar,
                 ToPascalIdentifier(valueCol.Name),

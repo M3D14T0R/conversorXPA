@@ -10,7 +10,14 @@ internal static partial class ProjectGenerator
 {
     private static string ResolveControlDataExpression(TaskFormControlDef c, TaskSemantic task, IReadOnlyList<TaskSemantic> allTasks, IReadOnlyList<DataObjectDef> dataObjects)
     {
-        var cacheKey = $"{task.Ordinal}|{c.Id}";
+        // Control ids are local to a FormEntry. Tasks with multiple displays commonly
+        // reuse the same ids, so the form must be part of the semantic cache identity.
+        var cacheKey = string.Join("|",
+            task.Ordinal,
+            c.FormEntryIndex,
+            c.Id,
+            c.DataColumn?.Trim().ToUpperInvariant() ?? "",
+            c.DataExpressionId?.ToString() ?? "");
         if (_controlDataExpressionCache.TryGetValue(cacheKey, out var cached))
             return cached;
 
@@ -149,7 +156,7 @@ internal static partial class ProjectGenerator
             if (!currentTask.ParentOrdinal.HasValue)
                 break;
 
-            currentTask = allTasks.FirstOrDefault(t => t.Ordinal == currentTask.ParentOrdinal.Value);
+            currentTask = GetTaskByOrdinal(currentTask.ParentOrdinal.Value, allTasks);
             prefix = string.IsNullOrWhiteSpace(prefix) ? "_parent" : $"{prefix}._parent";
         }
 
@@ -162,14 +169,15 @@ internal static partial class ProjectGenerator
         string varName,
         TaskSemantic task,
         IReadOnlyList<TaskSemantic> allTasks,
-        IReadOnlyList<DataObjectDef> dataObjects)
+        IReadOnlyList<DataObjectDef> dataObjects,
+        string indentation = "        ")
     {
         if (!string.Equals(control.Model, "CTRL_GUI0_TREE", StringComparison.OrdinalIgnoreCase))
             return;
 
-        EmitTreeControlAssignment(code, control, varName, task, allTasks, dataObjects, "NodeID", control.TreeNodeIdColumn, control.TreeNodeIdExpressionId);
-        EmitTreeControlAssignment(code, control, varName, task, allTasks, dataObjects, "ParentNodeID", control.TreeParentIdColumn, control.TreeParentIdExpressionId);
-        EmitTreeControlAssignment(code, control, varName, task, allTasks, dataObjects, "Data", control.TreeDescriptionColumn, control.TreeDescriptionExpressionId);
+        EmitTreeControlAssignment(code, control, varName, task, allTasks, dataObjects, "NodeID", control.TreeNodeIdColumn, control.TreeNodeIdExpressionId, indentation);
+        EmitTreeControlAssignment(code, control, varName, task, allTasks, dataObjects, "ParentNodeID", control.TreeParentIdColumn, control.TreeParentIdExpressionId, indentation);
+        EmitTreeControlAssignment(code, control, varName, task, allTasks, dataObjects, "Data", control.TreeDescriptionColumn, control.TreeDescriptionExpressionId, indentation);
 
         if (control.TreeRootExpressionId.HasValue)
         {
@@ -179,16 +187,16 @@ internal static partial class ProjectGenerator
                 if (!string.IsNullOrWhiteSpace(rootCode))
                 {
                     rootCode = PrefixControllerReferencesForView(rootCode, task, dataObjects);
-                    code.AppendLine($"        {varName}.SetRootNodeId(() => {rootCode});");
+                    code.AppendLine($"{indentation}{varName}.SetRootNodeId(() => {rootCode});");
                 }
                 else
                 {
-                    code.AppendLine($"        // GAP: Tree root binding not resolved for control {varName} (ControlId={control.Id}, RootExp={control.TreeRootExpressionId.Value}).");
+                    code.AppendLine($"{indentation}// GAP: Tree root binding not resolved for control {varName} (ControlId={control.Id}, RootExp={control.TreeRootExpressionId.Value}).");
                 }
             }
             else
             {
-                code.AppendLine($"        // GAP: Tree root binding not resolved for control {varName} (ControlId={control.Id}, RootExp={control.TreeRootExpressionId.Value}).");
+                code.AppendLine($"{indentation}// GAP: Tree root binding not resolved for control {varName} (ControlId={control.Id}, RootExp={control.TreeRootExpressionId.Value}).");
             }
         }
     }
@@ -202,7 +210,8 @@ internal static partial class ProjectGenerator
         IReadOnlyList<DataObjectDef> dataObjects,
         string propertyName,
         string? dataColumn,
-        int? dataExpressionId)
+        int? dataExpressionId,
+        string indentation)
     {
         if (string.IsNullOrWhiteSpace(dataColumn) && !dataExpressionId.HasValue)
             return;
@@ -211,18 +220,18 @@ internal static partial class ProjectGenerator
         var dataExpr = ResolveControlDataExpression(bindingControl, task, allTasks, dataObjects);
         if (!string.IsNullOrWhiteSpace(dataExpr))
         {
-            code.AppendLine($"        {varName}.{propertyName} = _controller.{dataExpr};");
+            code.AppendLine($"{indentation}{varName}.{propertyName} = _controller.{dataExpr};");
             return;
         }
 
         var bindingExpr = ResolveControlDataExpressionBindingForView(bindingControl, task, dataObjects, allTasks);
         if (!string.IsNullOrWhiteSpace(bindingExpr))
         {
-            code.AppendLine($"        {varName}.{propertyName} = {bindingExpr};");
+            code.AppendLine($"{indentation}{varName}.{propertyName} = {bindingExpr};");
             return;
         }
 
-        code.AppendLine($"        // GAP: Tree {propertyName} binding not resolved for control {varName} (ControlId={control.Id}, DataExpressionId={dataExpressionId?.ToString() ?? "?"}, DataColumn={dataColumn ?? "?"}).");
+        code.AppendLine($"{indentation}// GAP: Tree {propertyName} binding not resolved for control {varName} (ControlId={control.Id}, DataExpressionId={dataExpressionId?.ToString() ?? "?"}, DataColumn={dataColumn ?? "?"}).");
     }
 
     private static string ResolveDataColumnOrdinalBinding(string? dataColumn, TaskSemantic task, IReadOnlyList<TaskSemantic> allTasks)
@@ -255,7 +264,7 @@ internal static partial class ProjectGenerator
         var parentOrdinal = task.ParentOrdinal;
         while (parentOrdinal.HasValue)
         {
-            var parentTask = allTasks.FirstOrDefault(t => t.Ordinal == parentOrdinal.Value);
+            var parentTask = GetTaskByOrdinal(parentOrdinal.Value, allTasks);
             if (parentTask is null)
                 break;
             if (taskColumnIndex <= parentTask.ResourcesSemantic.Ordered.Count)

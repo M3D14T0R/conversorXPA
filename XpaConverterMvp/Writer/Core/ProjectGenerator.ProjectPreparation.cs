@@ -68,8 +68,13 @@ internal static partial class ProjectGenerator
         if (!scope.TaskScopedGeneration)
         {
             LogProgress($"Stage: task skeletons -> {appNamespace}");
+            var referencedStructuralTasks = ResolveReferencedStructuralTopLevelTasks(parsed.Tasks);
             var skeletonTasks = parsed.Tasks
-                .Where(t => t.ParentOrdinal is null && !t.MainProgram && !IsStructuralTask(t) && ShouldGenerateForTarget(t))
+                .Where(t =>
+                    t.ParentOrdinal is null &&
+                    !t.MainProgram &&
+                    (!IsStructuralTask(t) || referencedStructuralTasks.Contains(t.Ordinal)) &&
+                    ShouldGenerateForTarget(t))
                 .ToList();
             if (parallelTaskGeneration && skeletonTasks.Count > 1)
             {

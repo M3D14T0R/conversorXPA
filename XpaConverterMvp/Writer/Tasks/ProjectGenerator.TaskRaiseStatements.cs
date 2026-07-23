@@ -44,7 +44,7 @@ internal static partial class ProjectGenerator
                         if (args.Count == 0 &&
                             int.TryParse(raise.EventPublicObject, out var appEventOrdinal))
                         {
-                            var appTask = _allTasks?.FirstOrDefault(x => x.MainProgram) ?? _allTasks?.FirstOrDefault(x => x.ParentOrdinal is null);
+                            var appTask = _applicationTask;
                             var appEvent = appTask?.EventsSemantic.ItemsByOrdinal.TryGetValue(appEventOrdinal, out var resolvedAppEvent) == true
                                 ? resolvedAppEvent
                                 : null;

@@ -253,7 +253,7 @@ internal static partial class ProjectGenerator
         if (slot <= 0)
             return null;
 
-        var appTask = allTasks.FirstOrDefault(t => t.MainProgram) ?? allTasks.FirstOrDefault(t => t.ParentOrdinal is null);
+        var appTask = _applicationTask;
         if (appTask is null)
             return null;
 
@@ -712,7 +712,9 @@ internal static partial class ProjectGenerator
         foreach (var entry in task.ExpressionsSemantic.Entries)
         {
             var alias = ToLegacyExpressionAlias(entry.Ordinal);
-            if (alias.Length < 2 || reserved.Contains(alias))
+            if (alias.Length < 2 ||
+                reserved.Contains(alias) ||
+                _topLevelAccessibleResourceKeys.Contains(alias))
                 continue;
 
             result[alias] = $"Exp_{entry.Ordinal}()";
@@ -791,7 +793,7 @@ internal static partial class ProjectGenerator
                 parentOrdinal = parentTask.ParentOrdinal;
             }
 
-            var appTask = _allTasks.FirstOrDefault(x => x.MainProgram) ?? _allTasks.FirstOrDefault(x => x.ParentOrdinal is null);
+            var appTask = _applicationTask;
             if (appTask is not null && !ReferenceEquals(appTask, task))
             {
                 AddSelectKeys(appTask, "Application.Instance.");
@@ -848,22 +850,10 @@ internal static partial class ProjectGenerator
             parentOrdinal = parentTask.ParentOrdinal;
         }
 
-        foreach (var rootTask in _allTasks.Where(x => x.MainProgram || x.ParentOrdinal is null))
-        {
-            if (ReferenceEquals(rootTask, task))
-                continue;
-
-            foreach (var key in rootTask.ResourcesSemantic.ByName.Keys)
-                result.Add(key);
-            foreach (var key in rootTask.ResourcesSemantic.ByLegacyName.Keys)
-                result.Add(key);
-            for (var i = 0; i < rootTask.ResourcesSemantic.Ordered.Count; i++)
-            {
-                var alias = ToLegacyExpressionAlias(i + 1);
-                if (alias.Length == 1)
-                    result.Add(alias);
-            }
-        }
+        // Resource keys from other top-level programs are held in one shared
+        // immutable index. BuildLegacyExpressionAliasMap checks that index
+        // directly instead of copying every application's keys into every
+        // nested task cache (quadratic on projects such as CGGeral).
     }
 
     private static string ToLegacyExpressionAlias(int ordinal)
@@ -1030,7 +1020,7 @@ internal static partial class ProjectGenerator
 
         foreach (var kv in ResolveAccessibleApplicationFunctionTargets(task))
         {
-            var appTask = _allTasks?.FirstOrDefault(x => x.MainProgram) ?? _allTasks?.FirstOrDefault(x => x.ParentOrdinal is null);
+            var appTask = _applicationTask;
             var function = appTask?.FunctionOverridesSemantic.FirstOrDefault(fn => string.Equals(fn.Name, kv.Key, StringComparison.OrdinalIgnoreCase));
             if (function is null || function.Parameters.Count == 0)
                 continue;
@@ -1048,7 +1038,7 @@ internal static partial class ProjectGenerator
             var parentOrdinal = task.ParentOrdinal;
             while (parentOrdinal.HasValue)
             {
-                var parentTask = _allTasks.FirstOrDefault(x => x.Ordinal == parentOrdinal.Value);
+                var parentTask = GetTaskByOrdinal(parentOrdinal.Value, _allTasks);
                 if (parentTask is null)
                     break;
 
@@ -1139,7 +1129,7 @@ internal static partial class ProjectGenerator
 
     private static string? ResolveApplicationQuoteMember()
     {
-        var appTask = _allTasks?.FirstOrDefault(x => x.MainProgram) ?? _allTasks?.FirstOrDefault(x => x.ParentOrdinal is null);
+        var appTask = _applicationTask;
         if (appTask is null)
             return null;
 

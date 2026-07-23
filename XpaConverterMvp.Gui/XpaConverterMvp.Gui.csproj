@@ -13,4 +13,7 @@
   <ItemGroup>
     <ProjectReference Include="..\XpaConverterMvp\XpaConverterMvp.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <RuntimeHostConfigurationOption Include="System.GC.HeapHardLimit" Value="12884901888" />
+  </ItemGroup>
 </Project>

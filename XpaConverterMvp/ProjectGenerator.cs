@@ -12,7 +12,12 @@ internal static partial class ProjectGenerator
 {
     private static void LogProgress(string message)
     {
-        Console.WriteLine($"[XpaConverterMvp] {message}");
+        var telemetryLevel = Environment.GetEnvironmentVariable("XPA_CONVERTER_TELEMETRY_LEVEL");
+        var minimal = !string.Equals(telemetryLevel, "detailed", StringComparison.OrdinalIgnoreCase) &&
+                      !string.Equals(telemetryLevel, "verbose", StringComparison.OrdinalIgnoreCase) &&
+                      !string.Equals(telemetryLevel, "debug", StringComparison.OrdinalIgnoreCase);
+        if (!minimal || !message.StartsWith("View ", StringComparison.Ordinal))
+            Console.WriteLine($"[XpaConverterMvp] {message}");
         ConversionTelemetry.Log("WRITER", message);
     }
 

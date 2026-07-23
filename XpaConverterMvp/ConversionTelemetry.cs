@@ -47,6 +47,7 @@ internal static class ConversionTelemetry
             _minimalTelemetry = IsMinimalTelemetryEnabled();
 
             WriteLineUnsafe("SESSION", $"run-start xml={Quote(options.XmlPath)} output={Quote(options.OutputDir)} app={Quote(appNamespace)} withDependencies={options.WithDependencies} fullSolution={options.FullSolution} parallelTasks={options.ParallelTaskGeneration} incrementalOutput={options.IncrementalOutput} folderFilter={Quote(options.FolderFilter)} tasks={Quote(string.Join(", ", options.TaskFilters))} taskRanges={Quote(string.Join(", ", options.TaskRanges))}");
+            WriteLineUnsafe("SESSION", $"gc-memory-limit-bytes={GC.GetGCMemoryInfo().TotalAvailableMemoryBytes}");
             WriteLineUnsafe("SESSION", $"command-preview={Quote(BuildCommandPreview(options, appNamespace))}");
         }
     }
@@ -82,8 +83,12 @@ internal static class ConversionTelemetry
     private static bool IsMinimalTelemetryEnabled()
     {
         var value = Environment.GetEnvironmentVariable("XPA_CONVERTER_TELEMETRY_LEVEL");
-        return string.Equals(value, "minimal", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(value, "summary", StringComparison.OrdinalIgnoreCase);
+        // Detailed per-expression telemetry is intentionally opt-in. On large
+        // conversions it can produce millions of synchronized writes and turn
+        // diagnostics into a material part of the generation time.
+        return !string.Equals(value, "detailed", StringComparison.OrdinalIgnoreCase) &&
+               !string.Equals(value, "verbose", StringComparison.OrdinalIgnoreCase) &&
+               !string.Equals(value, "debug", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool ShouldWriteLog(string category, string message, TimeSpan? elapsed)
@@ -93,14 +98,25 @@ internal static class ConversionTelemetry
 
         if (string.Equals(category, "SESSION", StringComparison.Ordinal) ||
             string.Equals(category, "PHASE", StringComparison.Ordinal) ||
-            string.Equals(category, "SEMANTIC", StringComparison.Ordinal) ||
-            string.Equals(category, "WRITER", StringComparison.Ordinal) ||
             string.Equals(category, "TASK", StringComparison.Ordinal) ||
-            string.Equals(category, "TASK_BUILD", StringComparison.Ordinal) ||
             string.Equals(category, "QUALITY_GATE", StringComparison.Ordinal))
         {
             return true;
         }
+
+        if (string.Equals(category, "SEMANTIC", StringComparison.Ordinal))
+            return message.StartsWith("build ", StringComparison.Ordinal) ||
+                   message.StartsWith("task semantic done", StringComparison.Ordinal) ||
+                   message.StartsWith("application select map", StringComparison.Ordinal) ||
+                   message.StartsWith("parent select maps", StringComparison.Ordinal);
+
+        if (string.Equals(category, "WRITER", StringComparison.Ordinal))
+            return message.StartsWith("Stage:", StringComparison.Ordinal) ||
+                   message.StartsWith("Task start:", StringComparison.Ordinal) ||
+                   message.StartsWith("Task done:", StringComparison.Ordinal);
+
+        if (string.Equals(category, "TASK_BUILD", StringComparison.Ordinal))
+            return elapsed.HasValue && elapsed.Value.TotalMilliseconds >= 1000;
 
         if (string.Equals(category, "SELECTS", StringComparison.Ordinal) ||
             string.Equals(category, "RELATIONS", StringComparison.Ordinal) ||
@@ -115,8 +131,7 @@ internal static class ConversionTelemetry
             return elapsed.HasValue && elapsed.Value.TotalMilliseconds >= 500;
         }
 
-        if (category.Contains("UNRESOLVED", StringComparison.OrdinalIgnoreCase) ||
-            category.Contains("FAIL", StringComparison.OrdinalIgnoreCase) ||
+        if (category.Contains("FAIL", StringComparison.OrdinalIgnoreCase) ||
             category.Contains("ERROR", StringComparison.OrdinalIgnoreCase))
         {
             return true;

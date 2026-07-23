@@ -9,13 +9,60 @@ private static string ApplyExpressionOperatorNormalization(string expr)
 {
     expr = RepairAttachedBooleanOperatorsOutsideQuotes(expr);
     expr = RepairMalformedBooleanFunctionOperatorGlueOutsideQuotes(expr);
-    expr = ReplaceWholeWordOutsideQuotes(expr, "AND", "&&");
-    expr = ReplaceWholeWordOutsideQuotes(expr, "OR", "||");
+    // AND/OR are also valid legacy column aliases (for example the alphabetic
+    // slot OR). Only treat them as operators when there is a real operand on
+    // both sides. A blind whole-word replacement produced invalid constructs
+    // such as CastToText(||), "|| == value" and arguments ", ||, ".
+    expr = ReplaceBooleanOperatorOutsideQuotes(expr, "AND", "&&");
+    expr = ReplaceBooleanOperatorOutsideQuotes(expr, "OR", "||");
     expr = ReplaceWholeWordOutsideQuotes(expr, "MOD", "%");
     expr = RewriteAmpersandConcatenationOutsideQuotes(expr);
     expr = RewriteComparisonOperatorsOutsideQuotes(expr);
     expr = RewriteNotOperatorsOutsideQuotes(expr);
     return expr;
+}
+
+private static string ReplaceBooleanOperatorOutsideQuotes(string expression, string token, string replacement)
+{
+    if (string.IsNullOrWhiteSpace(expression) ||
+        expression.IndexOf(token, StringComparison.OrdinalIgnoreCase) < 0)
+        return expression;
+
+    var result = new StringBuilder(expression.Length);
+    for (var i = 0; i < expression.Length;)
+    {
+        if (IsQuotedSegmentStart(expression, i))
+        {
+            if (!TryReadQuotedSegmentEnd(expression, i, out var quoteEnd))
+            {
+                result.Append(expression, i, expression.Length - i);
+                break;
+            }
+
+            result.Append(expression, i, quoteEnd - i + 1);
+            i = quoteEnd + 1;
+            continue;
+        }
+
+        var end = i + token.Length;
+        var matches = end <= expression.Length &&
+                      expression.AsSpan(i, token.Length).Equals(token, StringComparison.OrdinalIgnoreCase) &&
+                      (i == 0 || !IsIdentifierChar(expression[i - 1])) &&
+                      (end == expression.Length || !IsIdentifierChar(expression[end]));
+        if (matches &&
+            HasLikelyOperandBefore(expression, i) &&
+            HasLikelyOperandAfter(expression, end))
+        {
+            result.Append(replacement);
+            i = end;
+            continue;
+        }
+
+        result.Append(expression[i]);
+        i++;
+    }
+
+    return result.ToString();
 }
 
 private static string RepairAttachedBooleanOperatorsOutsideQuotes(string expr)

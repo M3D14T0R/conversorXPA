@@ -253,7 +253,7 @@ internal static partial class ProjectGenerator
         while (ancestorOrdinal.HasValue && depth < 6)
         {
             depth++;
-            var parent = _allTasks.FirstOrDefault(x => x.Ordinal == ancestorOrdinal.Value);
+            var parent = GetTaskByOrdinal(ancestorOrdinal.Value, _allTasks);
             if (parent is null)
                 break;
 

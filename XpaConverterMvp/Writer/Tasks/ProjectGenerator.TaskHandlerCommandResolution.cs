@@ -26,7 +26,7 @@ internal static partial class ProjectGenerator
     {
         if (h.EventParent.HasValue && task.ParentOrdinal.HasValue)
         {
-            var parentTask = _allTasks.FirstOrDefault(x => x.Ordinal == task.ParentOrdinal.Value);
+            var parentTask = GetTaskByOrdinal(task.ParentOrdinal.Value, _allTasks);
             if (parentTask is not null &&
                 int.TryParse(h.EventPublicObject, out var parentEventObj) &&
                 parentTask.EventsSemantic.ItemsByOrdinal.TryGetValue(parentEventObj, out evt!))
@@ -39,7 +39,7 @@ internal static partial class ProjectGenerator
 
         if (IsApplicationEventReference(h.EventParent, h.EventPublicComponentId))
         {
-            var appTask = _allTasks?.FirstOrDefault(x => x.MainProgram) ?? _allTasks?.FirstOrDefault(x => x.ParentOrdinal is null);
+            var appTask = _applicationTask;
             if (appTask is not null &&
                 int.TryParse(h.EventPublicObject, out var appEventObj) &&
                 appTask.EventsSemantic.ItemsByOrdinal.TryGetValue(appEventObj, out evt!))

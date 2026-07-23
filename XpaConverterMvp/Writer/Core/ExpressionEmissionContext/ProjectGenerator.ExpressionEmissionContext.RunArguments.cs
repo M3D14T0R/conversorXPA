@@ -313,38 +313,39 @@ internal static partial class ProjectGenerator
         try
         {
             var evidence = new List<Dictionary<string, int>>();
-            var dataObjects = _dataObjectsByOrdinal.Values.ToList();
-            foreach (var caller in _allTasks)
+            if (!_incomingTaskCallsByTargetOrdinal.TryGetValue(targetTask.Ordinal, out var incomingCalls))
             {
+                _observedTaskParameterEvidenceCache[targetTask.Ordinal] = evidence;
+                return evidence;
+            }
+
+            var dataObjects = _dataObjectsByOrdinal.Values.ToList();
+            foreach (var incoming in incomingCalls)
+            {
+                var caller = incoming.Caller;
+                var call = incoming.Call;
                 var selectMap = BuildSelectNameToExpressionMap(caller, dataObjects);
-                foreach (var call in EnumerateTaskCalls(caller))
+                // Keep evidence collection independent from target parameter inference.
+                // Otherwise we recurse through GetTaskParameters(targetTask) while trying
+                // to infer that same target's parameters, which is both expensive and noisy.
+                var args = ResolveCallArgumentExpressionsPreservingPositions(
+                    call.ArgumentDefs,
+                    call.ArgumentVariables,
+                    caller,
+                    dataObjects,
+                    selectMap,
+                    _allTasks);
+                for (var i = 0; i < args.Count; i++)
                 {
-                    var resolved = ResolveTaskByCall(caller, call, _allTasks);
-                    if (resolved is null || resolved.Ordinal != targetTask.Ordinal)
+                    var token = NormalizeObservedArgumentTypeToken(caller, args[i]);
+                    if (string.IsNullOrWhiteSpace(token))
                         continue;
 
-                    // Keep evidence collection independent from target parameter inference.
-                    // Otherwise we recurse through GetTaskParameters(targetTask) while trying
-                    // to infer that same target's parameters, which is both expensive and noisy.
-                    var args = ResolveCallArgumentExpressionsPreservingPositions(
-                        call.ArgumentDefs,
-                        call.ArgumentVariables,
-                        caller,
-                        dataObjects,
-                        selectMap,
-                        _allTasks);
-                    for (var i = 0; i < args.Count; i++)
-                    {
-                        var token = NormalizeObservedArgumentTypeToken(caller, args[i]);
-                        if (string.IsNullOrWhiteSpace(token))
-                            continue;
+                    while (evidence.Count <= i)
+                        evidence.Add(new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase));
 
-                        while (evidence.Count <= i)
-                            evidence.Add(new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase));
-
-                        evidence[i].TryGetValue(token, out var count);
-                        evidence[i][token] = count + 1;
-                    }
+                    evidence[i].TryGetValue(token, out var count);
+                    evidence[i][token] = count + 1;
                 }
             }
 
@@ -433,6 +434,52 @@ internal static partial class ProjectGenerator
         };
     }
 
+    private static ExpectedTypeContext ResolveRunArgumentExpectedType(TaskSemantic task, string argument)
+    {
+        var trimmed = StripRedundantOuterParentheses(argument?.Trim() ?? "");
+        if (TryParseFunctionCall(trimmed, out var arrayFunction, out _))
+        {
+            if (IsTopLevelCall(arrayFunction, "u.CastToTextArray"))
+                return ExpectedTypeForReturnType("Text[]");
+            if (IsTopLevelCall(arrayFunction, "u.CastToNumberArray"))
+                return ExpectedTypeForReturnType("Number[]");
+            if (IsTopLevelCall(arrayFunction, "u.CastToDateArray"))
+                return ExpectedTypeForReturnType("Date[]");
+            if (IsTopLevelCall(arrayFunction, "u.CastToTimeArray"))
+                return ExpectedTypeForReturnType("Time[]");
+            if (IsTopLevelCall(arrayFunction, "u.CastToBoolArray"))
+                return ExpectedTypeForReturnType("Bool[]");
+        }
+
+        if (IsSimpleIdentifierPath(trimmed))
+        {
+            var resource = ResolveResourceByTargetPath(task, trimmed, _allTasks ?? Array.Empty<TaskSemantic>());
+            if (resource is not null)
+            {
+                var ownerTask = ResolveOwningTaskForResource(resource) ?? task;
+                var columnType = ResolveTaskResourceColumnType(resource, _allFieldModels, ownerTask);
+                if (columnType.StartsWith("ArrayColumn<", StringComparison.Ordinal))
+                {
+                    var itemType = ResolveArrayColumnItemType(resource, _allFieldModels, ownerTask);
+                    var arrayType = itemType switch
+                    {
+                        "Text" => "Text[]",
+                        "Number" => "Number[]",
+                        "Date" => "Date[]",
+                        "Time" => "Time[]",
+                        "Bool" => "Bool[]",
+                        "byte[]" => "byte[][]",
+                        _ => ""
+                    };
+                    if (!string.IsNullOrWhiteSpace(arrayType))
+                        return ExpectedTypeForReturnType(arrayType);
+                }
+            }
+        }
+
+        return ResolveExpectedTypeFromExpressionEvidence(task, trimmed);
+    }
+
     private static bool HasPotentialRunArgumentAmbiguity(
         IReadOnlyList<string> args,
         IReadOnlyList<(string ColumnMember, string ParameterType, string ParameterName, string ParameterDirection)> parameters,
@@ -451,7 +498,7 @@ internal static partial class ProjectGenerator
             if (!expected.HasExpectation)
                 continue;
 
-            var actual = ResolveExpectedTypeFromExpressionEvidence(currentTask, argument);
+            var actual = ResolveRunArgumentExpectedType(currentTask, argument);
             if (actual.HasExpectation && !ExpectedTypesMatch(actual, expected))
             {
                 if (!IsInputParameterDirection(parameters[i].ParameterDirection))
@@ -481,7 +528,7 @@ internal static partial class ProjectGenerator
         var expected = ExpectedTypeForParameterType(parameter.ParameterType);
         if (expected.HasExpectation)
         {
-            var actual = ResolveExpectedTypeFromExpressionEvidence(currentTask, trimmed);
+            var actual = ResolveRunArgumentExpectedType(currentTask, trimmed);
             if (actual.HasExpectation && !ExpectedTypesMatch(actual, expected))
                 return true;
         }
@@ -510,32 +557,7 @@ internal static partial class ProjectGenerator
         if (_nonInputArgumentBindingCache.TryGetValue(cacheKey, out var cached))
             return cached;
 
-        var candidates = new List<(string Expression, string Member, string Direction, string ParameterType, int Depth)>();
-        foreach (var resource in currentTask.ResourcesSemantic.Ordered)
-        {
-            var member = ResolveTaskResourceMemberName(currentTask, resource);
-            candidates.Add((member, member, ResolveParameterDirection(member), ResolveParameterType(resource, currentTask), 0));
-        }
-
-        var parentOrdinal = currentTask.ParentOrdinal;
-        var parentPrefix = "_parent";
-        var depth = 1;
-        while (parentOrdinal.HasValue)
-        {
-            var parent = GetTaskByOrdinal(parentOrdinal, allTasks);
-            if (parent is null)
-                break;
-
-            foreach (var resource in parent.ResourcesSemantic.Ordered)
-            {
-                var member = ResolveTaskResourceMemberName(parent, resource);
-                candidates.Add(($"{parentPrefix}.{member}", member, ResolveParameterDirection(member), ResolveParameterType(resource, parent), depth));
-            }
-
-            parentOrdinal = parent.ParentOrdinal;
-            parentPrefix += "._parent";
-            depth++;
-        }
+        var candidates = GetNonInputArgumentCandidates(currentTask, allTasks);
 
         string bestExpression = "";
         var bestScore = int.MinValue;
@@ -568,6 +590,44 @@ internal static partial class ProjectGenerator
 
         _nonInputArgumentBindingCache[cacheKey] = bestExpression;
         return bestExpression;
+    }
+
+    private static IReadOnlyList<(string Expression, string Member, string Direction, string ParameterType, int Depth)> GetNonInputArgumentCandidates(
+        TaskSemantic currentTask,
+        IReadOnlyList<TaskSemantic> allTasks)
+    {
+        if (_nonInputArgumentCandidatesByTaskOrdinal.TryGetValue(currentTask.Ordinal, out var cached))
+            return cached;
+
+        var candidates = new List<(string Expression, string Member, string Direction, string ParameterType, int Depth)>();
+        foreach (var resource in currentTask.ResourcesSemantic.Ordered)
+        {
+            var member = ResolveTaskResourceMemberName(currentTask, resource);
+            candidates.Add((member, member, ResolveParameterDirection(member), ResolveParameterType(resource, currentTask), 0));
+        }
+
+        var parentOrdinal = currentTask.ParentOrdinal;
+        var parentPrefix = "_parent";
+        var depth = 1;
+        while (parentOrdinal.HasValue)
+        {
+            var parent = GetTaskByOrdinal(parentOrdinal, allTasks);
+            if (parent is null)
+                break;
+
+            foreach (var resource in parent.ResourcesSemantic.Ordered)
+            {
+                var member = ResolveTaskResourceMemberName(parent, resource);
+                candidates.Add(($"{parentPrefix}.{member}", member, ResolveParameterDirection(member), ResolveParameterType(resource, parent), depth));
+            }
+
+            parentOrdinal = parent.ParentOrdinal;
+            parentPrefix += "._parent";
+            depth++;
+        }
+
+        _nonInputArgumentCandidatesByTaskOrdinal[currentTask.Ordinal] = candidates;
+        return candidates;
     }
 
     private static string ExtractExpressionTerminalMember(string expression)

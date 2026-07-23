@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -286,7 +287,7 @@ internal static partial class ProjectGenerator
             }
 
             var parentOrdinal = current.ParentOrdinal.Value;
-            var parent = allTasks.FirstOrDefault(x => x.Ordinal == parentOrdinal);
+            var parent = GetTaskByOrdinal(parentOrdinal, allTasks);
             if (parent is null)
             {
                 ancestor = null;
@@ -334,7 +335,7 @@ internal static partial class ProjectGenerator
         while (ancestor.ParentOrdinal.HasValue && depth < 6)
         {
             depth++;
-            var parent = allTasks.FirstOrDefault(x => x.Ordinal == ancestor.ParentOrdinal.Value);
+            var parent = GetTaskByOrdinal(ancestor.ParentOrdinal.Value, allTasks);
             if (parent is null)
                 break;
             var blob = parent.ResourcesSemantic.FirstBlob;
@@ -375,7 +376,7 @@ internal static partial class ProjectGenerator
 
         if (t.ParentOrdinal.HasValue)
         {
-            var parent = allTasks.FirstOrDefault(x => x.Ordinal == t.ParentOrdinal.Value);
+            var parent = GetTaskByOrdinal(t.ParentOrdinal.Value, allTasks);
             if (parent is not null && (HasMergeLayout(parent) || parent.Io is not null))
                 return $"_parent.{ResolveMergeStreamExpression(parent, allTasks)}";
         }
@@ -792,7 +793,7 @@ internal static partial class ProjectGenerator
         var root = t;
         while (root.ParentOrdinal.HasValue)
         {
-            var parent = allTasks.FirstOrDefault(x => x.Ordinal == root.ParentOrdinal.Value);
+            var parent = GetTaskByOrdinal(root.ParentOrdinal.Value, allTasks);
             if (parent is null)
                 break;
             root = parent;
@@ -1069,7 +1070,11 @@ internal static partial class ProjectGenerator
 
     private static void WriteTextIoLayouts(IReadOnlyList<TaskSemantic> tasks, IReadOnlyList<DataObjectDef> dataObjects, string outputRoot, string appNamespace)
     {
+        var stopwatch = Stopwatch.StartNew();
+        var generatedLayoutCount = 0;
+        var generatedControlCount = 0;
         var allTasks = _allTasks ?? tasks;
+        var numericMemberIndex = BuildTextIoNumericMemberIndex(dataObjects);
         foreach (var task in tasks.Where(HasTextIoLayout))
         {
             var taskFolder = ResolveEffectiveTaskOutputFolder(task, allTasks);
@@ -1117,12 +1122,18 @@ internal static partial class ProjectGenerator
                         return (FormEntry: form, SectionName: sectionName);
                     })
                     .ToList();
+                var orderedControlsByFormIndex = new Dictionary<int, IReadOnlyList<TaskFormControlDef>>();
+                foreach (var (formEntry, _) in sectionInfos)
+                {
+                    orderedControlsByFormIndex[formEntry.Index] = GetOrderedTextIoControls(task, formEntry.Index);
+                    generatedControlCount += orderedControlsByFormIndex[formEntry.Index].Count;
+                }
                 foreach (var (_, sectionName) in sectionInfos)
                     designer.AppendLine($"    internal Shared.Theme.TextIO.TextSection {sectionName};");
                 var varByControlKey = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var (textForm, _) in sectionInfos)
                 {
-                    foreach (var c in GetOrderedTextIoControls(task, textForm.Index))
+                    foreach (var c in orderedControlsByFormIndex[textForm.Index])
                     {
                         var type = ResolveTextIoControlTypeName(task, textForm.Index, c);
                         var varName = ResolveTextIoControlVariableName(task, textForm.Index, c);
@@ -1145,7 +1156,7 @@ internal static partial class ProjectGenerator
                     foreach (var uc in GetUnsupportedTextIoControls(task, textForm.Index))
                         designer.AppendLine($"        // GAP: TextIO control model '{uc.Model}' not mapped (FormEntry={textForm.Index}, ControlId={uc.Id}).");
 
-                    foreach (var c in GetOrderedTextIoControls(task, textForm.Index))
+                    foreach (var c in orderedControlsByFormIndex[textForm.Index])
                     {
                         var varName = varByControlKey[BuildPrintControlKey(textForm.Index, c.Id)];
                         designer.AppendLine($"        {varName} = new {ResolveTextIoControlTypeName(task, textForm.Index, c)}();");
@@ -1169,7 +1180,7 @@ internal static partial class ProjectGenerator
                         }
                         if (c.Model == "CTRL_TEXT_EDIT")
                         {
-                            if (c.HorizontalAlignment == 3 || ShouldRightAlignTextIoEdit(c, task, dataObjects, allTasks))
+                            if (c.HorizontalAlignment == 3 || ShouldRightAlignTextIoEdit(c, task, dataObjects, allTasks, numericMemberIndex))
                                 designer.AppendLine($"        {varName}.Alignment = System.Drawing.ContentAlignment.TopRight;");
                         }
                         if (!string.IsNullOrWhiteSpace(c.Text))
@@ -1199,8 +1210,46 @@ internal static partial class ProjectGenerator
                 designer.AppendLine("    }");
                 designer.AppendLine("}");
                 File.WriteAllText(Path.Combine(textIoDir, $"{layoutClass}.Designer.cs"), designer.ToString());
+                generatedLayoutCount++;
+                if (generatedLayoutCount % 250 == 0)
+                    LogProgress($"Stage: textio layouts progress -> {appNamespace} layouts={generatedLayoutCount} controls={generatedControlCount} elapsedMs={stopwatch.ElapsedMilliseconds}");
             }
         }
+
+        ConversionTelemetry.LogDuration(
+            "TEXTIO",
+            appNamespace,
+            stopwatch.Elapsed,
+            $"layouts={generatedLayoutCount} controls={generatedControlCount}");
+        LogProgress($"Stage: textio layouts done -> {appNamespace} layouts={generatedLayoutCount} controls={generatedControlCount} elapsedMs={stopwatch.ElapsedMilliseconds}");
+    }
+
+    private static IReadOnlySet<string> BuildTextIoNumericMemberIndex(IReadOnlyList<DataObjectDef> dataObjects)
+    {
+        var index = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var dataObject in dataObjects)
+        {
+            foreach (var column in dataObject.Columns)
+            {
+                if (!IsNumericAttrObj(column.AttrObj))
+                    continue;
+
+                AddColumnName(column.Name);
+                AddColumnName(column.DbColumnName);
+
+                void AddColumnName(string? rawName)
+                {
+                    if (string.IsNullOrWhiteSpace(rawName))
+                        return;
+
+                    var memberName = ToPascalIdentifier(rawName);
+                    if (!string.IsNullOrWhiteSpace(memberName))
+                        index.Add(memberName);
+                }
+            }
+        }
+
+        return index;
     }
 
     private static string BuildPrintControlKey(int formEntryIndex, int controlId) => $"{formEntryIndex}:{controlId}";
@@ -1422,7 +1471,8 @@ internal static partial class ProjectGenerator
         TaskFormControlDef c,
         TaskSemantic task,
         IReadOnlyList<DataObjectDef> dataObjects,
-        IReadOnlyList<TaskSemantic> allTasks)
+        IReadOnlyList<TaskSemantic> allTasks,
+        IReadOnlySet<string> numericMemberIndex)
     {
         if (c.DataExpressionId.HasValue)
         {
@@ -1451,14 +1501,8 @@ internal static partial class ProjectGenerator
                 if (memberMatch.Success)
                 {
                     var memberName = memberMatch.Groups[1].Value;
-                    foreach (var d in dataObjects)
-                    {
-                        var col = d.Columns.FirstOrDefault(dc =>
-                            string.Equals(ToPascalIdentifier(dc.Name), memberName, StringComparison.Ordinal) ||
-                            string.Equals(ToPascalIdentifier(dc.DbColumnName ?? ""), memberName, StringComparison.Ordinal));
-                        if (col is not null && IsNumericAttrObj(col.AttrObj))
-                            return true;
-                    }
+                    if (numericMemberIndex.Contains(memberName))
+                        return true;
                 }
             }
         }

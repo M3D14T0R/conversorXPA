@@ -319,62 +319,14 @@ internal static partial class ProjectGenerator
             return input;
 
         var allTasks = _allTasks ?? Array.Empty<TaskSemantic>();
-        var reserved = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "AND", "OR", "NOT", "MOD", "TRUE", "FALSE", "NULL", "DATE", "TIME", "RIGHT", "DSOURCE", "EXP", "VAR",
-            // Counter(0) is normalized by the semantic phase to the controller Counter property.
-            // It must not be rebound to an application select with the same public name.
-            "Counter",
-            "Counter_"
-        };
-        var resourceMap = task.ResourcesSemantic.Ordered
-            .SelectMany(resource =>
-            {
-                var memberName = ResolveTaskResourceMemberName(task, resource);
-                var keys = new[]
-                {
-                    resource.Name,
-                    ToLegacyVariableName(resource.Name ?? ""),
-                    ToCodeIdentifierPreservingCase(resource.Name ?? ""),
-                    ToPascalIdentifier(resource.Name ?? "")
-                }
-                .Where(key => !string.IsNullOrWhiteSpace(key))
-                .Distinct(StringComparer.OrdinalIgnoreCase);
-
-                return keys.Select(key => new KeyValuePair<string, string>(key!, memberName));
-            })
-            .GroupBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.First().Value, StringComparer.OrdinalIgnoreCase);
-        var parentResourceMap = BuildAncestorResourceBindingMap(task, allTasks, dataObjects);
-        var localMap = selectMap
-            .Where(kv => IsReliableIdentifierBindingValue(task, kv.Value, dataObjects))
-            .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
-        AddTaskIdentifierBindings(localMap, task, "", dataObjects);
+        var reserved = IdentifierBindingReservedTokens;
+        var resourceMap = GetTaskResourceAliasMap(task);
+        var preparedBindings = GetIdentifierBindingPreparation(task, selectMap, allTasks, dataObjects);
+        var localMap = preparedBindings.LocalMap;
         var localResolvedMembers = BuildTaskResolvedMemberNameSet(task, dataObjects);
-        var parentMap = _parentSelectMapByTaskOrdinal.TryGetValue(task.Ordinal, out var rawParentMap)
-            ? rawParentMap
-                .Where(kv => IsReliableIdentifierBindingValue(task, kv.Value, dataObjects))
-                .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase)
-            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var kv in parentResourceMap)
-        {
-            if (!parentMap.ContainsKey(kv.Key))
-                parentMap[kv.Key] = kv.Value;
-        }
-        var appMap = _applicationSelectMap
-            .Where(kv => !localMap.ContainsKey(kv.Key))
-            .Where(kv => !parentMap.ContainsKey(kv.Key))
-            .Where(kv => string.IsNullOrWhiteSpace(ResolveExpressionOrdinalBinding(kv.Key, task, allTasks, dataObjects)))
-            .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
-        foreach (var kv in BuildApplicationResourceBindingMap(allTasks))
-        {
-            if (!localMap.ContainsKey(kv.Key) && !parentMap.ContainsKey(kv.Key) && !appMap.ContainsKey(kv.Key))
-                appMap[kv.Key] = kv.Value;
-        }
-        var localFunctionNames = task.FunctionOverridesSemantic
-            .Where(f => !string.IsNullOrWhiteSpace(f.Name))
-            .Select(f => f.Name!)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var parentMap = preparedBindings.ParentMap;
+        var appMap = preparedBindings.ApplicationMap;
+        var localFunctionNames = preparedBindings.LocalFunctionNames;
         var accessibleParentFunctions = ResolveAccessibleParentFunctionTargets(task);
         var userMethodsMap = GetUserMethodsPublicNameMap();
 
@@ -474,6 +426,90 @@ internal static partial class ProjectGenerator
         }
 
         return sb.ToString();
+    }
+
+    private static Dictionary<string, string> GetTaskResourceAliasMap(TaskSemantic task)
+    {
+        if (_taskResourceAliasMapCache.TryGetValue(task.Ordinal, out var cached))
+            return cached;
+
+        var result = task.ResourcesSemantic.Ordered
+            .SelectMany(resource =>
+            {
+                var memberName = ResolveTaskResourceMemberName(task, resource);
+                var keys = new[]
+                {
+                    resource.Name,
+                    ToLegacyVariableName(resource.Name ?? ""),
+                    ToCodeIdentifierPreservingCase(resource.Name ?? ""),
+                    ToPascalIdentifier(resource.Name ?? "")
+                }
+                .Where(key => !string.IsNullOrWhiteSpace(key))
+                .Distinct(StringComparer.OrdinalIgnoreCase);
+
+                return keys.Select(key => new KeyValuePair<string, string>(key!, memberName));
+            })
+            .GroupBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First().Value, StringComparer.OrdinalIgnoreCase);
+
+        _taskResourceAliasMapCache[task.Ordinal] = result;
+        return result;
+    }
+
+    private static readonly HashSet<string> IdentifierBindingReservedTokens = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "AND", "OR", "NOT", "MOD", "TRUE", "FALSE", "NULL", "DATE", "TIME", "RIGHT", "DSOURCE", "EXP", "VAR",
+        // Counter(0) is normalized by the semantic phase to the controller Counter property.
+        // It must not be rebound to an application select with the same public name.
+        "Counter",
+        "Counter_"
+    };
+
+    private static IdentifierBindingPreparation GetIdentifierBindingPreparation(
+        TaskSemantic task,
+        IReadOnlyDictionary<string, string> selectMap,
+        IReadOnlyList<TaskSemantic> allTasks,
+        IReadOnlyList<DataObjectDef> dataObjects)
+    {
+        if (_identifierBindingPreparationCache.TryGetValue(task.Ordinal, out var cached))
+            return cached;
+
+        var localMap = selectMap
+            .Where(kv => IsReliableIdentifierBindingValue(task, kv.Value, dataObjects))
+            .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
+        AddTaskIdentifierBindings(localMap, task, "", dataObjects);
+
+        var parentMap = _parentSelectMapByTaskOrdinal.TryGetValue(task.Ordinal, out var rawParentMap)
+            ? rawParentMap
+                .Where(kv => IsReliableIdentifierBindingValue(task, kv.Value, dataObjects))
+                .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in BuildAncestorResourceBindingMap(task, allTasks, dataObjects))
+            parentMap.TryAdd(kv.Key, kv.Value);
+
+        var applicationMap = _applicationSelectMap
+            .Where(kv => !localMap.ContainsKey(kv.Key))
+            .Where(kv => !parentMap.ContainsKey(kv.Key))
+            .Where(kv => string.IsNullOrWhiteSpace(ResolveExpressionOrdinalBinding(kv.Key, task, allTasks, dataObjects)))
+            .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in BuildApplicationResourceBindingMap(allTasks))
+        {
+            if (!localMap.ContainsKey(kv.Key) && !parentMap.ContainsKey(kv.Key))
+                applicationMap.TryAdd(kv.Key, kv.Value);
+        }
+
+        var result = new IdentifierBindingPreparation
+        {
+            LocalMap = localMap,
+            ParentMap = parentMap,
+            ApplicationMap = applicationMap,
+            LocalFunctionNames = task.FunctionOverridesSemantic
+                .Where(f => !string.IsNullOrWhiteSpace(f.Name))
+                .Select(f => f.Name!)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase)
+        };
+        _identifierBindingPreparationCache[task.Ordinal] = result;
+        return result;
     }
 
     private static bool ShouldPreserveIdentifierReservedToken(
@@ -601,6 +637,9 @@ internal static partial class ProjectGenerator
 
     private static HashSet<string> BuildTaskResolvedMemberNameSet(TaskSemantic task, IReadOnlyList<DataObjectDef> dataObjects)
     {
+        if (_taskResolvedMemberNameSetCache.TryGetValue(task.Ordinal, out var cached))
+            return cached;
+
         var result = new HashSet<string>(StringComparer.Ordinal);
         foreach (var resource in task.ResourcesSemantic.Ordered)
         {
@@ -615,6 +654,7 @@ internal static partial class ProjectGenerator
                 result.Add(modelMember.MemberName);
         }
 
+        _taskResolvedMemberNameSetCache[task.Ordinal] = result;
         return result;
     }
 
@@ -997,7 +1037,7 @@ internal static partial class ProjectGenerator
 
         var dbObj = select.SourceDbObj ?? task.PrimaryDbObj ?? task.InformationDbObj;
         var dataObject = dbObj.HasValue
-            ? dataObjects.FirstOrDefault(x => x.Ordinal == dbObj.Value)
+            ? ResolveDataObjectByOrdinal(dataObjects, dbObj.Value)
             : null;
         var objectLabel = dataObject?.PublicName ??
                           dataObject?.Name ??
@@ -1045,7 +1085,7 @@ internal static partial class ProjectGenerator
         var parentPrefix = "_parent";
         while (parentOrdinal.HasValue)
         {
-            var parentTask = allTasks.FirstOrDefault(t => t.Ordinal == parentOrdinal.Value);
+            var parentTask = GetTaskByOrdinal(parentOrdinal.Value, allTasks);
             if (parentTask is null)
                 break;
 
@@ -1064,7 +1104,7 @@ internal static partial class ProjectGenerator
             return _applicationResourceBindingMap;
 
         var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var appTask = allTasks.FirstOrDefault(t => t.MainProgram) ?? allTasks.FirstOrDefault(t => t.ParentOrdinal is null);
+        var appTask = _applicationTask;
         if (appTask is null)
         {
             _applicationResourceBindingMap = map;
@@ -1122,7 +1162,7 @@ internal static partial class ProjectGenerator
         foreach (var modelMember in BuildModelMembers(task, dataObjects))
         {
             var keys = new List<string> { modelMember.MemberName };
-            if (dataObjects.FirstOrDefault(d => d.Ordinal == modelMember.DbObj) is { } dataObject)
+            if (ResolveDataObjectByOrdinal(dataObjects, modelMember.DbObj) is { } dataObject)
             {
                 keys.Add(dataObject.Name);
                 keys.Add(dataObject.PublicName ?? "");

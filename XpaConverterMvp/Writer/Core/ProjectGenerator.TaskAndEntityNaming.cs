@@ -130,6 +130,16 @@ internal static partial class ProjectGenerator
             foreach (var child in children)
                 reserved.Add(ResolveTaskClassName(child, allTasks));
 
+        // A resource field and a function cannot share the same member name in
+        // C#. Reserve generated function names before resource names are
+        // assigned so collisions such as `ultimoID` become `ultimoID_` while
+        // calls to `ultimoID()` continue to target the function.
+        foreach (var function in task.FunctionOverridesSemantic)
+        {
+            if (!string.IsNullOrWhiteSpace(function.MethodName))
+                reserved.Add(function.MethodName);
+        }
+
         _reservedTaskMemberNameCache[task.Ordinal] = reserved;
         return reserved;
     }

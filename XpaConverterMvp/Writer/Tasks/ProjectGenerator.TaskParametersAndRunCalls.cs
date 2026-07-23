@@ -127,10 +127,33 @@ internal static partial class ProjectGenerator
         sb.AppendLine($"            {condExpr},");
         sb.AppendLine("            __rowFound =>");
         sb.AppendLine("            {");
-        EmitBusinessProcessLeaveRowBody(sb, t, dataObjects, allTasks, "                ", ResolveTaskClassName(t, allTasks), Stopwatch.StartNew());
+        // This optimized task is not active in the controller stack: it writes the
+        // relation directly. DenyUndoFor would try to resolve its columns against
+        // the active tasks and cache several of them under index zero.
+        var callbackBodyStart = sb.Length;
+        EmitBusinessProcessLeaveRowBody(sb, t, dataObjects, allTasks, "                ", ResolveTaskClassName(t, allTasks), Stopwatch.StartNew(), suppressForcedUndo: true);
+        RemoveDenyUndoStatementsFromDirectRelationCallback(sb, callbackBodyStart);
         sb.AppendLine("            });");
         sb.AppendLine("    }");
         return true;
+    }
+
+    private static void RemoveDenyUndoStatementsFromDirectRelationCallback(StringBuilder sb, int bodyStart)
+    {
+        if (bodyStart >= sb.Length)
+            return;
+
+        var body = sb.ToString(bodyStart, sb.Length - bodyStart);
+        var cleaned = System.Text.RegularExpressions.Regex.Replace(
+            body,
+            @"(?m)^[ \t]*u\.DenyUndoFor\([^\r\n]*\);\r?\n",
+            string.Empty,
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        if (cleaned.Length == body.Length)
+            return;
+
+        sb.Length = bodyStart;
+        sb.Append(cleaned);
     }
 
     private static IEnumerable<string> BuildRunParameterBindingStatements(
@@ -217,7 +240,7 @@ internal static partial class ProjectGenerator
 
     private static bool IsUsedAsSubform(TaskSemantic task, IReadOnlyList<TaskSemantic> allTasks)
     {
-        return allTasks.Any(parent => parent.View.SubformBindings.Any(b => b.TargetTaskOrdinal == task.Ordinal));
+        return _subformTargetTaskOrdinals.Contains(task.Ordinal);
     }
 
     private static string BuildTaskRunStatement(

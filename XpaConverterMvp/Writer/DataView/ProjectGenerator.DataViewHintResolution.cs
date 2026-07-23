@@ -86,7 +86,7 @@ internal static partial class ProjectGenerator
         for (var i = linkIndex - 1; i >= 0; i--)
         {
             var lm = linkMembers[i];
-            var d = dataObjects.FirstOrDefault(x => x.Ordinal == lm.Link.DbObj);
+            var d = ResolveDataObjectByOrdinal(dataObjects, lm.Link.DbObj);
             if (d is null)
                 continue;
             foreach (var column in d.Columns)

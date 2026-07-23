@@ -32,7 +32,7 @@ internal static partial class ProjectGenerator
         if (_allTasks is null)
             return false;
 
-        var appTask = _allTasks.FirstOrDefault(x => x.MainProgram) ?? _allTasks.FirstOrDefault(x => x.ParentOrdinal is null);
+        var appTask = _applicationTask;
         if (appTask is not null && appTask.Ordinal != task.Ordinal)
         {
             foreach (var candidate in appTask.FunctionOverridesSemantic)
@@ -54,7 +54,7 @@ internal static partial class ProjectGenerator
         var parentOrdinal = task.ParentOrdinal;
         while (parentOrdinal.HasValue)
         {
-            var parentTask = _allTasks.FirstOrDefault(x => x.Ordinal == parentOrdinal.Value);
+            var parentTask = GetTaskByOrdinal(parentOrdinal.Value, _allTasks);
             if (parentTask is null)
                 break;
 
@@ -129,28 +129,13 @@ internal static partial class ProjectGenerator
             return false;
 
         var leafName = requestedName[leafStart..];
-        var matches = _allTasks
-            .SelectMany(t => t.FunctionOverridesSemantic)
-            .Where(fn =>
-                string.Equals(fn.Name, leafName, StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(fn.MethodName, leafName, StringComparison.OrdinalIgnoreCase))
-            .ToList();
-        if (matches.Count == 0)
-            return false;
-
-        var distinctSignatures = matches
-            .Select(fn => string.Create(
-                CultureInfo.InvariantCulture,
-                $"{NormalizeReturnTypeToken(fn.ReturnType)}({string.Join(",", fn.Parameters.Select(p => NormalizeReturnTypeToken(p.ParameterType)))})"))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Take(2)
-            .ToList();
-        if (distinctSignatures.Count != 1)
-            return false;
-
-        function = matches[0];
-        return true;
+        return _uniqueFunctionContractByLeaf.TryGetValue(leafName, out function) && function is not null;
     }
+
+    private static string BuildFunctionContractSignature(FunctionOverrideSemantic function)
+        => string.Create(
+            CultureInfo.InvariantCulture,
+            $"{NormalizeReturnTypeToken(function.ReturnType)}({string.Join(",", function.Parameters.Select(p => NormalizeReturnTypeToken(p.ParameterType)))})");
 
     private static Dictionary<string, string> ResolveAccessibleApplicationFunctionTargets(TaskSemantic task)
     {
@@ -158,7 +143,7 @@ internal static partial class ProjectGenerator
         if (_allTasks is null || task.MainProgram)
             return result;
 
-        var appTask = _allTasks.FirstOrDefault(x => x.MainProgram) ?? _allTasks.FirstOrDefault(x => x.ParentOrdinal is null);
+        var appTask = _applicationTask;
         if (appTask is null || appTask.Ordinal == task.Ordinal)
             return result;
 

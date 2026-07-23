@@ -33,7 +33,7 @@ internal static partial class ProjectGenerator
         var parentMembers = BuildModelMembers(parentTask, dataObjects);
         foreach (var pm in parentMembers)
         {
-            var pd = dataObjects.FirstOrDefault(x => x.Ordinal == pm.DbObj);
+            var pd = ResolveDataObjectByOrdinal(dataObjects, pm.DbObj);
             if (pd is null)
                 continue;
             var parentCol = pd.Columns.FirstOrDefault(c =>
@@ -69,7 +69,7 @@ internal static partial class ProjectGenerator
         expression = CanonicalizeControllerRaiseMemberReference(expression, "_controller.", task);
         if (task.ParentOrdinal.HasValue)
         {
-            var parentTask = (_allTasks ?? Array.Empty<TaskSemantic>()).FirstOrDefault(x => x.Ordinal == task.ParentOrdinal.Value);
+            var parentTask = GetTaskByOrdinal(task.ParentOrdinal.Value, _allTasks);
             if (parentTask is not null)
                 expression = CanonicalizeControllerRaiseMemberReference(expression, "_controller._parent.", parentTask);
         }
@@ -123,7 +123,7 @@ internal static partial class ProjectGenerator
         while (parentOrdinal.HasValue)
         {
             allowedDepth++;
-            var parentTask = (_allTasks ?? Array.Empty<TaskSemantic>()).FirstOrDefault(x => x.Ordinal == parentOrdinal.Value);
+            var parentTask = GetTaskByOrdinal(parentOrdinal.Value, _allTasks);
             if (parentTask is null)
                 break;
             parentOrdinal = parentTask.ParentOrdinal;
@@ -198,8 +198,7 @@ internal static partial class ProjectGenerator
         if (string.IsNullOrWhiteSpace(normalizedMember))
             return false;
 
-        var applicationTask = allTasks.FirstOrDefault(x => x.MainProgram)
-                              ?? allTasks.FirstOrDefault(x => x.ParentOrdinal is null);
+        var applicationTask = _applicationTask;
         if (applicationTask is null)
             return false;
 

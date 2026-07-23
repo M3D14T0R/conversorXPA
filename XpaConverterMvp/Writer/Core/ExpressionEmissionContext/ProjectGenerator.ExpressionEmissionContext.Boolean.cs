@@ -50,7 +50,7 @@ internal static partial class ProjectGenerator
         if (!TryGetWholeCSharpStringLiteral(expression.Trim(), out var literal))
             return false;
 
-        return string.IsNullOrEmpty(literal);
+        return string.IsNullOrEmpty(ExtractWholeCSharpStringLiteralContent(literal));
     }
 
     private static string NormalizeStatementBooleanConditionSyntax(string expression)
@@ -64,6 +64,60 @@ internal static partial class ProjectGenerator
         var normalized = FormatBooleanConditionSyntax(expression);
         _statementBooleanConditionSyntaxCache[expression] = normalized;
         return normalized;
+    }
+
+    private static string NormalizeSourceBooleanCode(string expression, TaskSemantic task)
+    {
+        if (string.IsNullOrWhiteSpace(expression))
+            return expression;
+
+        var normalized = NormalizeChainedBooleanComparisonsCentral(task, expression);
+        return NormalizeStatementBooleanConditionSyntax(RewriteBooleanOperand(task, normalized));
+    }
+
+    private static string NormalizeChainedBooleanComparisonsCentral(TaskSemantic task, string expression)
+    {
+        if (string.IsNullOrWhiteSpace(expression))
+            return expression;
+
+        var trimmed = StripRedundantOuterParentheses(expression.Trim());
+        if (TryParseFunctionCall(trimmed, out var functionName, out var args))
+        {
+            if (IsTopLevelCall(functionName, "u.Not") && args.Count == 1)
+                return $"u.Not({NormalizeChainedBooleanComparisonsCentral(task, args[0])})";
+            if (IsTopLevelCall(functionName, "u.If") && args.Count == 3)
+            {
+                return $"u.If({NormalizeChainedBooleanComparisonsCentral(task, args[0])}, {args[1].Trim()}, {args[2].Trim()})";
+            }
+        }
+
+        var booleanBinary = SplitTopLevelBooleanBinaryExpression(trimmed);
+        if (booleanBinary is not null)
+        {
+            var booleanLeft = NormalizeChainedBooleanComparisonsCentral(task, booleanBinary.Value.Left);
+            var booleanRight = NormalizeChainedBooleanComparisonsCentral(task, booleanBinary.Value.Right);
+            return $"{booleanLeft} {booleanBinary.Value.Operator} {booleanRight}";
+        }
+
+        var comparison = SplitTopLevelComparisonExpression(trimmed);
+        if (comparison is null)
+            return expression.Trim();
+
+        var leftExpression = comparison.Value.Left.Trim();
+        var rightExpression = comparison.Value.Right.Trim();
+        var leftIsComparison = SplitTopLevelComparisonExpression(leftExpression) is not null;
+        var rightIsComparison = SplitTopLevelComparisonExpression(rightExpression) is not null;
+        if (!leftIsComparison && !rightIsComparison)
+            return expression.Trim();
+
+        var booleanExpected = ExpectedTypeForReturnType("Bool") with { IsBooleanCondition = false };
+        var left = leftIsComparison
+            ? NormalizeChainedBooleanComparisonsCentral(task, leftExpression)
+            : EmitExpressionForExpectedType(leftExpression, task, booleanExpected);
+        var right = rightIsComparison
+            ? NormalizeChainedBooleanComparisonsCentral(task, rightExpression)
+            : EmitExpressionForExpectedType(rightExpression, task, booleanExpected);
+        return $"(({left}) {comparison.Value.Operator} ({right}))";
     }
 
     private static string FormatBooleanConditionSyntax(string expression)
@@ -763,6 +817,8 @@ internal static partial class ProjectGenerator
                 return $"u.Not({RewriteBooleanOperandCentral(task, args[0])})";
             if (IsTopLevelCall(functionName, "u.CndRange") && args.Count >= 2)
                 return RewriteBooleanOperandCentral(task, args[0]);
+            if (IsTopLevelCall(functionName, "u.Case") && args.Count >= 3)
+                return RewriteBooleanCaseOperandCentral(task, args);
             if (IsTopLevelCall(functionName, "u.If") && args.Count == 3)
             {
                 var condition = FormatBooleanConditionSyntax(RewriteBooleanOperandCentral(task, args[0]));
@@ -775,8 +831,8 @@ internal static partial class ProjectGenerator
         var split = SplitTopLevelBooleanBinaryExpression(trimmed);
         if (split is not null)
         {
-            var left = RewriteBooleanOperandCentral(task, split.Value.Left);
-            var right = RewriteBooleanOperandCentral(task, split.Value.Right);
+            var left = RewriteBooleanBinaryOperandCentral(task, split.Value.Left);
+            var right = RewriteBooleanBinaryOperandCentral(task, split.Value.Right);
             return FormatBooleanConditionSyntax($"{left} {split.Value.Operator} {right}");
         }
 
@@ -802,6 +858,21 @@ internal static partial class ProjectGenerator
         {
             var left = comparison.Value.Left.Trim();
             var right = comparison.Value.Right.Trim();
+            var nestedLeftComparison = SplitTopLevelComparisonExpression(left) is not null;
+            var nestedRightComparison = SplitTopLevelComparisonExpression(right) is not null;
+            if (nestedLeftComparison || nestedRightComparison)
+            {
+                var booleanExpected = ExpectedTypeForReturnType("Bool") with { IsBooleanCondition = false };
+                left = nestedLeftComparison
+                    ? RewriteBooleanOperandCentral(task, left)
+                    : EmitExpressionForExpectedType(left, task, booleanExpected);
+                right = nestedRightComparison
+                    ? RewriteBooleanOperandCentral(task, right)
+                    : EmitExpressionForExpectedType(right, task, booleanExpected);
+                left = NormalizeComparisonOperandForExpected(left, booleanExpected, task);
+                right = NormalizeComparisonOperandForExpected(right, booleanExpected, task);
+                return $"(({left}) {comparison.Value.Operator} ({right}))";
+            }
             if (TryRewriteNumericTypeComparisonCentral(task, left, comparison.Value.Operator, right, out var rewrittenNumericTypeComparison))
                 return rewrittenNumericTypeComparison;
             if (TryRewriteDeclaredScalarEmptyStringComparisonCentral(task, left, comparison.Value.Operator, right, out var rewrittenDeclaredScalarEmptyStringComparison))
@@ -828,11 +899,47 @@ internal static partial class ProjectGenerator
                 right = NormalizeComparisonOperandForExpected(right, comparisonExpected, task);
             }
 
+            if (comparison.Value.Operator is "<" or ">" or "<=" or ">=" &&
+                comparisonExpected.HasExpectation &&
+                IsTextLikeExpectedType(comparisonExpected))
+            {
+                return $"(string.Compare(u.CastToText({left}).ToString(), u.CastToText({right}).ToString(), System.StringComparison.Ordinal) {comparison.Value.Operator} 0)";
+            }
+
             return $"({left} {comparison.Value.Operator} {right})";
         }
 
         return string.Equals(trimmed, expression.Trim(), StringComparison.Ordinal)
             ? RewriteImplicitBooleanExpressionCentral(task, trimmed)
             : $"({RewriteImplicitBooleanExpressionCentral(task, trimmed)})";
+    }
+
+    private static string RewriteBooleanCaseOperandCentral(TaskSemantic task, IReadOnlyList<string> args)
+    {
+        var rewritten = new List<string>(args.Count) { args[0].Trim() };
+        var index = 1;
+        while (index + 1 < args.Count)
+        {
+            rewritten.Add(args[index].Trim());
+            rewritten.Add(RewriteBooleanOperandCentral(task, args[index + 1]));
+            index += 2;
+        }
+
+        if (index < args.Count)
+            rewritten.Add(RewriteBooleanOperandCentral(task, args[index]));
+
+        return $"u.Case({string.Join(", ", rewritten)})";
+    }
+
+    private static string RewriteBooleanBinaryOperandCentral(TaskSemantic task, string expression)
+    {
+        var rewritten = RewriteBooleanOperandCentral(task, expression);
+        var trimmed = StripRedundantOuterParentheses(rewritten.Trim());
+        if (SplitTopLevelBooleanBinaryExpression(trimmed) is not null ||
+            SplitTopLevelComparisonExpression(trimmed) is not null ||
+            IsBooleanLikeBooleanOperand(task, trimmed))
+            return rewritten;
+
+        return RewriteImplicitBooleanExpressionCentral(task, trimmed);
     }
 }

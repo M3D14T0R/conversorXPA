@@ -30,7 +30,7 @@ internal static partial class ProjectGenerator
         var parentOrdinal = task.ParentOrdinal;
         while (parentOrdinal.HasValue)
         {
-            var parentTask = allTasks.FirstOrDefault(t => t.Ordinal == parentOrdinal.Value);
+            var parentTask = GetTaskByOrdinal(parentOrdinal.Value, allTasks);
             if (parentTask is null)
                 break;
             foreach (var rc in parentTask.ResourcesSemantic.Ordered)
@@ -44,7 +44,7 @@ internal static partial class ProjectGenerator
             }
             foreach (var mm in BuildModelMembers(parentTask, dataObjects))
             {
-                var d = dataObjects.FirstOrDefault(x => x.Ordinal == mm.DbObj);
+                var d = ResolveDataObjectByOrdinal(dataObjects, mm.DbObj);
                 if (d is null)
                     continue;
                 foreach (var col in d.Columns)
@@ -71,7 +71,7 @@ internal static partial class ProjectGenerator
         var mm = modelMembers.FirstOrDefault(m => m.DbObj == primaryObj);
         if (!string.IsNullOrWhiteSpace(mm.MemberName))
             return mm.MemberName;
-        var d = dataObjects.FirstOrDefault(x => x.Ordinal == primaryObj);
+        var d = ResolveDataObjectByOrdinal(dataObjects, primaryObj);
         return d is null ? "" : ResolveDataObjectTypeName(d);
     }
 

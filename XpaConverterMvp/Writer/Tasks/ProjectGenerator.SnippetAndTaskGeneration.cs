@@ -195,7 +195,7 @@ internal static partial class ProjectGenerator
     {
         if (HasMergeLayout(t))
             return true;
-        return allTasks.Any(x => x.ParentOrdinal == t.Ordinal && HasMergeLayoutInTree(x, allTasks));
+        return GetChildTasks(t.Ordinal, allTasks).Any(x => HasMergeLayoutInTree(x, allTasks));
     }
 }
 

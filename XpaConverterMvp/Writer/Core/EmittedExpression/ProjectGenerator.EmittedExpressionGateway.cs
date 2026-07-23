@@ -45,7 +45,18 @@ internal static partial class ProjectGenerator
             return false;
 
         var cleanCode = StripRedundantOuterParentheses(code.Trim());
+        var targetSpecificCode = NormalizeTargetSpecificExpression(cleanCode, task, context);
+        if (!string.IsNullOrWhiteSpace(targetSpecificCode) &&
+            !string.Equals(targetSpecificCode.Trim(), cleanCode, StringComparison.Ordinal))
+        {
+            cleanCode = StripRedundantOuterParentheses(targetSpecificCode.Trim());
+        }
         var expectedReturnType = ResolveReturnTypeForExpectedContext(context.Expected);
+        cleanCode = NormalizeStrictBooleanExpressionOperands(
+            cleanCode,
+            task,
+            context,
+            expectedReturnType);
 
         var cacheKey = CreateStrictEmissionCacheKey(cleanCode, task, context, expectedReturnType);
         if (StrictEmissionCache.TryGetValue(cacheKey, out var cached))
@@ -175,6 +186,54 @@ internal static partial class ProjectGenerator
                 emittedExpression.EvidenceKind,
                 emittedExpression.EvidenceSourceKey));
         return true;
+    }
+
+    private static string NormalizeStrictBooleanExpressionOperands(
+        string code,
+        TaskSemantic task,
+        ExpressionEmissionContext context,
+        string expectedReturnType)
+    {
+        if (string.IsNullOrWhiteSpace(code))
+            return code;
+
+        var expectsBoolean =
+            context.Expected.IsBooleanCondition ||
+            string.Equals(
+                ScalarReturnType(CanonicalReturnType(expectedReturnType)),
+                "Bool",
+                StringComparison.Ordinal);
+        if (!expectsBoolean)
+            return code;
+
+        var containsBooleanOperators =
+            SplitTopLevelBooleanBinaryExpression(code) is not null ||
+            SplitTopLevelComparisonExpression(code) is not null ||
+            SplitTopLevelAssignmentExpression(code) is not null;
+        if (!containsBooleanOperators &&
+            (!TryParseFunctionCall(code, out var functionName, out var args) ||
+             args.Count != 3 ||
+             !IsTopLevelCall(functionName, "u.If")))
+        {
+            return code;
+        }
+
+        var normalized = RewriteBooleanOperandCentral(
+            task,
+            NormalizeChainedBooleanComparisonsCentral(task, code));
+        if (!string.Equals(normalized, code, StringComparison.Ordinal))
+        {
+            TrackCriticalExternalCoercionIfBridgeChanged(
+                "EmittedExpression",
+                nameof(NormalizeStrictBooleanExpressionOperands),
+                code,
+                normalized,
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"sink={context.SinkKind} expected={expectedReturnType} expr={TruncateTelemetryValue(code)}"));
+        }
+
+        return normalized;
     }
 
     private static StrictEmittedExpression ApplyStrictNestedTextArgumentBridges(
@@ -947,13 +1006,51 @@ internal static partial class ProjectGenerator
             {
                 renderedArg = objectConditional;
             }
-            if ((TryGetAccessibleFunctionArgumentType(task, functionName, i, out var expectedReturnType) ||
-                 TryGetComponentFunctionArgumentType(functionName, i, out expectedReturnType) ||
-                 TryResolveXpaFunctionEmissionArgumentReturnTypeContract(
-                     functionName,
-                     i,
-                     args.Count,
-                     out expectedReturnType)) &&
+            var hasExpectedReturnType =
+                TryGetAccessibleFunctionArgumentType(task, functionName, i, out var expectedReturnType) ||
+                TryGetComponentFunctionArgumentType(functionName, i, out expectedReturnType) ||
+                TryResolveXpaFunctionEmissionArgumentReturnTypeContract(
+                    functionName,
+                    i,
+                    args.Count,
+                    out expectedReturnType);
+
+            // Max/Min are generic in Magic but overload-based in ENV. Once the
+            // first argument selects an overload, bridge every following value
+            // to that same scalar type. A common example is Max(0, Time-Time),
+            // whose second argument must become a Number (seconds).
+            if (!hasExpectedReturnType &&
+                i > 0 &&
+                (IsTopLevelCall(functionName, "u.Max") ||
+                 IsTopLevelCall(functionName, "u.Min")) &&
+                TryResolveStrictSourceReturnType(renderedArgs[0], task, out var firstArgumentReturnType))
+            {
+                expectedReturnType = firstArgumentReturnType;
+                hasExpectedReturnType = true;
+            }
+
+            // RepStr also accepts byte arrays, so its first argument cannot have
+            // a blanket Text contract. FileInfo and similar APIs, however,
+            // return object; Magic converts that scalar to alpha automatically.
+            if (!hasExpectedReturnType &&
+                i == 0 &&
+                IsTopLevelCall(functionName, "u.RepStr") &&
+                ((TryResolveStrictSourceReturnType(renderedArg, task, out var repStrSourceType) &&
+                  string.Equals(
+                      ScalarReturnType(CanonicalReturnType(repStrSourceType)),
+                      "object",
+                      StringComparison.OrdinalIgnoreCase)) ||
+                 (TryParseFunctionCall(
+                      StripRedundantOuterParentheses(renderedArg),
+                      out var repStrSourceFunction,
+                      out _) &&
+                  IsTopLevelCall(repStrSourceFunction, "u.FileInfo"))))
+            {
+                expectedReturnType = "Text";
+                hasExpectedReturnType = true;
+            }
+
+            if (hasExpectedReturnType &&
                 TryRenderStrictExpectedArgument(renderedArg, expectedReturnType, task, out var bridgedArg))
             {
                 renderedArg = bridgedArg;

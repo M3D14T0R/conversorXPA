@@ -51,7 +51,8 @@ internal static partial class ProjectGenerator
             code.AppendLine();
             code.AppendLine($"namespace {appNamespace}.Views;");
             code.AppendLine();
-            code.AppendLine($"public partial class {viewClass} : Shared.Theme.Controls.CompatibleForm");
+            code.AppendLine("[System.ComponentModel.DesignerCategory(\"Form\")]");
+            code.AppendLine($"public partial class {viewClass} : ENV.UI.Form");
             code.AppendLine("{");
             code.AppendLine($"    readonly {controllerType} _controller;");
             code.AppendLine($"    public {viewClass}()");
@@ -112,6 +113,7 @@ internal static partial class ProjectGenerator
                 designer.AppendLine($"        {varName}.Location = new Point({ScaleViewX(c.X)}, {ScaleViewY(c.Y)});");
                 designer.AppendLine($"        {varName}.Size = new Size({Math.Max(10, ScaleViewX(c.Width))}, {Math.Max(10, ScaleViewY(c.Height))});");
                 designer.AppendLine($"        {varName}.Name = \"{varName}\";");
+                EmitViewControlPlacement(designer, c, varName);
                 var tabIndex = c.TabOrder ?? c.TabbingOrder;
                 if (tabIndex.HasValue)
                     designer.AppendLine($"        {varName}.TabIndex = {tabIndex.Value};");
@@ -177,6 +179,7 @@ internal static partial class ProjectGenerator
             designer.AppendLine($"        Location = new Point({ScaleViewX(selectedViewForm.X)}, {ScaleViewY(selectedViewForm.Y)});");
             designer.AppendLine("        HorizontalExpressionFactor = 4D;");
             designer.AppendLine("        HorizontalScale = 5D;");
+            EmitViewFormBehavior(designer, selectedViewForm);
             if (selectedViewForm.XExpressionId.HasValue)
                 designer.AppendLine("        BindLeft += new XPARuntimeCore.Box.UI.Advanced.BindingEventHandler<XPARuntimeCore.Box.UI.Advanced.IntBindingEventArgs>(this.this_BindLeft);");
             if (selectedViewForm.YExpressionId.HasValue)

@@ -240,6 +240,10 @@ internal static partial class ProjectGenerator
         sb.AppendLine($"    <RootNamespace>{EscapeXml(projectName)}</RootNamespace>");
         sb.AppendLine($"    <AssemblyName>{EscapeXml(projectName)}</AssemblyName>");
         sb.AppendLine("    <LangVersion>latest</LangVersion>");
+        // Large XPA applications can exceed the CLR user-string heap limit in
+        // a single generated assembly. Roslyn's data-section string literal
+        // mode keeps those projects compilable without changing source values.
+        sb.AppendLine("    <Features>experimental-data-section-string-literals</Features>");
         sb.AppendLine("    <Nullable>disable</Nullable>");
         sb.AppendLine("    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>");
         sb.AppendLine("    <NoWarn>1587;1570;1591;1573</NoWarn>");
@@ -287,6 +291,19 @@ internal static partial class ProjectGenerator
             var relativeProjectPath = NormalizeProjectPath(Path.GetRelativePath(outputRoot, projectReference.Value));
             sb.AppendLine($"    <ProjectReference Include=\"{EscapeXml(relativeProjectPath)}\" Condition=\"Exists('{EscapeXml(relativeProjectPath)}')\" />");
         }
+        sb.AppendLine("  </ItemGroup>");
+        sb.AppendLine();
+
+        // Preserve WinForms design-time behavior in SDK-style projects. The first
+        // rule makes every generated view open with the Form Designer; the second
+        // nests the generated Designer file below its code-behind in Solution Explorer.
+        sb.AppendLine("  <ItemGroup>");
+        sb.AppendLine("    <Compile Update=\"**\\Views\\*.cs\">");
+        sb.AppendLine("      <SubType>Form</SubType>");
+        sb.AppendLine("    </Compile>");
+        sb.AppendLine("    <Compile Update=\"**\\Views\\*.Designer.cs\">");
+        sb.AppendLine("      <DependentUpon>$([System.String]::Copy('%(Filename)').Replace('.Designer', '')).cs</DependentUpon>");
+        sb.AppendLine("    </Compile>");
         sb.AppendLine("  </ItemGroup>");
         sb.AppendLine();
 

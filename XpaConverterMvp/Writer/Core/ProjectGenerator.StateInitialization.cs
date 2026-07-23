@@ -76,7 +76,76 @@ internal static partial class ProjectGenerator
         _dataSourceTypeByObjectOrdinal = request.Parsed.DataObjects
             .ToDictionary(d => d.Ordinal, d => $"typeof({ResolveEntityTypeReferenceForRegistry(d)})");
         _allTasks = request.Parsed.Tasks;
+        var functionContractsByLeaf = new Dictionary<string, List<FunctionOverrideSemantic>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var candidateTask in _allTasks)
+        {
+            foreach (var functionContract in candidateTask.FunctionOverridesSemantic)
+            {
+                foreach (var leaf in new[] { functionContract.Name, functionContract.MethodName }
+                             .Where(name => !string.IsNullOrWhiteSpace(name))
+                             .Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    if (!functionContractsByLeaf.TryGetValue(leaf, out var contracts))
+                    {
+                        contracts = new List<FunctionOverrideSemantic>();
+                        functionContractsByLeaf[leaf] = contracts;
+                    }
+                    contracts.Add(functionContract);
+                }
+            }
+        }
+        _uniqueFunctionContractByLeaf = functionContractsByLeaf.ToDictionary(
+            pair => pair.Key,
+            pair => pair.Value
+                .Select(BuildFunctionContractSignature)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(2)
+                .Count() == 1
+                    ? pair.Value[0]
+                    : null,
+            StringComparer.OrdinalIgnoreCase);
+        _applicationTask = request.Parsed.Tasks.FirstOrDefault(t => t.MainProgram)
+            ?? request.Parsed.Tasks.FirstOrDefault(t => !t.ParentOrdinal.HasValue)
+            ?? request.Parsed.Tasks.FirstOrDefault();
         _tasksByOrdinal = request.Parsed.Tasks.ToDictionary(t => t.Ordinal);
+        _tasksByPublicName = request.Parsed.Tasks
+            .Where(t => !string.IsNullOrWhiteSpace(t.PublicName))
+            .GroupBy(t => t.PublicName!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+        _eventCommandByDescription = new Dictionary<string, string>(StringComparer.Ordinal);
+        _expressionInvocationByOrdinal = new Dictionary<int, string>();
+        _handlerKindByReference = new Dictionary<TaskHandlerDef, byte>(ReferenceEqualityComparer.Instance);
+        _handlerBodyByReference = new Dictionary<TaskHandlerDef, HandlerBodySemantic>(ReferenceEqualityComparer.Instance);
+        foreach (var task in request.Parsed.Tasks)
+        {
+            foreach (var entry in task.EventsSemantic.CommandByDescription)
+                _eventCommandByDescription.TryAdd(entry.Key, entry.Value);
+            foreach (var entry in task.ExpressionsSemantic.InvocationByOrdinal)
+                _expressionInvocationByOrdinal.TryAdd(entry.Key, entry.Value);
+            RegisterHandlerKind(task.HandlersSemantic.ValueChangedHandlers, 1);
+            RegisterHandlerKind(task.HandlersSemantic.UserCommandHandlers, 2);
+            RegisterHandlerKind(task.HandlersSemantic.InternalHandlers, 3);
+            RegisterHandlerKind(task.HandlersSemantic.ExpressionHandlers, 4);
+            RegisterHandlerKind(task.HandlersSemantic.TimerHandlers, 5);
+            RegisterHandlerKind(task.HandlersSemantic.SystemHandlers, 6);
+            RegisterHandlerKind(task.HandlersSemantic.RecordHandlers, 7);
+            foreach (var body in task.HandlersSemantic.Bodies)
+                _handlerBodyByReference.TryAdd(body.Handler, body);
+        }
+        _resourceOwnerByReference = new Dictionary<TaskResourceColumnDef, TaskSemantic>(ReferenceEqualityComparer.Instance);
+        foreach (var task in request.Parsed.Tasks)
+        {
+            foreach (var resource in task.ResourcesSemantic.Ordered)
+                _resourceOwnerByReference.TryAdd(resource, task);
+        }
+        _tasksByDeclaredTaskId = request.Parsed.Tasks
+            .Where(t => int.TryParse(t.TaskId, out _))
+            .GroupBy(t => int.Parse(t.TaskId!, System.Globalization.CultureInfo.InvariantCulture))
+            .ToDictionary(g => g.Key, g => g.First());
+        _topLevelTasksByProgramIndex = request.Parsed.Tasks
+            .Where(t => !t.ParentOrdinal.HasValue && t.TopLevelProgramIndex.HasValue)
+            .GroupBy(t => t.TopLevelProgramIndex!.Value)
+            .ToDictionary(g => g.Key, g => g.First());
         _childTasksByParentOrdinal = request.Parsed.Tasks
             .Where(t => t.ParentOrdinal.HasValue)
             .GroupBy(t => t.ParentOrdinal!.Value)
@@ -90,6 +159,28 @@ internal static partial class ProjectGenerator
             .Where(t => !t.ParentOrdinal.HasValue)
             .OrderBy(t => t.Ordinal)
             .ToList();
+        _topLevelAccessibleResourceKeys = _topLevelTasks
+            .Select(t => t.ResourcesSemantic.ByName.Keys
+                .Concat(t.ResourcesSemantic.ByLegacyName.Keys)
+                .Concat(Enumerable.Range(0, t.ResourcesSemantic.Ordered.Count)
+                    .Select(i => ToLegacyExpressionAlias(i + 1))
+                    .Where(alias => alias.Length == 1))
+                .Distinct(StringComparer.OrdinalIgnoreCase))
+            .SelectMany(keys => keys)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        _subformTargetTaskOrdinals = request.Parsed.Tasks
+            .SelectMany(t => t.View.SubformBindings)
+            .Select(b => b.TargetTaskOrdinal)
+            .ToHashSet();
+        _reservedViewClassNames = request.Parsed.Tasks
+            .Select(t => t.View.ClassName)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase)!;
+        _multiFormCandidateCounts = BuildMultiFormCandidateCounts(request.Parsed.Tasks);
+        _viewClassNameCounts = request.Parsed.Tasks
+            .Where(task => task.View.ShouldGenerate && !string.IsNullOrWhiteSpace(task.View.ClassName))
+            .GroupBy(task => task.View.ClassName!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.Count(), StringComparer.OrdinalIgnoreCase);
         BuildTaskClassNameIndexes(request.Parsed.Tasks);
         _taskClassNameByOrdinal = new Dictionary<int, string>();
         _taskClassNameResolutionInProgress = new HashSet<int>();
@@ -99,11 +190,13 @@ internal static partial class ProjectGenerator
         _resourceMemberNameCacheBuiltTaskOrdinals = new HashSet<int>();
         _taskResourceByMemberNameCache = new Dictionary<int, Dictionary<string, TaskResourceColumnDef>>();
         _reservedTaskMemberNameCache = new Dictionary<int, HashSet<string>>();
+        _reservedTaskCommandNameCache = new Dictionary<int, HashSet<string>>();
         _loadedSourceComponents = request.Parsed.Tasks
             .Select(t => t.SourceComponent)
             .Where(c => !string.IsNullOrWhiteSpace(c))
             .ToHashSet(StringComparer.OrdinalIgnoreCase)!;
         _resolvedCallTargetOrdinalCache = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        _incomingTaskCallsByTargetOrdinal = new Dictionary<int, IReadOnlyList<(TaskSemantic Caller, TaskCallDef Call)>>();
         _optionalRunParameterStartIndexCache = BuildOptionalRunParameterStartIndexCache(request.Parsed.Tasks);
         _externalTaskTypeReferenceCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         _expressionCodeCache = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -112,10 +205,14 @@ internal static partial class ProjectGenerator
         _sharedRawExpressionEntryCodeCache = new Dictionary<string, string>(StringComparer.Ordinal);
         _typedExpressionEntryCodeCache = new Dictionary<string, ProjectGenerator.EmittedExpression>(StringComparer.Ordinal);
         _typedExpressionReturnTypeByCodeCache = new Dictionary<string, string>(StringComparer.Ordinal);
+        _sourceExpressionReturnTypeCache = new Dictionary<string, string>(StringComparer.Ordinal);
+        _sourceFunctionCallTypeInfoCache = new Dictionary<string, ProjectGenerator.SourceFunctionCallTypeInfo>(StringComparer.Ordinal);
+        _sourceExpressionReturnTypeResolutionInProgress = new HashSet<string>(StringComparer.Ordinal);
         _expressionCodeResolutionInProgress = new HashSet<string>(StringComparer.Ordinal);
         _selectNameToExpressionMapCache = new Dictionary<int, Dictionary<string, string>>();
         _selectNameToExpressionMapResolutionInProgress = new HashSet<int>();
         _modelMembersCache = new Dictionary<int, List<(int DbObj, string ModelType, string MemberName)>>();
+        _dataObjectColumnMemberNamesByObjectOrdinal = new Dictionary<int, Dictionary<int, string>>();
         _modelMembersResolutionInProgress = new HashSet<int>();
         _linkMembersCache = new Dictionary<string, List<(TaskLogicLinkDef Link, string MemberName)>>(StringComparer.Ordinal);
         _selectExpressionCache = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -127,10 +224,16 @@ internal static partial class ProjectGenerator
         _accessibleResourceKeysCache = new Dictionary<int, IReadOnlyList<string>>();
         _applicationResourceBindingMap = null;
         _ancestorResourceBindingMapCache = new Dictionary<int, Dictionary<string, string>>();
+        _taskResourceAliasMapCache = new Dictionary<int, Dictionary<string, string>>();
+        _taskResolvedMemberNameSetCache = new Dictionary<int, HashSet<string>>();
+        _identifierBindingPreparationCache = new Dictionary<int, IdentifierBindingPreparation>();
+        _taskCommandMemberMapCache = new Dictionary<int, Dictionary<string, string>>();
         _allowedParameterSelectNamesCache = new Dictionary<int, HashSet<string>>();
         _updateTargetExpressionCache = new Dictionary<string, string>(StringComparer.Ordinal);
         _updateValueExpressionCache = new Dictionary<string, string>(StringComparer.Ordinal);
         _targetValueInfoCache = new Dictionary<string, ProjectGenerator.TargetValueInfo>(StringComparer.Ordinal);
+        _dataViewMemberColumnIndexCache = new Dictionary<int, IReadOnlyDictionary<string, DataColumnDef>>();
+        _dataObjectMemberColumnIndexCache = null;
         _taskResourceForAssignmentCache = new Dictionary<string, TaskResourceColumnDef?>(StringComparer.Ordinal);
         _parentBindingExpressionCache = new Dictionary<string, string>(StringComparer.Ordinal);
         _linkKeyColumnsCache = new Dictionary<string, IReadOnlyList<DataColumnDef>>(StringComparer.Ordinal);
@@ -144,10 +247,17 @@ internal static partial class ProjectGenerator
         _textualNumericResourceOverrideCache = new Dictionary<string, bool>(StringComparer.Ordinal);
         _numericTextResourceOverrideCache = new Dictionary<string, bool>(StringComparer.Ordinal);
         _logicalBlobResourceOverrideCache = new Dictionary<string, bool>(StringComparer.Ordinal);
+        _effectiveTaskResourceAttrObjCache = new Dictionary<int, Dictionary<TaskResourceColumnDef, string>>();
+        _taskResourceColumnTypeCache = new Dictionary<int, Dictionary<TaskResourceColumnDef, string>>();
+        _attrObjForColumnTypeCache = new Dictionary<string, string>(StringComparer.Ordinal);
+        _taskUpdatesForArrayItemInferenceCache = new Dictionary<int, TaskUpdateDef[]>();
+        _taskTextsForArrayItemInferenceCache = new Dictionary<int, string[]>();
         _preparedRunArgumentsCache = new Dictionary<string, string>(StringComparer.Ordinal);
         _nonInputArgumentBindingCache = new Dictionary<string, string>(StringComparer.Ordinal);
+        _nonInputArgumentCandidatesByTaskOrdinal = new Dictionary<int, IReadOnlyList<(string Expression, string Member, string Direction, string ParameterType, int Depth)>>();
         _observedTaskParameterEvidenceCache = new Dictionary<int, IReadOnlyList<Dictionary<string, int>>>();
         _observedTaskParameterEvidenceInProgress = new HashSet<int>();
+        _incomingParameterCountCache = new Dictionary<int, int>();
         _taskParametersCache = new Dictionary<int, List<(string ColumnMember, string ParameterType, string ParameterName, string ParameterDirection)>>();
         _resolvedCallArgumentsCache = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
         _rowActionConditionCodeCache = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -164,5 +274,39 @@ internal static partial class ProjectGenerator
         _controlHandlerControlCache = new Dictionary<string, TaskFormControlDef?>(StringComparer.OrdinalIgnoreCase);
         _controlHandlerExactControlMapCache = new Dictionary<int, Dictionary<string, TaskFormControlDef>>();
         _controlHandlerMethodNameCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        _accessibleParentFunctionTargetsCache = new Dictionary<int, Dictionary<string, string>>();
+        PrecomputeStructuralGenerationIndexes(request.Parsed.Tasks);
+        _uniqueResourceReturnTypeByMemberName = BuildUniqueResourceReturnTypeByMemberNameIndex();
+    }
+
+    private static void PrecomputeStructuralGenerationIndexes(IReadOnlyList<TaskSemantic> tasks)
+    {
+        // These values depend only on the semantic model. Build them once before
+        // starting the parallel emitters so every worker can safely share the
+        // same read-only dictionaries instead of rebuilding the whole project.
+        foreach (var task in tasks)
+            ResolveTaskClassName(task, tasks);
+
+        foreach (var task in tasks)
+            ResolveTaskTypeReference(task, tasks);
+
+        foreach (var task in tasks)
+        {
+            GetReservedTaskMemberNames(task);
+            BuildTaskResourceMemberNameCache(task);
+        }
+
+        foreach (var task in tasks)
+        {
+            BuildReservedCommandNames(task);
+            BuildTaskCommandMemberMap(task);
+        }
+
+    }
+
+    private static void RegisterHandlerKind(IReadOnlyList<TaskHandlerDef> handlers, byte kind)
+    {
+        foreach (var handler in handlers)
+            _handlerKindByReference.TryAdd(handler, kind);
     }
 }

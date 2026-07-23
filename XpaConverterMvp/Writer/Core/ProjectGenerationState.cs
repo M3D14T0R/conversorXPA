@@ -1,7 +1,16 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 
 namespace XpaConverterMvp;
+
+internal sealed class IdentifierBindingPreparation
+{
+    public required Dictionary<string, string> LocalMap { get; init; }
+    public required Dictionary<string, string> ParentMap { get; init; }
+    public required Dictionary<string, string> ApplicationMap { get; init; }
+    public required HashSet<string> LocalFunctionNames { get; init; }
+}
 
 internal sealed class ProjectGenerationState
 {
@@ -11,9 +20,25 @@ internal sealed class ProjectGenerationState
     public Dictionary<int, DataObjectDef> DataObjectsByOrdinal { get; set; } = new();
     public IReadOnlyList<FieldModelDef> AllFieldModels { get; set; } = Array.Empty<FieldModelDef>();
     public IReadOnlyList<TaskSemantic> AllTasks { get; set; } = Array.Empty<TaskSemantic>();
+    public Dictionary<string, FunctionOverrideSemantic?> UniqueFunctionContractByLeaf { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public TaskSemantic? ApplicationTask { get; set; }
     public Dictionary<int, TaskSemantic> TasksByOrdinal { get; set; } = new();
+    public Dictionary<string, TaskSemantic> TasksByPublicName { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, string> EventCommandByDescription { get; set; } = new(StringComparer.Ordinal);
+    public Dictionary<int, string> ExpressionInvocationByOrdinal { get; set; } = new();
+    public Dictionary<TaskHandlerDef, byte> HandlerKindByReference { get; set; } = new(ReferenceEqualityComparer.Instance);
+    public Dictionary<TaskHandlerDef, HandlerBodySemantic> HandlerBodyByReference { get; set; } = new(ReferenceEqualityComparer.Instance);
+    public Dictionary<TaskResourceColumnDef, TaskSemantic> ResourceOwnerByReference { get; set; } = new(ReferenceEqualityComparer.Instance);
+    public Dictionary<string, string?> UniqueResourceReturnTypeByMemberName { get; set; } = new(StringComparer.Ordinal);
+    public Dictionary<int, TaskSemantic> TasksByDeclaredTaskId { get; set; } = new();
+    public Dictionary<int, TaskSemantic> TopLevelTasksByProgramIndex { get; set; } = new();
     public Dictionary<int, IReadOnlyList<TaskSemantic>> ChildTasksByParentOrdinal { get; set; } = new();
     public IReadOnlyList<TaskSemantic> TopLevelTasks { get; set; } = Array.Empty<TaskSemantic>();
+    public HashSet<string> TopLevelAccessibleResourceKeys { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public HashSet<int> SubformTargetTaskOrdinals { get; set; } = new();
+    public Dictionary<string, int> MultiFormCandidateCounts { get; set; } = new(StringComparer.Ordinal);
+    public Dictionary<string, int> ViewClassNameCounts { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public HashSet<string> ReservedViewClassNames { get; set; } = new(StringComparer.Ordinal);
     public Dictionary<int, string> FieldModelTypeNameByOrdinal { get; set; } = new();
     public Dictionary<int, string> TaskClassBaseNameByOrdinal { get; set; } = new();
     public Dictionary<int, int> TaskClassSiblingCollisionIndexByOrdinal { get; set; } = new();
@@ -25,6 +50,7 @@ internal sealed class ProjectGenerationState
     public HashSet<int> ResourceMemberNameCacheBuiltTaskOrdinals { get; set; } = new();
     public Dictionary<int, Dictionary<string, TaskResourceColumnDef>> TaskResourceByMemberNameCache { get; set; } = new();
     public Dictionary<int, HashSet<string>> ReservedTaskMemberNameCache { get; set; } = new();
+    public Dictionary<int, HashSet<string>> ReservedTaskCommandNameCache { get; set; } = new();
     public HashSet<string> LoadedSourceComponents { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, int> ResolvedCallTargetOrdinalCache { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string?> ExternalTaskTypeReferenceCache { get; set; } = new(StringComparer.OrdinalIgnoreCase);
@@ -53,6 +79,13 @@ internal sealed class ProjectGenerationState
     public Dictionary<int, IReadOnlyList<string>> AccessibleResourceKeysCache { get; set; } = new();
     public Dictionary<string, string>? ApplicationResourceBindingMap { get; set; }
     public Dictionary<int, Dictionary<string, string>> AncestorResourceBindingMapCache { get; set; } = new();
+    public Dictionary<int, Dictionary<string, string>> TaskResourceAliasMapCache { get; set; } = new();
+    public Dictionary<int, HashSet<string>> TaskResolvedMemberNameSetCache { get; set; } = new();
+    public ConcurrentDictionary<int, Dictionary<string, string>> ResolvedAncestorSelectBindingMapCache { get; } = new();
+    public Dictionary<int, TaskIoDef> OwnedMergeIoDefinitionCache { get; set; } = new();
+    public bool OwnedMergeIoDefinitionCacheInitialized { get; set; }
+    public object OwnedMergeIoDefinitionCacheLock { get; } = new();
+    public Dictionary<int, IdentifierBindingPreparation> IdentifierBindingPreparationCache { get; set; } = new();
     public Dictionary<int, Dictionary<string, string>> TaskCommandMemberMapCache { get; set; } = new();
     public Dictionary<int, HashSet<string>> AllowedParameterSelectNamesCache { get; set; } = new();
     public Dictionary<string, string> UpdateTargetExpressionCache { get; set; } = new(StringComparer.Ordinal);
@@ -74,11 +107,16 @@ internal sealed class ProjectGenerationState
     public Dictionary<string, bool> TextualNumericResourceOverrideCache { get; set; } = new(StringComparer.Ordinal);
     public Dictionary<string, bool> NumericTextResourceOverrideCache { get; set; } = new(StringComparer.Ordinal);
     public Dictionary<string, bool> LogicalBlobResourceOverrideCache { get; set; } = new(StringComparer.Ordinal);
+    public Dictionary<int, Dictionary<TaskResourceColumnDef, string>> EffectiveTaskResourceAttrObjCache { get; set; } = new();
+    public Dictionary<int, Dictionary<TaskResourceColumnDef, string>> TaskResourceColumnTypeCache { get; set; } = new();
+    public Dictionary<string, string> AttrObjForColumnTypeCache { get; set; } = new(StringComparer.Ordinal);
     public Dictionary<int, TaskUpdateDef[]> TaskUpdatesForArrayItemInferenceCache { get; set; } = new();
     public Dictionary<int, string[]> TaskTextsForArrayItemInferenceCache { get; set; } = new();
     public Dictionary<string, string> PreparedRunArgumentsCache { get; set; } = new(StringComparer.Ordinal);
     public Dictionary<string, string> NonInputArgumentBindingCache { get; set; } = new(StringComparer.Ordinal);
+    public Dictionary<int, IReadOnlyList<(string Expression, string Member, string Direction, string ParameterType, int Depth)>> NonInputArgumentCandidatesByTaskOrdinal { get; set; } = new();
     public Dictionary<int, int> OptionalRunParameterStartIndexCache { get; set; } = new();
+    public Dictionary<int, IReadOnlyList<(TaskSemantic Caller, TaskCallDef Call)>> IncomingTaskCallsByTargetOrdinal { get; set; } = new();
     public Dictionary<int, int> IncomingParameterCountCache { get; set; } = new();
     public Dictionary<int, IReadOnlyList<Dictionary<string, int>>> ObservedTaskParameterEvidenceCache { get; set; } = new();
     public HashSet<int> ObservedTaskParameterEvidenceInProgress { get; set; } = new();

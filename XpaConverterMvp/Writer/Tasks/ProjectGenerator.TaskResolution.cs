@@ -223,10 +223,7 @@ internal static partial class ProjectGenerator
         {
             if (string.Equals(call.OperationType, "P", StringComparison.OrdinalIgnoreCase))
             {
-                var topLevelProgram = allTasks.FirstOrDefault(t =>
-                    t.ParentOrdinal is null &&
-                    t.TopLevelProgramIndex == call.TaskId.Value);
-                if (topLevelProgram is not null)
+                if (_topLevelTasksByProgramIndex.TryGetValue(call.TaskId.Value, out var topLevelProgram))
                 {
                     _resolvedCallTargetOrdinalCache[cacheKey] = topLevelProgram.Ordinal;
                     return topLevelProgram;
@@ -353,6 +350,7 @@ internal static partial class ProjectGenerator
     private static Dictionary<int, int> BuildOptionalRunParameterStartIndexCache(IReadOnlyList<TaskSemantic> allTasks)
     {
         var result = allTasks.ToDictionary(t => t.Ordinal, _ => -1);
+        var incoming = new Dictionary<int, List<(TaskSemantic Caller, TaskCallDef Call)>>();
         var topLevelTasksByProgramIndex = allTasks
             .Where(t => !t.ParentOrdinal.HasValue && t.TopLevelProgramIndex.HasValue)
             .GroupBy(t => t.TopLevelProgramIndex!.Value)
@@ -366,18 +364,44 @@ internal static partial class ProjectGenerator
                 var effectiveArgumentCount = CountEffectiveCallArguments(call);
                 var resolved = ResolveTaskByCall(task, call, allTasks);
                 if (resolved is not null)
+                {
                     RegisterOptionalRunArgumentCount(result, resolved.Ordinal, effectiveArgumentCount);
+                    RegisterIncomingTaskCall(incoming, resolved.Ordinal, task, call);
+                }
 
                 if (TryResolveProgramIndexCallTargetIndex(call, out var targetIndex) &&
                     topLevelTasksByProgramIndex.TryGetValue(targetIndex, out var targets))
                 {
                     foreach (var target in targets)
+                    {
                         RegisterOptionalRunArgumentCount(result, target.Ordinal, effectiveArgumentCount);
+                        if (resolved?.Ordinal != target.Ordinal)
+                            RegisterIncomingTaskCall(incoming, target.Ordinal, task, call);
+                    }
                 }
             }
         }
 
+        _incomingTaskCallsByTargetOrdinal = incoming.ToDictionary(
+            kv => kv.Key,
+            kv => (IReadOnlyList<(TaskSemantic Caller, TaskCallDef Call)>)kv.Value);
+
         return result;
+    }
+
+    private static void RegisterIncomingTaskCall(
+        Dictionary<int, List<(TaskSemantic Caller, TaskCallDef Call)>> incoming,
+        int targetOrdinal,
+        TaskSemantic caller,
+        TaskCallDef call)
+    {
+        if (!incoming.TryGetValue(targetOrdinal, out var calls))
+        {
+            calls = new List<(TaskSemantic Caller, TaskCallDef Call)>();
+            incoming[targetOrdinal] = calls;
+        }
+
+        calls.Add((caller, call));
     }
 
     private static void RegisterOptionalRunArgumentCount(Dictionary<int, int> result, int targetOrdinal, int argumentCount)
@@ -427,15 +451,8 @@ internal static partial class ProjectGenerator
         if (!TryResolveProgramIndexCallTargetIndex(call, out var targetIndex))
             yield break;
 
-        foreach (var target in allTasks)
-        {
-            if (target.ParentOrdinal.HasValue ||
-                !target.TopLevelProgramIndex.HasValue ||
-                target.TopLevelProgramIndex.Value != targetIndex)
-                continue;
-
+        if (_topLevelTasksByProgramIndex.TryGetValue(targetIndex, out var target))
             yield return target;
-        }
     }
 
     private static bool TryResolveProgramIndexCallTargetIndex(TaskCallDef call, out int targetIndex)

@@ -115,7 +115,8 @@ internal static partial class ProjectGenerator
             code.AppendLine();
             code.AppendLine($"namespace {appNamespace}.Views;");
             code.AppendLine();
-            code.AppendLine($"public partial class {viewClass} : Shared.Theme.Controls.CompatibleForm");
+            code.AppendLine("[System.ComponentModel.DesignerCategory(\"Form\")]");
+            code.AppendLine($"public partial class {viewClass} : ENV.UI.Form");
             code.AppendLine("{");
             code.AppendLine($"    readonly {controllerType} _controller;");
             code.AppendLine($"    public {viewClass}()");
@@ -136,8 +137,6 @@ internal static partial class ProjectGenerator
                 var controlVar = Var(control);
                 code.AppendLine($"        {controlVar}.SetController(_controller.{s.FieldName}, _controller.{s.MethodName});");
             }
-            foreach (var control in controls.Where(c => string.Equals(c.Model, "CTRL_GUI0_TREE", StringComparison.OrdinalIgnoreCase)))
-                EmitTreeControlInitialization(code, control, Var(control), t, tasks, dataObjects);
             code.AppendLine("    }");
             foreach (var h in clickHandlers)
             {
@@ -293,6 +292,7 @@ internal static partial class ProjectGenerator
                     designer.AppendLine($"        {varName}.Size = new Size({Math.Max(10, ScaleViewX(c.Width))}, {Math.Max(10, ScaleViewY(c.Height))});");
                 }
                 designer.AppendLine($"        {varName}.Name = \"{varName}\";");
+                EmitViewControlPlacement(designer, c, varName);
                 var tabIndex = c.TabOrder ?? c.TabbingOrder;
                 if (tabIndex.HasValue)
                     designer.AppendLine($"        {varName}.TabIndex = {tabIndex.Value};");
@@ -305,22 +305,22 @@ internal static partial class ProjectGenerator
                 if (!string.IsNullOrWhiteSpace(c.ControlName) && !IsTableColumnViewControl(c))
                     designer.AppendLine($"        {varName}.Tag = {ToCSharpLiteral(c.ControlName)};");
                 if (c.ColorSchemeId.HasValue && !isNativeWinFormsControl)
-                    designer.AppendLine($"        {varName}.ColorScheme = ColorSchemes.Find({c.ColorSchemeId.Value});");
+                    AppendRuntimeControllerBindingStatement(controllerBindingStatements, $"{varName}.ColorScheme = ColorSchemes.Find({c.ColorSchemeId.Value});");
                 if (string.Equals(c.Model, "CTRL_GUI0_PUSH_BUTTON", StringComparison.OrdinalIgnoreCase))
                 {
                     if (c.ButtonStyleValue == 3)
                     {
                         designer.AppendLine($"        {varName}.Style = XPARuntimeCore.Box.UI.ButtonStyle.HyperLink;");
                         if (c.ColorSchemeId.HasValue)
-                            designer.AppendLine($"        {varName}.HyperLinkColorScheme = ColorSchemes.Find({c.ColorSchemeId.Value});");
+                            AppendRuntimeControllerBindingStatement(controllerBindingStatements, $"{varName}.HyperLinkColorScheme = ColorSchemes.Find({c.ColorSchemeId.Value});");
                     }
                     if (c.HoveringColorSchemeId.HasValue)
-                        designer.AppendLine($"        {varName}.HyperLinkMouseEnterColorScheme = ColorSchemes.Find({c.HoveringColorSchemeId.Value});");
+                        AppendRuntimeControllerBindingStatement(controllerBindingStatements, $"{varName}.HyperLinkMouseEnterColorScheme = ColorSchemes.Find({c.HoveringColorSchemeId.Value});");
                     if (c.VisitedColorSchemeId.HasValue)
-                        designer.AppendLine($"        {varName}.HyperLinkPressedColorScheme = ColorSchemes.Find({c.VisitedColorSchemeId.Value});");
+                        AppendRuntimeControllerBindingStatement(controllerBindingStatements, $"{varName}.HyperLinkPressedColorScheme = ColorSchemes.Find({c.VisitedColorSchemeId.Value});");
                 }
                 if (c.FontSchemeId.HasValue && !isNativeWinFormsControl)
-                    designer.AppendLine($"        {varName}.FontScheme = FontSchemes.Find({c.FontSchemeId.Value});");
+                    AppendRuntimeControllerBindingStatement(controllerBindingStatements, $"{varName}.FontScheme = FontSchemes.Find({c.FontSchemeId.Value});");
                 var alignmentExpr = ResolveViewAlignmentExpression(c) ?? ResolveInferredViewAlignmentExpression(c, t, dataObjects, tasks);
                 if (!isNativeWinFormsControl && !string.IsNullOrWhiteSpace(alignmentExpr) && !IsTableViewControl(c) && !IsTableColumnViewControl(c))
                     designer.AppendLine($"        {varName}.Alignment = {alignmentExpr};");
@@ -370,7 +370,7 @@ internal static partial class ProjectGenerator
                     if (string.Equals(c.SetTableColorBy, "2", StringComparison.OrdinalIgnoreCase))
                         designer.AppendLine($"        {varName}.RowColorStyle = XPARuntimeCore.Box.UI.GridRowColorStyle.AlternatingRowBackColor;");
                     if (c.AlternatingBgColor.HasValue)
-                        designer.AppendLine($"        {varName}.AlternatingColorScheme = ColorSchemes.Find({c.AlternatingBgColor.Value});");
+                        AppendRuntimeControllerBindingStatement(controllerBindingStatements, $"{varName}.AlternatingColorScheme = ColorSchemes.Find({c.AlternatingBgColor.Value});");
                     if (c.RowHeight.HasValue)
                         designer.AppendLine($"        {varName}.RowHeight = {Math.Max(1, ScaleViewY(c.RowHeight.Value))};");
                 }
@@ -551,6 +551,21 @@ internal static partial class ProjectGenerator
                 }
             }
 
+            var treeControls = controls
+                .Where(c => string.Equals(c.Model, "CTRL_GUI0_TREE", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (treeControls.Count > 0)
+            {
+                // ENV.UI.TreeView builds its nodes when it is attached to the form. Its
+                // structural bindings must therefore exist before Controls.Add. Keep the
+                // guard so the parameterless constructor remains safe for the VS Designer.
+                designer.AppendLine("        if (_controller is not null)");
+                designer.AppendLine("        {");
+                foreach (var control in treeControls)
+                    EmitTreeControlInitialization(designer, control, Var(control), t, tasks, dataObjects, indentation: "            ");
+                designer.AppendLine("        }");
+            }
+
             foreach (var controlId in rootControlIds)
             {
                 if (!controlById.TryGetValue(controlId, out var c))
@@ -578,9 +593,11 @@ internal static partial class ProjectGenerator
             designer.AppendLine("        HorizontalExpressionFactor = 4D;");
             designer.AppendLine("        HorizontalScale = 5D;");
             if (t.View.SelectedFormColorSchemeId is int formColorId)
-                designer.AppendLine($"        ColorScheme = ColorSchemes.Find({formColorId});");
+                AppendRuntimeControllerBindingStatement(controllerBindingStatements, $"ColorScheme = ColorSchemes.Find({formColorId});");
             if (t.View.SelectedFormFontSchemeId is int formFontId)
-                designer.AppendLine($"        FontScheme = FontSchemes.Find({formFontId});");
+                AppendRuntimeControllerBindingStatement(controllerBindingStatements, $"FontScheme = FontSchemes.Find({formFontId});");
+            if (selectedViewForm is not null)
+                EmitViewFormBehavior(designer, selectedViewForm);
             if (bindFormTitle)
                 designer.AppendLine("        BindText += new XPARuntimeCore.Box.UI.Advanced.BindingEventHandler<XPARuntimeCore.Box.UI.Advanced.StringBindingEventArgs>(this.this_BindText);");
             designer.AppendLine("        VerticalExpressionFactor = 8D;");
@@ -617,7 +634,8 @@ internal static partial class ProjectGenerator
             appView.AppendLine();
             appView.AppendLine($"namespace {appNamespace}.Views;");
             appView.AppendLine();
-            appView.AppendLine($"public partial class {appViewClass} : Shared.Theme.Controls.CompatibleForm");
+            appView.AppendLine("[System.ComponentModel.DesignerCategory(\"Form\")]");
+            appView.AppendLine($"public partial class {appViewClass} : ENV.UI.Form");
             appView.AppendLine("{");
             appView.AppendLine("    readonly Application _controller;");
             appView.AppendLine($"    public {appViewClass}()");
@@ -696,7 +714,7 @@ internal static partial class ProjectGenerator
         code.AppendLine();
         foreach (var placeholder in placeholders.OrderBy(x => x.Key, StringComparer.Ordinal))
         {
-            code.AppendLine($"public class {placeholder.Key} : Shared.Theme.Controls.CompatibleForm");
+            code.AppendLine($"public class {placeholder.Key} : ENV.UI.Form");
             code.AppendLine("{");
             code.AppendLine($"    public {placeholder.Key}()");
             code.AppendLine("    {");

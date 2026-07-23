@@ -44,22 +44,15 @@ internal static partial class ProjectGenerator
             return 0;
         }
 
-        var counts = new HashSet<int>();
-        foreach (var task in _allTasks)
+        if (!_incomingTaskCallsByTargetOrdinal.TryGetValue(targetTask.Ordinal, out var incomingCalls))
         {
-            foreach (var call in EnumerateTaskCalls(task))
-            {
-                if (call.OperationType != "T" || !call.TaskId.HasValue)
-                    continue;
-                var matchesTarget =
-                    call.TaskId == targetTask.Ordinal ||
-                    (targetTask.ParentOrdinal == task.Ordinal && targetTask.SubtaskIndex == call.TaskId.Value) ||
-                    CallTargetsTaskByProgramIndex(call, targetTask);
-                if (!matchesTarget)
-                    continue;
-                counts.Add(CountEffectiveCallArguments(call));
-            }
+            _incomingParameterCountCache[targetTask.Ordinal] = 0;
+            return 0;
         }
+
+        var counts = incomingCalls
+            .Select(x => CountEffectiveCallArguments(x.Call))
+            .ToHashSet();
 
         var result = counts.Count == 1 ? counts.First() : 0;
         _incomingParameterCountCache[targetTask.Ordinal] = result;

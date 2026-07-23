@@ -338,7 +338,7 @@ private static string ResolveDataSourceLiteralExpression(string literal, IReadOn
     {
         if (string.Equals(expressionAttr, "N", StringComparison.OrdinalIgnoreCase))
             return objectOrdinal.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        var direct = dataObjects.FirstOrDefault(d => d.Ordinal == objectOrdinal);
+        var direct = ResolveDataObjectByOrdinal(dataObjects, objectOrdinal);
         if (direct is not null)
             return $"typeof({ResolveEntityTypeReferenceForRegistry(direct)})";
         if (_dataSourceTypeByObjectOrdinal.TryGetValue(objectOrdinal, out var mapped))

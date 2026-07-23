@@ -10,20 +10,16 @@ namespace XpaConverterMvp;
 
 internal static partial class ProjectGenerator
 {
-    private const int LargeParallelTaskDegreeCap = 4;
+    private const int LargeParallelTaskDegreeCap = 2;
     private const int LargeParallelTaskWeightThreshold = 25_000;
     private const int LargeParallelHeadWeightThreshold = 100_000;
     private const int ParallelWorkerStackSizeBytes = 16 * 1024 * 1024;
-    private const double DefaultParallelGcAfterTaskMemoryGb = 22;
-    private const double DefaultParallelMemoryPauseGb = 22;
-    private const double DefaultParallelDynamicWorkerSoftPrivateGb = 14;
-    private const double DefaultParallelDynamicWorkerMediumPrivateGb = 18;
-    private const double DefaultParallelDynamicWorkerHardPrivateGb = 21;
+    private const double DefaultParallelMemoryPauseGb = 16;
+    private const double DefaultParallelHardMemoryPauseGb = 18;
+    private const double DefaultParallelDynamicWorkerSoftPrivateGb = 10;
+    private const double DefaultParallelDynamicWorkerMediumPrivateGb = 12;
+    private const double DefaultParallelDynamicWorkerHardPrivateGb = 14;
     private const double DefaultParallelWorkerCacheResetPrivateGb = 16;
-    private const long ParallelGcThrottleTicks = TimeSpan.TicksPerMinute;
-    private const long ParallelMemoryPauseThrottleTicks = TimeSpan.TicksPerSecond * 10;
-    private static long _lastParallelTaskGcTicks;
-    private static long _lastParallelMemoryPauseTicks;
 
     private static IReadOnlyList<TaskSemantic> ScheduleParallelSkeletonTasks(
         IReadOnlyList<TaskSemantic> skeletonTasks,
@@ -64,6 +60,7 @@ internal static partial class ProjectGenerator
         var weightedTasks = BuildWeightedSkeletonTasks(scheduledTasks);
         var remainingTasks = new List<(TaskSemantic Task, long Weight)>(weightedTasks);
         var sync = new object();
+        var activeTasks = 0;
         var activeHeavyTasks = 0;
         var exceptions = new ConcurrentQueue<Exception>();
         var workers = new Thread[workerDegree];
@@ -90,7 +87,11 @@ internal static partial class ProjectGenerator
                         continue;
                     }
 
-                    if (ShouldPauseParallelSchedulingForMemory())
+                    // Never let a high working set start another concurrent
+                    // program. If every worker is idle, allow exactly one to
+                    // continue so a reserved (but not live) GC heap cannot
+                    // deadlock the queue above the threshold.
+                    if (activeTasks > 0 && ShouldPauseParallelSchedulingForMemory())
                     {
                         Monitor.Wait(sync, TimeSpan.FromSeconds(2));
                         continue;
@@ -111,6 +112,7 @@ internal static partial class ProjectGenerator
                     {
                         item = remainingTasks[selectedIndex];
                         remainingTasks.RemoveAt(selectedIndex);
+                        activeTasks++;
                         if (IsLargeParallelSkeletonTask(item.Weight))
                             activeHeavyTasks++;
                         return true;
@@ -125,16 +127,13 @@ internal static partial class ProjectGenerator
         {
             var isLarge = IsLargeParallelSkeletonTask(item.Weight);
 
-            if (isLarge)
+            lock (sync)
             {
-                lock (sync)
-                {
+                activeTasks = Math.Max(0, activeTasks - 1);
+                if (isLarge)
                     activeHeavyTasks = Math.Max(0, activeHeavyTasks - 1);
-                    Monitor.PulseAll(sync);
-                }
+                Monitor.PulseAll(sync);
             }
-
-            MaybeCollectAfterParallelSkeletonTask(item, isLarge);
 
             lock (sync)
             {
@@ -148,25 +147,27 @@ internal static partial class ProjectGenerator
             var name = $"xpa-task-emitter-{workerIndex + 1}";
             workers[workerIndex] = new Thread(() =>
             {
-                var workerState = CreateIsolatedGenerationState();
-                var completedSinceStateReset = 0;
+                var taskState = CreateIsolatedGenerationState();
                 try
                 {
                     while (TryTakeNext(workerOrdinal, out var item))
                     {
+                        // Expression and resolution caches are valid only for
+                        // the program currently being emitted. Reusing them for
+                        // every program made each worker retain an ever-growing
+                        // graph for the entire conversion (catastrophic on
+                        // projects such as CGGeral). Keep the immutable global
+                        // indexes shared and give each output unit fresh caches.
                         try
                         {
-                            RunWithGenerationState(workerState, () => emitTask(item.Task));
+                            RunWithGenerationState(taskState, () => emitTask(item.Task));
                         }
                         finally
                         {
+                            // Release the just-completed program's expression
+                            // graph before a threshold-triggered collection.
+                            taskState = CreateNextProgramGenerationState(taskState);
                             Complete(item);
-                            completedSinceStateReset++;
-                            if (ShouldResetParallelWorkerState(completedSinceStateReset))
-                            {
-                                workerState = CreateParallelWorkerState(workerState);
-                                completedSinceStateReset = 0;
-                            }
                         }
                     }
                 }
@@ -242,7 +243,7 @@ internal static partial class ProjectGenerator
 
     private static int ResolveDynamicParallelActiveWorkerLimit(int maxWorkers, int remainingTasks, int totalTasks)
     {
-        if (maxWorkers <= 1 || !ResolveConfiguredBool("XPA_CONVERTER_PARALLEL_DYNAMIC_WORKERS", defaultValue: false))
+        if (maxWorkers <= 1 || !ResolveConfiguredBool("XPA_CONVERTER_PARALLEL_DYNAMIC_WORKERS", defaultValue: true))
             return maxWorkers;
 
         var minWorkers = Math.Clamp(
@@ -279,6 +280,18 @@ internal static partial class ProjectGenerator
             }
         }
 
+        var defaultInitialTaskCount = totalTasks >= 1_000 ? 32 : 0;
+        var initialTaskCount = Math.Max(0,
+            ResolveConfiguredInt("XPA_CONVERTER_PARALLEL_RAMP_INITIAL_TASKS", defaultInitialTaskCount));
+        if (initialTaskCount > 0 && totalTasks - remainingTasks < initialTaskCount)
+        {
+            var initialWorkers = Math.Clamp(
+                ResolveConfiguredInt("XPA_CONVERTER_PARALLEL_RAMP_INITIAL_WORKERS", minWorkers),
+                minWorkers,
+                maxWorkers);
+            limit = Math.Min(limit, initialWorkers);
+        }
+
         return limit;
     }
 
@@ -292,61 +305,29 @@ internal static partial class ProjectGenerator
         return thresholdGb > 0 && GetCurrentPrivateMemoryGb() >= thresholdGb;
     }
 
-    private static void MaybeCollectAfterParallelSkeletonTask((TaskSemantic Task, long Weight) item, bool isLarge)
-    {
-        var thresholdGb = ResolveParallelGcAfterTaskMemoryGb();
-        if (thresholdGb <= 0)
-            return;
-
-        var workingSetGb = Environment.WorkingSet / 1024d / 1024d / 1024d;
-        if (workingSetGb < thresholdGb)
-            return;
-
-        var nowTicks = DateTime.UtcNow.Ticks;
-        var previousTicks = Interlocked.Read(ref _lastParallelTaskGcTicks);
-        if (previousTicks > 0 && nowTicks - previousTicks < ParallelGcThrottleTicks)
-            return;
-        if (Interlocked.CompareExchange(ref _lastParallelTaskGcTicks, nowTicks, previousTicks) != previousTicks)
-            return;
-
-        var beforeGb = workingSetGb;
-        var stopwatch = Stopwatch.StartNew();
-        GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: false);
-        GC.WaitForPendingFinalizers();
-        stopwatch.Stop();
-        var afterGb = Environment.WorkingSet / 1024d / 1024d / 1024d;
-        var taskName = ResolveTaskClassName(item.Task, _allTasks);
-        ConversionTelemetry.LogDuration(
-            "GC",
-            taskName,
-            stopwatch.Elapsed,
-            $"section=\"after-task\" isLarge={isLarge.ToString().ToLowerInvariant()} weight={item.Weight} beforeGb={beforeGb.ToString("0.00", CultureInfo.InvariantCulture)} afterGb={afterGb.ToString("0.00", CultureInfo.InvariantCulture)} thresholdGb={thresholdGb.ToString("0.00", CultureInfo.InvariantCulture)}");
-    }
-
-    private static double ResolveParallelGcAfterTaskMemoryGb()
-    {
-        return ResolveConfiguredMemoryLimitGb("XPA_CONVERTER_GC_AFTER_TASK_MEMORY_GB", DefaultParallelGcAfterTaskMemoryGb);
-    }
-
     private static bool ShouldPauseParallelSchedulingForMemory()
     {
         var thresholdGb = ResolveParallelMemoryPauseGb();
         if (thresholdGb <= 0)
             return false;
 
-        var workingSetGb = Environment.WorkingSet / 1024d / 1024d / 1024d;
-        if (workingSetGb < thresholdGb)
+        var hardPrivateMemoryGb = ResolveConfiguredMemoryLimitGb(
+            "XPA_CONVERTER_PARALLEL_HARD_MEMORY_PAUSE_GB",
+            DefaultParallelHardMemoryPauseGb);
+        var privateMemoryGb = GetCurrentPrivateMemoryGb();
+        var managedHeapGb = GC.GetTotalMemory(forceFullCollection: false) / 1024d / 1024d / 1024d;
+        if (managedHeapGb < thresholdGb &&
+            (hardPrivateMemoryGb <= 0 || privateMemoryGb < hardPrivateMemoryGb))
+        {
+            // The GC can retain committed pages after the program graph was
+            // released. They remain in the process working set but are
+            // immediately reusable, so they must not permanently serialize
+            // the rest of the conversion.
             return false;
+        }
 
-        var nowTicks = DateTime.UtcNow.Ticks;
-        var previousTicks = Interlocked.Read(ref _lastParallelMemoryPauseTicks);
-        if (previousTicks > 0 && nowTicks - previousTicks < ParallelMemoryPauseThrottleTicks)
-            return false;
-        if (Interlocked.CompareExchange(ref _lastParallelMemoryPauseTicks, nowTicks, previousTicks) != previousTicks)
-            return false;
-
-        GC.Collect(2, GCCollectionMode.Forced, blocking: false, compacting: false);
-        return true;
+        return managedHeapGb >= thresholdGb ||
+               (hardPrivateMemoryGb > 0 && privateMemoryGb >= hardPrivateMemoryGb);
     }
 
     private static double ResolveParallelMemoryPauseGb()
