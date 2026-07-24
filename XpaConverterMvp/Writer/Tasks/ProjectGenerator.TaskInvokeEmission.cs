@@ -57,7 +57,7 @@ internal static partial class ProjectGenerator
                     var target = ResolveUpdateTargetExpression(invoke.ReturnVariable!, task, dataObjects, _allTasks ?? Array.Empty<TaskSemantic>());
                     if (!string.IsNullOrWhiteSpace(target))
                     {
-                        var valueExpr = CoerceInvokeReturnValue(callExpr, invoke.ReturnValue, invoke.ReturnVariable!, target, task);
+                        var valueExpr = EmitInvokeReturnValue(callExpr, invoke.ReturnValue, invoke.ReturnVariable!, target, task);
                         sb.AppendLine($"{innerPad}{BuildReturnAssignmentExpression(invoke.ReturnVariable!, target, valueExpr, task, invoke.XmlTrace)}");
                     }
                     else
@@ -98,7 +98,7 @@ internal static partial class ProjectGenerator
                     var target = ResolveUpdateTargetExpression(invoke.ReturnVariable!, task, dataObjects, _allTasks ?? Array.Empty<TaskSemantic>());
                     if (!string.IsNullOrWhiteSpace(target))
                     {
-                        var valueExpr = CoerceInvokeReturnValue(callExpr, invoke.ReturnValue, invoke.ReturnVariable!, target, task);
+                        var valueExpr = EmitInvokeReturnValue(callExpr, invoke.ReturnValue, invoke.ReturnVariable!, target, task);
                         sb.AppendLine($"{innerPad}{BuildReturnAssignmentExpression(invoke.ReturnVariable!, target, valueExpr, task, invoke.XmlTrace)}");
                     }
                     else
@@ -151,7 +151,7 @@ internal static partial class ProjectGenerator
             var stagedSnippetArgs = new List<(string TempName, string TargetExpr, string ValueType, string ReadExpr, string WriteExpr, bool InitializeFromValue)>();
             if (hasSnippetSignature)
             {
-                argValues = NormalizeSnippetArgumentValues(argValues, snippetParameterTypes, task);
+                argValues = EmitSnippetArgumentValues(argValues, snippetParameterTypes, task);
 
                 while (argValues.Count > parameters.Count &&
                        activeArgumentDefs is not null &&
@@ -279,14 +279,8 @@ internal static partial class ProjectGenerator
         if (string.IsNullOrWhiteSpace(expectedReturnType))
             return callExpr;
 
-        var evidence = new[]
-        {
-            CreateEvidence(sourceReturnType, EmittedExpressionTypeEvidenceKind.FunctionContract, "snippet-return"),
-            CreateEvidence(expectedReturnType, EmittedExpressionTypeEvidenceKind.SinkExpectedType, target, isExpectedType: true)
-        };
-        var request = new EmittedExpressionRequest(callExpr.Trim(), context.SinkKind.ToString(), expectedReturnType, target);
-        return StrictEmittedExpressionEngine.TryEmitFromReliableEvidence(request, evidence, out var emitted)
-            ? emitted.Code
+        return TryApplyTypedDestination(callExpr.Trim(), sourceReturnType, expectedReturnType, out var emitted)
+            ? emitted
             : callExpr;
     }
 
@@ -303,8 +297,7 @@ internal static partial class ProjectGenerator
                 continue;
 
             var value = adjusted[i].Trim();
-            if (IsWholeStringLiteralExpression(value) ||
-                value.StartsWith("u.CastToText(", StringComparison.Ordinal))
+            if (IsWholeStringLiteralExpression(value))
                 continue;
 
             if (TryEmitExpectedArgumentFromReliableEvidence(value, "Text", task, out var emitted))

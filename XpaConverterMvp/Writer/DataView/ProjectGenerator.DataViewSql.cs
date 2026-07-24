@@ -49,8 +49,6 @@ internal static partial class ProjectGenerator
             var expr = ResolveExpressionCode(expId.ToString(), task, dataObjects, CreateSqlExpressionEmissionContext());
             if (string.IsNullOrWhiteSpace(expr))
                 continue;
-            if (TryEmitThroughStrictEmittedExpression(expr, task, CreateSqlExpressionEmissionContext(), out var strictSqlExpression))
-                expr = strictSqlExpression;
             sb.AppendLine($"        sqlEntity.AddParameter(() => {expr});");
         }
 

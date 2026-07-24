@@ -240,13 +240,18 @@ private static bool TryBuildDnRefEvaluateStatement(string exprCode, TaskSemantic
 
         if (targetInfo.IsBlob)
         {
-            preamble.Add($"var {tempName} = u.ByteArrayToText({emittedArg}).ToString();");
-            epilogue.Add($"{emittedArg}.Value = u.CastToByteArray({tempName});");
-            TrackCriticalExternalCoercion(
-                "DotNetByRef",
-                nameof(TryBuildDnRefEvaluateStatement),
-                "dnref-blob-bridge",
-                $"arg={i} target={emittedArg}");
+            var initialValue = EmitFromReliableTypeEvidence(
+                emittedArg,
+                "byte[]",
+                "Text",
+                "dotnet-byref");
+            var assignedValue = EmitFromReliableTypeEvidence(
+                tempName,
+                "Text",
+                "byte[]",
+                "dotnet-byref");
+            preamble.Add($"var {tempName} = {initialValue}.ToString();");
+            epilogue.Add($"{emittedArg}.Value = {assignedValue};");
         }
         else if (string.Equals(targetInfo.AttrObj, "FIELD_ALPHA", StringComparison.OrdinalIgnoreCase) ||
                  string.Equals(targetInfo.ModelAttrObj, "FIELD_ALPHA", StringComparison.OrdinalIgnoreCase))

@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text;
+using XpaConverterMvp.TypeSystem;
 
 namespace XpaConverterMvp;
 
@@ -60,7 +61,14 @@ internal static partial class ProjectGenerator
         sb.AppendLine("    {");
         sb.AppendLine("        string value;");
         sb.AppendLine("        action(out value);");
-        sb.AppendLine("        target.Value = global::ENV.UserMethods.Instance.CastToByteArray(value ?? \"\");");
+        sb.AppendLine(
+            "        target.Value = " +
+            XpaExpressionTypeMap.Convert(
+                "value ?? \"\"",
+                XpaType.Object,
+                XpaType.Blob,
+                "global::ENV.UserMethods.Instance") +
+            ";");
         sb.AppendLine("    }");
         sb.AppendLine();
         sb.AppendLine("    internal static void InvokeStringOut(global::ENV.Data.TextColumn target, StringOutAction action)");
@@ -74,7 +82,14 @@ internal static partial class ProjectGenerator
         sb.AppendLine("    {");
         sb.AppendLine("        var value = global::ENV.UserMethods.Instance.ByteArrayToText(target).ToString();");
         sb.AppendLine("        action(ref value);");
-        sb.AppendLine("        target.Value = global::ENV.UserMethods.Instance.CastToByteArray(value ?? \"\");");
+        sb.AppendLine(
+            "        target.Value = " +
+            XpaExpressionTypeMap.Convert(
+                "value ?? \"\"",
+                XpaType.Object,
+                XpaType.Blob,
+                "global::ENV.UserMethods.Instance") +
+            ";");
         sb.AppendLine("    }");
         sb.AppendLine();
         sb.AppendLine("    internal static void InvokeStringRef(global::ENV.Data.TextColumn target, StringRefAction action)");

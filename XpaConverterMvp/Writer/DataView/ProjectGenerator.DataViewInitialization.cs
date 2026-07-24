@@ -97,7 +97,6 @@ internal static partial class ProjectGenerator
             long assignmentConditionMs = 0;
             long filterConditionMs = 0;
             long overrideConditionMs = 0;
-            long normalizeConditionMs = 0;
             long emitRelationMs = 0;
             long writeModeBoundMs = 0;
             long notifyMs = 0;
@@ -151,11 +150,6 @@ internal static partial class ProjectGenerator
                 condExpr = OverrideLinkConditionByReturnHint(t, dataObjects, linkMembers, i, lb, target, condExpr);
                 sw.Stop();
                 overrideConditionMs += sw.ElapsedMilliseconds;
-                sw.Restart();
-                condExpr = NormalizeLinkConditionForWriteMode(lb.Link, condExpr);
-                sw.Stop();
-                normalizeConditionMs += sw.ElapsedMilliseconds;
-
                 var relationTypePrefix = "";
                 if (string.Equals(lb.Link.Mode, "W", StringComparison.OrdinalIgnoreCase))
                     relationTypePrefix = "RelationType.InsertIfNotFound, ";
@@ -221,7 +215,7 @@ internal static partial class ProjectGenerator
                 $"{className} totalMs={relationsTotalSw.ElapsedMilliseconds} count={relationCount} " +
                 $"bind-enabled-ms={bindEnabledMs} orderby-ms={orderByMs} direct-ms={directConditionMs} " +
                 $"assign-ms={assignmentConditionMs} filters-ms={filterConditionMs} override-ms={overrideConditionMs} " +
-                $"normalize-ms={normalizeConditionMs} emit-ms={emitRelationMs} writebound-ms={writeModeBoundMs} " +
+                $"emit-ms={emitRelationMs} writebound-ms={writeModeBoundMs} " +
                 $"notify-ms={notifyMs} bindrelation-ms={bindRelationEnabledMs}");
         }, "DATAVIEW", className, "emit-relations");
 

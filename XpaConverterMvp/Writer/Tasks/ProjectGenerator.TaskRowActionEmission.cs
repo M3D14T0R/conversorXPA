@@ -21,7 +21,6 @@ internal static partial class ProjectGenerator
         if (action.LoopConditionExpressionId.HasValue)
         {
             var loopCond = ResolveExpressionCode(action.LoopConditionExpressionId.Value.ToString(), t, dataObjects, CreateBooleanConditionEmissionContext());
-            loopCond = NormalizeStatementBooleanConditionSyntax(loopCond);
             if (!string.IsNullOrWhiteSpace(loopCond))
             {
                 sb.AppendLine($"{pad}u.StartBlockLoop();");
@@ -46,7 +45,6 @@ internal static partial class ProjectGenerator
             }
         }
         var actionCond = ResolveActionConditionCode(action, t, dataObjects);
-        actionCond = NormalizeStatementBooleanConditionSyntax(actionCond);
         if (action.Kind == "Call" &&
             action.Call is not null &&
             !string.IsNullOrWhiteSpace(actionCond) &&

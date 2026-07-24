@@ -17,12 +17,5 @@ private static bool IsZeroLikeLiteral(string value)
     return trimmed == "0" || trimmed == "0000";
 }
 
-private static string ApplyExpressionFormattingNormalization(string expr)
-{
-    if (string.IsNullOrWhiteSpace(expr))
-        return expr;
-
-    return NormalizeOperatorSpacingOutsideQuotes(expr);
-}
 }
 

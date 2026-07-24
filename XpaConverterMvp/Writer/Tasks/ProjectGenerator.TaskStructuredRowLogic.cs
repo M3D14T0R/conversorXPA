@@ -452,7 +452,6 @@ internal static partial class ProjectGenerator
             (!currentLoopConditionId.HasValue || io.LoopConditionExpressionId != currentLoopConditionId))
         {
             var loopCond = ResolveExpressionCode(io.LoopConditionExpressionId.Value.ToString(), task, dataObjects, CreateBooleanConditionEmissionContext());
-            loopCond = NormalizeStatementBooleanConditionSyntax(loopCond);
             if (!string.IsNullOrWhiteSpace(loopCond))
             {
                 sb.AppendLine($"{pad}u.StartBlockLoop();");
@@ -498,7 +497,7 @@ internal static partial class ProjectGenerator
         if (!io.ConditionExpressionId.HasValue)
             return "";
         var cond = ResolveExpressionCode(io.ConditionExpressionId.Value.ToString(), task, dataObjects, CreateBooleanConditionEmissionContext());
-        return NormalizeStatementBooleanConditionSyntax(cond);
+        return cond;
     }
 
     private static TaskFormIoDef StripFormIoCondition(TaskFormIoDef io)

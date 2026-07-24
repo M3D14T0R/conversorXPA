@@ -103,7 +103,6 @@ internal static partial class ProjectGenerator
         if (string.IsNullOrWhiteSpace(condExpr))
             condExpr = ResolveLinkConditionFromSelectFilters(t, dataObjects, linkMember, target, linkSequence, relationFilterSelectsByDbObj);
         condExpr = OverrideLinkConditionByReturnHint(t, dataObjects, linkMembers, linkSequence - 1, linkMember, target, condExpr);
-        condExpr = NormalizeLinkConditionForWriteMode(link, condExpr);
         if (string.IsNullOrWhiteSpace(condExpr))
             return false;
 
@@ -324,7 +323,7 @@ internal static partial class ProjectGenerator
             ConversionTelemetry.LogDuration("CALLPIPE", telemetryOwner, TimeSpan.Zero, $"section=\"align-run-args\" target={QuoteTelemetry(targetName)}");
             ConversionTelemetry.LogDuration("CALLPIPE", telemetryOwner, TimeSpan.Zero, $"section=\"repair-run-args\" target={QuoteTelemetry(targetName)}");
             ConversionTelemetry.LogDuration("CALLPIPE", telemetryOwner, TimeSpan.Zero, $"section=\"trim-run-args\" target={QuoteTelemetry(targetName)}");
-            ConversionTelemetry.LogDuration("CALLPIPE", telemetryOwner, TimeSpan.Zero, $"section=\"coerce-run-args\" target={QuoteTelemetry(targetName)}");
+            ConversionTelemetry.LogDuration("CALLPIPE", telemetryOwner, TimeSpan.Zero, $"section=\"emit-run-args\" target={QuoteTelemetry(targetName)}");
             return cached;
         }
 
@@ -340,15 +339,15 @@ internal static partial class ProjectGenerator
         trimmedRunArgs = TrimRunArgumentsForTarget(trimmedRunArgs, targetTask);
         ConversionTelemetry.LogDuration("CALLPIPE", telemetryOwner, trimStopwatch.Elapsed, $"section=\"trim-run-args\" target={QuoteTelemetry(targetName)}");
 
-        var coerceStopwatch = Stopwatch.StartNew();
-        var preCoerceRunArgs = trimmedRunArgs;
-        trimmedRunArgs = CoerceRunArgumentsForTarget(trimmedRunArgs, currentTask, targetTask);
-        var coercedArgumentCount = CountChangedRunArguments(preCoerceRunArgs, trimmedRunArgs);
+        var typeEmissionStopwatch = Stopwatch.StartNew();
+        var preEmissionRunArgs = trimmedRunArgs;
+        trimmedRunArgs = EmitRunArgumentsForTarget(trimmedRunArgs, currentTask, targetTask);
+        var changedArgumentCount = CountChangedRunArguments(preEmissionRunArgs, trimmedRunArgs);
         ConversionTelemetry.LogDuration(
             "CALLPIPE",
             telemetryOwner,
-            coerceStopwatch.Elapsed,
-            $"section=\"coerce-run-args\" target={QuoteTelemetry(targetName)} changed={coercedArgumentCount}");
+            typeEmissionStopwatch.Elapsed,
+            $"section=\"emit-run-args\" target={QuoteTelemetry(targetName)} changed={changedArgumentCount}");
 
         _preparedRunArgumentsCache[cacheKey] = trimmedRunArgs;
         return trimmedRunArgs;

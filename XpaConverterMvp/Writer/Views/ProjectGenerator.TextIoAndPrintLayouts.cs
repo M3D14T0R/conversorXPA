@@ -216,13 +216,7 @@ internal static partial class ProjectGenerator
         if (string.IsNullOrWhiteSpace(expression))
             return false;
 
-        var trimmed = expression.Trim();
-        if (trimmed.StartsWith("u.CastToByteArray(", StringComparison.Ordinal) ||
-            trimmed.StartsWith("u.File2Blb(", StringComparison.Ordinal) ||
-            trimmed.StartsWith("u.BlobFromBase64(", StringComparison.Ordinal))
-            return true;
-
-        var targetInfo = ResolveTargetValueInfo(task, null, trimmed);
+        var targetInfo = ResolveTargetValueInfo(task, null, expression.Trim());
         return targetInfo.IsBlob && !targetInfo.IsArray;
     }
 

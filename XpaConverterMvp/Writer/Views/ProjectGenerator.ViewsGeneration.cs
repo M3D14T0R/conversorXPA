@@ -140,12 +140,12 @@ internal static partial class ProjectGenerator
             code.AppendLine("    }");
             foreach (var h in clickHandlers)
             {
-                var raiseExpression = CanonicalizeViewRaiseExpression(h.RaiseExpression, t);
+                var raiseExpression = h.RaiseExpression;
                 if (controlById.TryGetValue(h.ControlId, out var clickControl))
                 {
                     var canonicalRaiseExpression = ResolveViewControlRaiseExpression(clickControl, t, buttonModels);
                     if (!string.IsNullOrWhiteSpace(canonicalRaiseExpression))
-                        raiseExpression = CanonicalizeViewRaiseExpression(canonicalRaiseExpression, t);
+                        raiseExpression = canonicalRaiseExpression;
                 }
                 var clickArgs = ResolveArgumentExpressions(h.ArgumentDefs, h.Arguments, t, dataObjects, selectMap, tasks);
                 clickArgs = clickArgs
@@ -445,20 +445,20 @@ internal static partial class ProjectGenerator
                 if (!string.IsNullOrWhiteSpace(dataExpr) &&
                     string.Equals(c.Model, "CTRL_GUI0_PUSH_BUTTON", StringComparison.OrdinalIgnoreCase))
                 {
-                    var buttonDataExpr = NormalizePushButtonDirectDataAssignmentExpression($"_controller.{dataExpr}", t, tasks);
+                    var buttonDataExpr = BuildPushButtonDirectDataAssignmentExpression($"_controller.{dataExpr}", t, tasks);
                     designer.AppendLine($"        {varName}.RaiseChangeOnClick = true;");
                     AppendRuntimeControllerBindingStatement(controllerBindingStatements, $"{varName}.Data = {buttonDataExpr};");
                     didBindData = true;
                 }
                 else if (!string.IsNullOrWhiteSpace(dataExpr) && IsViewCheckBoxControl(c))
                 {
-                    var checkBoxDataExpr = NormalizeCheckBoxDirectDataAssignmentExpression($"_controller.{dataExpr}", t, tasks);
+                    var checkBoxDataExpr = BuildCheckBoxDirectDataAssignmentExpression($"_controller.{dataExpr}", t, tasks);
                     AppendRuntimeControllerBindingStatement(controllerBindingStatements, $"{varName}.Data = {checkBoxDataExpr};");
                     didBindData = true;
                 }
                 else if (!string.IsNullOrWhiteSpace(dataExpr) && IsViewImageControl(c))
                 {
-                    var imageDataExpr = NormalizeImageDirectDataAssignmentExpression($"_controller.{dataExpr}", t, tasks);
+                    var imageDataExpr = BuildImageDirectDataAssignmentExpression($"_controller.{dataExpr}", t, tasks);
                     AppendRuntimeControllerBindingStatement(controllerBindingStatements, $"{varName}.Data = {imageDataExpr};");
                     didBindData = true;
                 }
@@ -472,7 +472,7 @@ internal static partial class ProjectGenerator
                     var dataBindingExpr = ResolveControlDataExpressionBindingForView(c, t, dataObjects, tasks);
                     if (!string.IsNullOrWhiteSpace(dataBindingExpr) && SupportsDirectViewDataAssignment(c))
                     {
-                        dataBindingExpr = NormalizeViewDataAssignmentExpression(c, dataBindingExpr, t, tasks);
+                        dataBindingExpr = BuildViewDataAssignmentExpression(c, dataBindingExpr, t, tasks);
                         dataBindingExpr = PrefixControllerReferencesForView(dataBindingExpr, t, dataObjects);
                         dataBindingExpr = EnsureControllerScopedViewBinding(dataBindingExpr);
                         if (dataBindingExpr.Contains("_controller.", StringComparison.Ordinal))

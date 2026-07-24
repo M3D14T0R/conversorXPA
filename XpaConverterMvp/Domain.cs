@@ -1104,9 +1104,9 @@ internal sealed record ExpressionSemantic(
 internal sealed record ExpressionEntrySemantic(
     int Ordinal,
     string Syntax,
-    string LiteralNormalizedSyntax,
+    string LiteralSourceSyntax,
     string Attribute,
-    string NormalizedSyntax,
+    string SourceSyntax,
     bool IsStringLiteral,
     bool HasEop,
     bool HasIoCurr,

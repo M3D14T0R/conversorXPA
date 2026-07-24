@@ -85,7 +85,7 @@ internal static partial class ProjectGenerator
 
         var resolved = TrySplitCndRangeExpression(expr, out _, out _)
             ? expr
-            : NormalizeComparisonRightExpression(task, leftExpr, expr);
+            : EmitComparisonRightExpression(task, leftExpr, expr);
         _filterOperandExpressionCache[cacheKey] = resolved;
         return resolved;
     }
@@ -128,14 +128,14 @@ internal static partial class ProjectGenerator
     {
         if (TrySplitCndRangeExpression(rightExpr, out var condExpr, out var valueExpr))
         {
-            valueExpr = NormalizeComparisonRightExpression(task, leftExpr, valueExpr);
+            valueExpr = EmitComparisonRightExpression(task, leftExpr, valueExpr);
             var comparison = ShouldUseBindEqualTo(link, valueExpr)
                 ? BuildLinkBindEqualTo(leftExpr, valueExpr)
                 : BuildLinkIsEqualTo(leftExpr, valueExpr);
             return $"CndRange(() => {condExpr}, {comparison})";
         }
 
-        rightExpr = NormalizeComparisonRightExpression(task, leftExpr, rightExpr);
+        rightExpr = EmitComparisonRightExpression(task, leftExpr, rightExpr);
         return ShouldUseBindEqualTo(link, rightExpr)
             ? BuildLinkBindEqualTo(leftExpr, rightExpr)
             : BuildLinkIsEqualTo(leftExpr, rightExpr);
@@ -366,7 +366,7 @@ internal static partial class ProjectGenerator
         if (TrySplitCndRangeExpression(rightExpr, out var condExpr, out var valueExpr))
             return $"CndRange(() => {condExpr}, {BuildFilterIsEqualTo(task, leftExpr, valueExpr)})";
 
-        rightExpr = NormalizeComparisonRightExpression(task, leftExpr, rightExpr);
+        rightExpr = EmitComparisonRightExpression(task, leftExpr, rightExpr);
         return $"{leftExpr}.IsEqualTo({FormatComparisonArgument(rightExpr, deferDynamicExpressions: true, allowParentDirect: true)})";
     }
 
@@ -375,7 +375,7 @@ internal static partial class ProjectGenerator
         if (TrySplitCndRangeExpression(rightExpr, out var condExpr, out var valueExpr))
             return $"CndRange(() => {condExpr}, {BuildFilterBindEqualTo(task, leftExpr, valueExpr)})";
 
-        rightExpr = NormalizeComparisonRightExpression(task, leftExpr, rightExpr);
+        rightExpr = EmitComparisonRightExpression(task, leftExpr, rightExpr);
         return $"{leftExpr}.BindEqualTo({FormatComparisonArgument(rightExpr, deferDynamicExpressions: false, allowParentDirect: true)})";
     }
 
@@ -384,7 +384,7 @@ internal static partial class ProjectGenerator
         if (TrySplitCndRangeExpression(rightExpr, out var condExpr, out var valueExpr))
             return $"CndRange(() => {condExpr}, {BuildFilterIsGreaterOrEqualTo(task, leftExpr, valueExpr)})";
 
-        rightExpr = NormalizeComparisonRightExpression(task, leftExpr, rightExpr);
+        rightExpr = EmitComparisonRightExpression(task, leftExpr, rightExpr);
         return $"{leftExpr}.IsGreaterOrEqualTo({rightExpr})";
     }
 
@@ -393,14 +393,14 @@ internal static partial class ProjectGenerator
         if (TrySplitCndRangeExpression(rightExpr, out var condExpr, out var valueExpr))
             return $"CndRange(() => {condExpr}, {BuildFilterIsLessOrEqualTo(task, leftExpr, valueExpr)})";
 
-        rightExpr = NormalizeComparisonRightExpression(task, leftExpr, rightExpr);
+        rightExpr = EmitComparisonRightExpression(task, leftExpr, rightExpr);
         return $"{leftExpr}.IsLessOrEqualTo({rightExpr})";
     }
 
     private static string BuildFilterIsBetween(TaskSemantic task, string leftExpr, string minExpr, string maxExpr)
     {
-        minExpr = NormalizeComparisonRightExpression(task, leftExpr, minExpr);
-        maxExpr = NormalizeComparisonRightExpression(task, leftExpr, maxExpr);
+        minExpr = EmitComparisonRightExpression(task, leftExpr, minExpr);
+        maxExpr = EmitComparisonRightExpression(task, leftExpr, maxExpr);
         return $"{leftExpr}.IsBetween({minExpr}, {maxExpr})";
     }
 
@@ -530,19 +530,6 @@ internal static partial class ProjectGenerator
         }
 
         return false;
-    }
-
-    private static string NormalizeLinkConditionForWriteMode(TaskLogicLinkDef link, string condExpr)
-    {
-        if (!string.Equals(link.Mode, "W", StringComparison.OrdinalIgnoreCase))
-            return condExpr;
-        if (string.IsNullOrWhiteSpace(condExpr))
-            return condExpr;
-        if (condExpr.Contains("BindEqualTo(", StringComparison.Ordinal))
-            return condExpr;
-        if (ContainsPrimaryIdParameterExpression(condExpr))
-            return condExpr;
-        return condExpr.Replace(".IsEqualTo(", ".BindEqualTo(", StringComparison.Ordinal);
     }
 
     private static bool ShouldUseBindEqualTo(TaskLogicLinkDef link, string rightExpr)

@@ -38,7 +38,7 @@ internal static partial class ProjectGenerator
                     var special = TryTranslateWholeExpressionSemantically(exp, t);
                     if (!string.IsNullOrWhiteSpace(special))
                     {
-                        translated = EmitExpressionForContext(NormalizeDateConstructorMappings(special), t, context);
+                        translated = EmitExpressionForContext(special, t, context);
                     }
                     else if (exp.IsStringLiteral)
                     {
@@ -74,7 +74,7 @@ internal static partial class ProjectGenerator
         else if (context.Expected.HasExpectation)
         {
             var expectedReturnType = ResolveReturnTypeForExpectedContext(context.Expected);
-            if (TryNormalizeDirectResourceReference(rawWithValue, t, out var directResourceReference))
+            if (TryResolveDirectResourceReference(rawWithValue, t, out var directResourceReference))
             {
                 value = directResourceReference;
             }
@@ -90,7 +90,7 @@ internal static partial class ProjectGenerator
         return value;
     }
 
-    private static bool TryNormalizeDirectResourceReference(string rawValue, TaskSemantic task, out string reference)
+    private static bool TryResolveDirectResourceReference(string rawValue, TaskSemantic task, out string reference)
     {
         reference = "";
         var trimmed = (rawValue ?? "").Trim();
@@ -208,31 +208,11 @@ internal static partial class ProjectGenerator
             if (!targetInfo.IsBlob)
                 targetInfo = RecalibrateTargetInfoFromResolvedColumnType(targetInfo, resolvedColumnType);
         }
-        if (TryNormalizeDirectResourceReference(value, task, out var normalizedDirectReference))
-            value = normalizedDirectReference;
-        var assignmentContext = CreateAssignmentEmissionContext(targetInfo, target);
-        var emittedThroughStrict = TryEmitThroughStrictEmittedExpression(value, task, assignmentContext, out var strictValue);
-        if (emittedThroughStrict)
-            value = strictValue;
+        if (TryResolveDirectResourceReference(value, task, out var directReference))
+            value = directReference;
         if (TryEmitAssignmentValueFromKnownTypes(value, task, targetInfo, out var knownTypedValue))
             value = knownTypedValue;
-        else if (!emittedThroughStrict &&
-                 TryEmitForDeclaredAssignmentType(value, task, resolvedColumnType, out var declaredValue))
-            value = declaredValue;
-        value = RenderDeclaredAssignmentBridge(value, resolvedColumnType);
         var topLevelCall = TryGetTopLevelFunctionName(value);
-        if (targetInfo.IsArray &&
-            value.Trim().Equals("u.CastToByteArray(u.Null())", StringComparison.Ordinal))
-        {
-            var previousValue = value;
-            value = "u.CastToTextArray(u.Null())";
-            TrackCriticalExternalCoercionIfBridgeChanged(
-                "Assignment",
-                "ArrayNullBridge",
-                previousValue,
-                value,
-                $"target={target} declaredColumnType={resolvedColumnType}");
-        }
 
         if (update.Incremental)
         {
@@ -246,8 +226,6 @@ internal static partial class ProjectGenerator
                 return $"{target}.Value = {value};";
             return BuildIncrementalAssignment(target, value);
         }
-        if (target.StartsWith("_parent.", StringComparison.Ordinal))
-            value = Regex.Replace(value, @"\bN\b", target);
         if (IsTopLevelCall(topLevelCall, "u.Blb2File"))
             return $"{target}.Value = {value};";
         if (IsTopLevelCall(topLevelCall, "u.IOCurr"))
@@ -255,7 +233,7 @@ internal static partial class ProjectGenerator
         if (target.StartsWith("_parent.", StringComparison.Ordinal) &&
             targetInfo.IsDotNet &&
             resource is not null)
-            return $"{target} = {NormalizeDotNetAssignmentExpression(value, resource.ObjectType)};";
+            return $"{target} = {EmitDotNetAssignmentExpression(value, resource.ObjectType)};";
         if (resource is not null &&
             !string.IsNullOrWhiteSpace(resolvedColumnType) &&
             resolvedColumnType.StartsWith("Types.", StringComparison.Ordinal))
@@ -265,21 +243,21 @@ internal static partial class ProjectGenerator
         var isResourceVariable = resource is not null || target.StartsWith("_parent.", StringComparison.Ordinal);
         if (isModelColumnTarget)
         {
-            if (TryNormalizeBlobWrappedNewClrExpression(value, out var modelClrAssignmentValue))
+            if (TryEmitBlobWrappedNewClrExpression(value, out var modelClrAssignmentValue))
                 value = modelClrAssignmentValue;
             return $"{target}.Value = {value};";
         }
         if (target.StartsWith("_parent.", StringComparison.Ordinal))
         {
-            if (TryNormalizeBlobWrappedNewClrExpression(value, out var parentClrAssignmentValue))
+            if (TryEmitBlobWrappedNewClrExpression(value, out var parentClrAssignmentValue))
                 value = parentClrAssignmentValue;
             return $"{target}.Value = {value};";
         }
         if (isResourceVariable)
         {
             if (resource is not null && targetInfo.IsDotNet)
-                return $"{target} = {NormalizeDotNetAssignmentExpression(value, resource.ObjectType)};";
-            if (TryNormalizeBlobWrappedNewClrExpression(value, out var resourceClrAssignmentValue))
+                return $"{target} = {EmitDotNetAssignmentExpression(value, resource.ObjectType)};";
+            if (TryEmitBlobWrappedNewClrExpression(value, out var resourceClrAssignmentValue))
                 value = resourceClrAssignmentValue;
             if (TryBuildBlobVariantAssignment(target, value, resource?.AttrObj, preferValueForResourceAssignments || update.ForcedUpdate, out var blobVariantAssignment))
                 return blobVariantAssignment;
@@ -328,7 +306,7 @@ internal static partial class ProjectGenerator
         }
 
         if (string.IsNullOrWhiteSpace(expectedReturnType) ||
-            !TryResolveStrictSourceReturnType(value, task, out var sourceReturnType) ||
+            !TryResolveKnownExpressionReturnTypeWithoutLegacy(task, value, out var sourceReturnType) ||
             string.IsNullOrWhiteSpace(sourceReturnType))
         {
             return false;
@@ -359,82 +337,6 @@ internal static partial class ProjectGenerator
         emitted = EmitFromReliableTypeEvidence(value, "object", expectedReturnType, normalizedFunction);
         return !string.IsNullOrWhiteSpace(emitted) &&
                !string.Equals(emitted.Trim(), value.Trim(), StringComparison.Ordinal);
-    }
-
-    private static bool TryEmitForDeclaredAssignmentType(
-        string value,
-        TaskSemantic task,
-        string? declaredColumnType,
-        out string emitted)
-    {
-        emitted = "";
-        var expectedReturnType = declaredColumnType switch
-        {
-            "TextColumn" => "Text",
-            "NumberColumn" => "Number",
-            "DateColumn" => "Date",
-            "TimeColumn" => "Time",
-            "BoolColumn" => "Bool",
-            "ByteArrayColumn" => "byte[]",
-            "ArrayColumn<Text>" => "Text[]",
-            "ArrayColumn<Number>" => "Number[]",
-            "ArrayColumn<Date>" => "Date[]",
-            "ArrayColumn<Time>" => "Time[]",
-            "ArrayColumn<Bool>" => "Bool[]",
-            "ArrayColumn<byte[]>" => "byte[][]",
-            _ => ""
-        };
-        if (string.IsNullOrWhiteSpace(expectedReturnType))
-            return false;
-
-        var context = CreateExpectedEmissionContext(ExpectedTypeForReturnType(expectedReturnType));
-        return TryEmitThroughStrictEmittedExpression(value, task, context, out emitted);
-    }
-
-    private static string RenderDeclaredAssignmentBridge(string value, string? declaredColumnType)
-    {
-        var trimmed = value.Trim();
-        if (string.IsNullOrWhiteSpace(trimmed))
-            return value;
-
-        var rendered = declaredColumnType switch
-        {
-            "NumberColumn" when IsObjectReturningRuntimeCall(trimmed) => $"u.CastToNumber({trimmed})",
-            "TextColumn" when IsObjectReturningRuntimeCall(trimmed) => $"u.CastToText({trimmed})",
-            "ByteArrayColumn" when IsObjectReturningRuntimeCall(trimmed) => $"u.CastToByteArray({trimmed})",
-            _ => value
-        };
-        return TrackCriticalExternalCoercionIfBridgeChanged(
-            "Assignment",
-            nameof(RenderDeclaredAssignmentBridge),
-            trimmed,
-            rendered,
-            $"declaredColumnType={declaredColumnType} expr={trimmed}");
-    }
-
-    private static bool IsObjectReturningRuntimeCall(string value)
-    {
-        var functionName = TryGetTopLevelFunctionName(value);
-        if (string.IsNullOrWhiteSpace(functionName))
-            return false;
-
-        if (IsTopLevelCall(functionName, "JavaCompat.JGetStatic"))
-        {
-            if (TryParseFunctionCall(value, out _, out var args) &&
-                args.Count >= 2 &&
-                TryResolveJavaSignatureReturnType(args[1], out var javaReturnType) &&
-                IsSafeLegacyContractReturnType(NormalizeReturnTypeToken(javaReturnType)))
-                return false;
-
-            return true;
-        }
-
-        return IsTopLevelCall(functionName, "u.JGet") ||
-               IsTopLevelCall(functionName, "u.JCall") ||
-               IsTopLevelCall(functionName, "u.JCallStatic") ||
-               IsTopLevelCall(functionName, "u.RqQueLst") ||
-               IsTopLevelCall(functionName, "u.SharedValGet") ||
-               functionName.EndsWith(".RunByPublicName", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsFormattingFunctionExpression(string? topLevelCall)

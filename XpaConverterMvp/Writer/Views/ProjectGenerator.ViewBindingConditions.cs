@@ -119,8 +119,8 @@ internal static partial class ProjectGenerator
             if (_sharedConditionExpressionCodeCache.TryGetValue(ordinalKey, out var ordinalCached))
                 return ordinalCached;
 
-            var sharedToken = !string.IsNullOrWhiteSpace(expr.LiteralNormalizedSyntax)
-                ? expr.LiteralNormalizedSyntax
+            var sharedToken = !string.IsNullOrWhiteSpace(expr.LiteralSourceSyntax)
+                ? expr.LiteralSourceSyntax
                 : expr.Syntax ?? "";
             if (!string.IsNullOrWhiteSpace(sharedToken))
             {

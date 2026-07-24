@@ -222,7 +222,7 @@ internal static partial class ProjectGenerator
         }
         sb.AppendLine("}");
 
-        WriteGeneratedSourceFile(outputRoot, "Application", NormalizeGeneratedTaskCode(sb.ToString(), main, parsed.DataObjects));
+        WriteGeneratedSourceFile(outputRoot, "Application", sb.ToString());
         WriteTaskSnippetFiles(main, tasks, outputRoot);
     }
 }

@@ -48,8 +48,8 @@ internal static partial class ProjectGenerator
         var value = ResolveUpdateValueExpression(up.WithValue, task, dataObjects, assignmentContext);
         valueStopwatch.Stop();
         ConversionTelemetry.LogDuration("DIRECTUPDATE", className, valueStopwatch.Elapsed, $"section=\"after-value\" var={QuoteTelemetry(up.Variable ?? "?")}");
-        var coerceStopwatch = Stopwatch.StartNew();
-        var valueBeforeCoerce = value;
+        var typeEmissionStopwatch = Stopwatch.StartNew();
+        var valueBeforeEmission = value;
         var directBooleanLiteral =
             (targetInfo.IsBoolean ||
              string.Equals(targetInfo.AttrObj, "FIELD_BOOLEAN", StringComparison.OrdinalIgnoreCase) ||
@@ -63,51 +63,31 @@ internal static partial class ProjectGenerator
         }
         else
         {
-            var emittedThroughStrict = TryEmitThroughStrictEmittedExpression(value, task, assignmentContext, out var strictValue);
-            if (emittedThroughStrict)
-                value = strictValue;
             if (TryEmitAssignmentValueFromKnownTypes(value, task, targetInfo, out var knownTypedValue))
                 value = knownTypedValue;
-            else if (!emittedThroughStrict &&
-                     TryEmitForDeclaredAssignmentType(value, task, resolvedColumnType, out var declaredValue))
-                value = declaredValue;
         }
-        value = RenderDeclaredAssignmentBridge(value, resolvedColumnType);
-        if (targetInfo.IsArray &&
-            value.Trim().Equals("u.CastToByteArray(u.Null())", StringComparison.Ordinal))
-        {
-            var previousValue = value;
-            value = "u.CastToTextArray(u.Null())";
-            TrackCriticalExternalCoercionIfBridgeChanged(
-                "Assignment",
-                "ArrayNullBridge",
-                previousValue,
-                value,
-                $"target={target} declaredColumnType={resolvedColumnType}");
-        }
-        if (TryNormalizeBlobWrappedNewClrExpression(value, out var directClrAssignmentValue))
+        if (TryEmitBlobWrappedNewClrExpression(value, out var directClrAssignmentValue))
             value = directClrAssignmentValue;
-        coerceStopwatch.Stop();
-        ConversionTelemetry.LogDuration("DIRECTUPDATE", className, coerceStopwatch.Elapsed, $"section=\"after-coerce\" var={QuoteTelemetry(up.Variable ?? "?")}");
-        if (coerceStopwatch.Elapsed.TotalMilliseconds >= 500)
+        typeEmissionStopwatch.Stop();
+        ConversionTelemetry.LogDuration("DIRECTUPDATE", className, typeEmissionStopwatch.Elapsed, $"section=\"after-type-emission\" var={QuoteTelemetry(up.Variable ?? "?")}");
+        if (typeEmissionStopwatch.Elapsed.TotalMilliseconds >= 500)
         {
-            var slowCoerceAttrObj = !string.IsNullOrWhiteSpace(targetInfo.AttrObj)
+            var slowEmissionAttrObj = !string.IsNullOrWhiteSpace(targetInfo.AttrObj)
                 ? targetInfo.AttrObj
                 : targetInfo.ModelAttrObj ?? "";
             ConversionTelemetry.LogDuration(
                 "DIRECTUPDATE_DETAIL",
                 className,
-                coerceStopwatch.Elapsed,
-                $"section=\"slow-coerce\" var={QuoteTelemetry(up.Variable ?? "?")} target={QuoteTelemetry(target)} attr={QuoteTelemetry(slowCoerceAttrObj)} before={QuoteTelemetry(TruncateTelemetryValue(valueBeforeCoerce))} after={QuoteTelemetry(TruncateTelemetryValue(value))}");
+                typeEmissionStopwatch.Elapsed,
+                $"section=\"slow-type-emission\" var={QuoteTelemetry(up.Variable ?? "?")} target={QuoteTelemetry(target)} attr={QuoteTelemetry(slowEmissionAttrObj)} before={QuoteTelemetry(TruncateTelemetryValue(valueBeforeEmission))} after={QuoteTelemetry(TruncateTelemetryValue(value))}");
         }
         if (targetInfo.IsDotNet)
         {
-            value = NormalizeDotNetAssignmentExpression(value, resource.ObjectType);
+            value = EmitDotNetAssignmentExpression(value, resource.ObjectType);
             var conditionStopwatch = Stopwatch.StartNew();
             var dotNetCondition = up.ConditionExpressionId.HasValue
                 ? ResolveExpressionCode(up.ConditionExpressionId.Value.ToString(), task, dataObjects, CreateBooleanConditionEmissionContext())
                 : "";
-            dotNetCondition = NormalizeStatementBooleanConditionSyntax(dotNetCondition);
             conditionStopwatch.Stop();
             if (!string.IsNullOrWhiteSpace(dotNetCondition))
             {
@@ -121,14 +101,13 @@ internal static partial class ProjectGenerator
                 sb.AppendLine($"{pad}{target} = {value};");
             }
             totalStopwatch.Stop();
-            LogSlowDirectUpdate(task, allTasks, action, totalStopwatch.Elapsed, targetStopwatch.Elapsed, resourceStopwatch.Elapsed, targetInfoStopwatch.Elapsed, valueStopwatch.Elapsed, coerceStopwatch.Elapsed, conditionStopwatch.Elapsed);
+            LogSlowDirectUpdate(task, allTasks, action, totalStopwatch.Elapsed, targetStopwatch.Elapsed, resourceStopwatch.Elapsed, targetInfoStopwatch.Elapsed, valueStopwatch.Elapsed, typeEmissionStopwatch.Elapsed, conditionStopwatch.Elapsed);
             return true;
         }
         var conditionSharedStopwatch = Stopwatch.StartNew();
         var condition = up.ConditionExpressionId.HasValue
             ? ResolveExpressionCode(up.ConditionExpressionId.Value.ToString(), task, dataObjects, CreateBooleanConditionEmissionContext())
             : "";
-        condition = NormalizeStatementBooleanConditionSyntax(condition);
         conditionSharedStopwatch.Stop();
         var effectiveAttrObj = !string.IsNullOrWhiteSpace(targetInfo.AttrObj)
             ? targetInfo.AttrObj
@@ -151,7 +130,7 @@ internal static partial class ProjectGenerator
                     sb.AppendLine($"{pad}u.DenyUndoFor({target});");
             }
             totalStopwatch.Stop();
-            LogSlowDirectUpdate(task, allTasks, action, totalStopwatch.Elapsed, targetStopwatch.Elapsed, resourceStopwatch.Elapsed, targetInfoStopwatch.Elapsed, valueStopwatch.Elapsed, coerceStopwatch.Elapsed, conditionSharedStopwatch.Elapsed);
+            LogSlowDirectUpdate(task, allTasks, action, totalStopwatch.Elapsed, targetStopwatch.Elapsed, resourceStopwatch.Elapsed, targetInfoStopwatch.Elapsed, valueStopwatch.Elapsed, typeEmissionStopwatch.Elapsed, conditionSharedStopwatch.Elapsed);
             return true;
         }
         if (targetInfo.IsBlob && !targetInfo.IsArray)
@@ -175,7 +154,7 @@ internal static partial class ProjectGenerator
                         sb.AppendLine($"{pad}u.DenyUndoFor({target});");
                 }
                 totalStopwatch.Stop();
-                LogSlowDirectUpdate(task, allTasks, action, totalStopwatch.Elapsed, targetStopwatch.Elapsed, resourceStopwatch.Elapsed, targetInfoStopwatch.Elapsed, valueStopwatch.Elapsed, coerceStopwatch.Elapsed, conditionSharedStopwatch.Elapsed);
+                LogSlowDirectUpdate(task, allTasks, action, totalStopwatch.Elapsed, targetStopwatch.Elapsed, resourceStopwatch.Elapsed, targetInfoStopwatch.Elapsed, valueStopwatch.Elapsed, typeEmissionStopwatch.Elapsed, conditionSharedStopwatch.Elapsed);
                 return true;
             }
             var assignment = $"{target}.Value = {value};";
@@ -195,14 +174,13 @@ internal static partial class ProjectGenerator
                     sb.AppendLine($"{pad}u.DenyUndoFor({target});");
             }
             totalStopwatch.Stop();
-            LogSlowDirectUpdate(task, allTasks, action, totalStopwatch.Elapsed, targetStopwatch.Elapsed, resourceStopwatch.Elapsed, targetInfoStopwatch.Elapsed, valueStopwatch.Elapsed, coerceStopwatch.Elapsed, conditionSharedStopwatch.Elapsed);
+            LogSlowDirectUpdate(task, allTasks, action, totalStopwatch.Elapsed, targetStopwatch.Elapsed, resourceStopwatch.Elapsed, targetInfoStopwatch.Elapsed, valueStopwatch.Elapsed, typeEmissionStopwatch.Elapsed, conditionSharedStopwatch.Elapsed);
             return true;
         }
         if (action.LoopConditionExpressionId.HasValue)
         {
             var loopConditionStopwatch = Stopwatch.StartNew();
             var loopCond = ResolveExpressionCode(action.LoopConditionExpressionId.Value.ToString(), task, dataObjects, CreateBooleanConditionEmissionContext());
-            loopCond = NormalizeStatementBooleanConditionSyntax(loopCond);
             loopConditionStopwatch.Stop();
             if (!string.IsNullOrWhiteSpace(loopCond))
             {
@@ -227,7 +205,7 @@ internal static partial class ProjectGenerator
                 sb.AppendLine($"{pad}}}");
                 sb.AppendLine($"{pad}u.EndBlockLoop();");
                 totalStopwatch.Stop();
-                LogSlowDirectUpdate(task, allTasks, action, totalStopwatch.Elapsed, targetStopwatch.Elapsed, resourceStopwatch.Elapsed, targetInfoStopwatch.Elapsed, valueStopwatch.Elapsed, coerceStopwatch.Elapsed, conditionSharedStopwatch.Elapsed + loopConditionStopwatch.Elapsed);
+                LogSlowDirectUpdate(task, allTasks, action, totalStopwatch.Elapsed, targetStopwatch.Elapsed, resourceStopwatch.Elapsed, targetInfoStopwatch.Elapsed, valueStopwatch.Elapsed, typeEmissionStopwatch.Elapsed, conditionSharedStopwatch.Elapsed + loopConditionStopwatch.Elapsed);
                 return true;
             }
         }
@@ -247,7 +225,7 @@ internal static partial class ProjectGenerator
                 sb.AppendLine($"{pad}u.DenyUndoFor({target});");
         }
         totalStopwatch.Stop();
-        LogSlowDirectUpdate(task, allTasks, action, totalStopwatch.Elapsed, targetStopwatch.Elapsed, resourceStopwatch.Elapsed, targetInfoStopwatch.Elapsed, valueStopwatch.Elapsed, coerceStopwatch.Elapsed, conditionSharedStopwatch.Elapsed);
+        LogSlowDirectUpdate(task, allTasks, action, totalStopwatch.Elapsed, targetStopwatch.Elapsed, resourceStopwatch.Elapsed, targetInfoStopwatch.Elapsed, valueStopwatch.Elapsed, typeEmissionStopwatch.Elapsed, conditionSharedStopwatch.Elapsed);
         return true;
     }
 
@@ -271,7 +249,7 @@ internal static partial class ProjectGenerator
         TimeSpan resource,
         TimeSpan targetInfo,
         TimeSpan value,
-        TimeSpan coerce,
+        TimeSpan typeEmission,
         TimeSpan condition)
     {
         if (total.TotalMilliseconds < 1000)
@@ -283,7 +261,7 @@ internal static partial class ProjectGenerator
             "DIRECTUPDATE",
             className,
             total,
-            $"var={QuoteTelemetry(variable)} target-ms={(long)target.TotalMilliseconds} resource-ms={(long)resource.TotalMilliseconds} targetinfo-ms={(long)targetInfo.TotalMilliseconds} value-ms={(long)value.TotalMilliseconds} coerce-ms={(long)coerce.TotalMilliseconds} condition-ms={(long)condition.TotalMilliseconds}");
+            $"var={QuoteTelemetry(variable)} target-ms={(long)target.TotalMilliseconds} resource-ms={(long)resource.TotalMilliseconds} targetinfo-ms={(long)targetInfo.TotalMilliseconds} value-ms={(long)value.TotalMilliseconds} type-emission-ms={(long)typeEmission.TotalMilliseconds} condition-ms={(long)condition.TotalMilliseconds}");
     }
 
     private static void EmitRowActionCore(
@@ -390,7 +368,6 @@ internal static partial class ProjectGenerator
             if (up.ConditionExpressionId.HasValue)
             {
                 var cond = ResolveExpressionCode(up.ConditionExpressionId.Value.ToString(), t, dataObjects, CreateBooleanConditionEmissionContext());
-                cond = NormalizeStatementBooleanConditionSyntax(cond);
                 if (!string.IsNullOrWhiteSpace(cond))
                 {
                     sb.AppendLine($"{pad}if ({cond})");

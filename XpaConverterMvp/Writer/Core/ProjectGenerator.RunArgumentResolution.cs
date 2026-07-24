@@ -337,7 +337,7 @@ internal static partial class ProjectGenerator
                     _allTasks);
                 for (var i = 0; i < args.Count; i++)
                 {
-                    var token = NormalizeObservedArgumentTypeToken(caller, args[i]);
+                    var token = ResolveObservedArgumentTypeToken(caller, args[i]);
                     if (string.IsNullOrWhiteSpace(token))
                         continue;
 
@@ -437,20 +437,6 @@ internal static partial class ProjectGenerator
     private static ExpectedTypeContext ResolveRunArgumentExpectedType(TaskSemantic task, string argument)
     {
         var trimmed = StripRedundantOuterParentheses(argument?.Trim() ?? "");
-        if (TryParseFunctionCall(trimmed, out var arrayFunction, out _))
-        {
-            if (IsTopLevelCall(arrayFunction, "u.CastToTextArray"))
-                return ExpectedTypeForReturnType("Text[]");
-            if (IsTopLevelCall(arrayFunction, "u.CastToNumberArray"))
-                return ExpectedTypeForReturnType("Number[]");
-            if (IsTopLevelCall(arrayFunction, "u.CastToDateArray"))
-                return ExpectedTypeForReturnType("Date[]");
-            if (IsTopLevelCall(arrayFunction, "u.CastToTimeArray"))
-                return ExpectedTypeForReturnType("Time[]");
-            if (IsTopLevelCall(arrayFunction, "u.CastToBoolArray"))
-                return ExpectedTypeForReturnType("Bool[]");
-        }
-
         if (IsSimpleIdentifierPath(trimmed))
         {
             var resource = ResolveResourceByTargetPath(task, trimmed, _allTasks ?? Array.Empty<TaskSemantic>());
@@ -681,7 +667,7 @@ internal static partial class ProjectGenerator
             .ToList();
     }
 
-    private static List<string> NormalizeSnippetArgumentValues(
+    private static List<string> EmitSnippetArgumentValues(
         IReadOnlyList<string> argValues,
         IReadOnlyList<string>? snippetParameterTypes,
         TaskSemantic task)
@@ -699,12 +685,6 @@ internal static partial class ProjectGenerator
                 normalized[i],
                 task,
                 CreateRunArgumentEmissionContext(snippetParameterTypes[i], preserveBinding: false));
-            if (IsSnippetTextParameter(snippetParameterTypes[i]) &&
-                !IsWholeStringLiteralExpression(normalized[i]) &&
-                !normalized[i].TrimStart().StartsWith("u.CastToText(", StringComparison.Ordinal))
-            {
-                normalized[i] = $"u.CastToText({normalized[i]})";
-            }
         }
 
         return normalized;

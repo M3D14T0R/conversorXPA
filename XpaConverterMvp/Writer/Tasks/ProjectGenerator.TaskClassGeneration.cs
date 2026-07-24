@@ -87,7 +87,7 @@ internal static partial class ProjectGenerator
         sb.Append(methods.ToString());
 
         sb.AppendLine("}");
-        var normalizedLocal = TimeSection(() => NormalizeGeneratedTaskCode(sb.ToString(), t, dataObjects), "TASK_BUILD", className, "normalize");
+        var normalizedLocal = TimeSection(() => sb.ToString(), "TASK_BUILD", className, "normalize");
 
         var children = TimeSection(() => GetChildTasks(t.Ordinal, allTasks), "TASK_BUILD", className, "resolve-children");
         if (children.Count == 0)

@@ -113,10 +113,6 @@ internal static partial class ProjectGenerator
                 var returnType = expectedReturnTypeByExpressionId.TryGetValue(id, out expectedReturnType) &&
                                  !string.IsNullOrWhiteSpace(expectedReturnType)
                     ? expectedReturnType
-                    : TryResolveStrictSourceReturnType(code, task, out var strictReturnType) &&
-                      !string.IsNullOrWhiteSpace(strictReturnType) &&
-                      !string.Equals(strictReturnType, "object", StringComparison.Ordinal)
-                    ? strictReturnType
                     : emitted.HasEffectiveType
                     ? emitted.PreferredReturnType
                     : ResolveExpressionReturnType(exp.Attribute, code, task);
@@ -128,14 +124,13 @@ internal static partial class ProjectGenerator
 
                 var scalarReturnType = ScalarReturnType(CanonicalReturnType(returnType));
                 if (!string.IsNullOrWhiteSpace(scalarReturnType) &&
-                    XpaTypeEngine.MapExpectedToXpaType(GetValueReturnType(scalarReturnType)) != XpaType.Unknown)
+                    XpaExpressionTypeMap.FromReturnType(GetValueReturnType(scalarReturnType)) != XpaType.Unknown)
                 {
                     var normalizeReturnStopwatch = Stopwatch.StartNew();
                     var bridgedCode = EmitExpressionForContext(
                         code,
                         task,
                         CreateReturnValueEmissionContext(scalarReturnType));
-                    bridgedCode = RenderStrictFunctionArgumentBridges(bridgedCode, task);
                     normalizeReturnStopwatch.Stop();
                     normalizeReturnElapsed += normalizeReturnStopwatch.Elapsed;
                     if (!string.Equals(bridgedCode, code, StringComparison.Ordinal))

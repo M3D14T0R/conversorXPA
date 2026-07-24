@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
+using XpaConverterMvp.TypeSystem;
 
 namespace XpaConverterMvp;
 
@@ -363,7 +364,10 @@ internal static partial class ProjectGenerator
         if (IsSnippetTextParameter(valueType))
         {
             if (string.Equals(resource.AttrObj, "FIELD_BLOB", StringComparison.OrdinalIgnoreCase))
-                return $"u.ByteArrayToText({targetExpression}).ToString()";
+                return XpaExpressionTypeMap.Convert(
+                    targetExpression,
+                    XpaType.Blob,
+                    XpaType.Text);
             return $"{targetExpression}.Value.ToString()";
         }
 
@@ -378,17 +382,9 @@ internal static partial class ProjectGenerator
         var expectedReturnType = ResolveReturnTypeForExpectedContext(context.Expected);
         var valueExpression = "__TEMP__";
         if (!string.IsNullOrWhiteSpace(sourceReturnType) &&
-            !string.IsNullOrWhiteSpace(expectedReturnType))
-        {
-            var evidence = new[]
-            {
-                CreateEvidence(sourceReturnType, EmittedExpressionTypeEvidenceKind.FunctionContract, "snippet-ref-out"),
-                CreateEvidence(expectedReturnType, EmittedExpressionTypeEvidenceKind.SinkExpectedType, targetExpression, isExpectedType: true)
-            };
-            var request = new EmittedExpressionRequest(valueExpression, context.SinkKind.ToString(), expectedReturnType, targetExpression);
-            if (StrictEmittedExpressionEngine.TryEmitFromReliableEvidence(request, evidence, out var emitted))
-                valueExpression = emitted.Code;
-        }
+            !string.IsNullOrWhiteSpace(expectedReturnType) &&
+            TryApplyTypedDestination(valueExpression, sourceReturnType, expectedReturnType, out var emitted))
+            valueExpression = emitted;
 
         return BuildReturnAssignmentExpression("", targetExpression, valueExpression, task, null).Trim().TrimEnd(';');
     }

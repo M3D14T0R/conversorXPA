@@ -28,7 +28,6 @@ internal static partial class ProjectGenerator
                     if (loopAction.LoopConditionExpressionId.HasValue)
                     {
                         var loopCond = ResolveExpressionCode(loopAction.LoopConditionExpressionId.Value.ToString(), task, dataObjects, CreateBooleanConditionEmissionContext());
-                        loopCond = NormalizeStatementBooleanConditionSyntax(loopCond);
                         if (!string.IsNullOrWhiteSpace(loopCond))
                         {
                             sb.AppendLine($"{pad}u.StartBlockLoop();");
@@ -67,7 +66,6 @@ internal static partial class ProjectGenerator
                 if (block.Kind == "GroupedCondition" && block.Length > 1)
                 {
                     var cond = ResolveActionConditionCode(orderedActions[block.StartIndex], task, dataObjects);
-                    cond = NormalizeStatementBooleanConditionSyntax(cond);
                     if (!string.IsNullOrWhiteSpace(cond))
                     {
                         sb.AppendLine($"{pad}if ({cond})");
@@ -83,7 +81,6 @@ internal static partial class ProjectGenerator
                     var firstAction = orderedActions[block.StartIndex];
                     var secondAction = orderedActions[block.StartIndex + 1];
                     var cond = ResolveActionConditionCode(firstAction, task, dataObjects);
-                    cond = NormalizeStatementBooleanConditionSyntax(cond);
                     if (!string.IsNullOrWhiteSpace(cond))
                     {
                         sb.AppendLine($"{pad}if ({cond})");
@@ -107,7 +104,6 @@ internal static partial class ProjectGenerator
         {
             var action = orderedActions[i];
             var cond = ResolveActionConditionCode(action, task, dataObjects);
-            cond = NormalizeStatementBooleanConditionSyntax(cond);
             var isLoop = !string.IsNullOrWhiteSpace(cond) && cond.Contains("u.LoopCounter()", StringComparison.Ordinal);
 
             if (!string.IsNullOrWhiteSpace(cond) && !isLoop && i + 1 < orderedActions.Count)
@@ -118,7 +114,6 @@ internal static partial class ProjectGenerator
                 {
                     var next = orderedActions[j];
                     var nextCond = ResolveActionConditionCode(next, task, dataObjects);
-                    nextCond = NormalizeStatementBooleanConditionSyntax(nextCond);
                     if (string.Equals(cond, nextCond, StringComparison.Ordinal))
                     {
                         group.Add(next);
@@ -145,7 +140,6 @@ internal static partial class ProjectGenerator
             {
                 var nextAction = orderedActions[i + 1];
                 var nextCond = ResolveActionConditionCode(nextAction, task, dataObjects);
-                nextCond = NormalizeStatementBooleanConditionSyntax(nextCond);
                 if (IsComplementaryCondition(cond, nextCond))
                 {
                     sb.AppendLine($"{pad}if ({cond})");

@@ -145,7 +145,7 @@ internal static partial class ProjectGenerator
                 if (!string.IsNullOrWhiteSpace(minExpr) && !string.IsNullOrWhiteSpace(maxExpr))
                 {
                     if (TrySplitCndRangeExpression(maxExpr, out var condExpr, out var valueExpr))
-                        sb.AppendLine($"        Where.Add(CndRangeBetween({fromCol}, () => true, {NormalizeComparisonRightExpression(t, fromCol, minExpr)}, () => {condExpr}, {NormalizeComparisonRightExpression(t, fromCol, valueExpr)}));");
+                        sb.AppendLine($"        Where.Add(CndRangeBetween({fromCol}, () => true, {EmitComparisonRightExpression(t, fromCol, minExpr)}, () => {condExpr}, {EmitComparisonRightExpression(t, fromCol, valueExpr)}));");
                     else
                         sb.AppendLine($"        Where.Add({BuildFilterIsGreaterOrEqualTo(t, fromCol, minExpr)}.And({BuildFilterIsLessOrEqualTo(t, fromCol, maxExpr)}));");
                     emittedRangeWhere = true;
@@ -462,7 +462,6 @@ internal static partial class ProjectGenerator
                 }
 
                 var predicateExpr = ResolveSourceFragmentCode(sourceSyntax, task, dataObjects, CreateBooleanConditionEmissionContext());
-                predicateExpr = NormalizeChainedBooleanComparisonsCentral(task, predicateExpr);
                 if (!string.IsNullOrWhiteSpace(predicateExpr))
                     sb.AppendLine($"        Where.Add(() => {predicateExpr});");
                 continue;
@@ -675,7 +674,7 @@ internal static partial class ProjectGenerator
         if (!TrySplitCndRangeExpression(expr, out var cond, out var val))
             return "";
         cond = EmitExpressionForContext(cond, task, CreateBooleanConditionEmissionContext());
-        val = NormalizeComparisonRightExpression(task, fromCol, val);
+        val = EmitComparisonRightExpression(task, fromCol, val);
         if (val.Contains("_parent.", StringComparison.Ordinal))
             return BuildFilterBindEqualTo(task, fromCol, val);
         return $"CndRange(() => {cond}, {BuildFilterIsEqualTo(task, fromCol, val)})";
@@ -812,22 +811,11 @@ internal static partial class ProjectGenerator
             }
         }
 
-        var rendered = rc.AttrObj switch
-        {
-            "FIELD_NUMERIC" => $"{conditionSource} != 0",
-            "FIELD_BOOLEAN" => $"{conditionSource} != false",
-            "FIELD_LOGICAL" => $"{conditionSource} != false",
-            "FIELD_ALPHA" => $"u.Trim(u.CastToText({conditionSource})) != \"\"",
-            "FIELD_DATE" => $"{conditionSource} != XPARuntimeCore.Box.Date.Empty",
-            "FIELD_TIME" => $"{conditionSource} != 0",
-            _ => ""
-        };
-        return TrackCriticalExternalCoercionIfBridgeChanged(
-            "DataView",
-            nameof(ResolveParameterRangeConditionExpression),
+        return EmitFromReliableTypeEvidence(
             conditionSource,
-            rendered,
-            $"attr={rc.AttrObj} expr={conditionSource}");
+            MapAttrObjToReturnType(rc.AttrObj),
+            "Bool",
+            "data-view-range-condition");
     }
 }
 

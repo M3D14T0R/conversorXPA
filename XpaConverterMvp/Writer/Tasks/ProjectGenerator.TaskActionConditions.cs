@@ -21,8 +21,8 @@ internal static partial class ProjectGenerator
             task.ExpressionsSemantic.EntriesByOrdinal.TryGetValue(condId.Value, out var conditionExpression) &&
             conditionExpression is not null)
         {
-            sharedConditionToken = !string.IsNullOrWhiteSpace(conditionExpression.LiteralNormalizedSyntax)
-                ? conditionExpression.LiteralNormalizedSyntax
+            sharedConditionToken = !string.IsNullOrWhiteSpace(conditionExpression.LiteralSourceSyntax)
+                ? conditionExpression.LiteralSourceSyntax
                 : conditionExpression.Syntax ?? "";
         }
 

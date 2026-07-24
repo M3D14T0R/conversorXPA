@@ -6,7 +6,6 @@ internal static partial class ProjectGenerator
 {
     private static bool TryParseFunctionCall(string expression, out string functionName, out List<string> args)
     {
-        TrackLegacyExpressionTreatment("Parser", nameof(TryParseFunctionCall));
         functionName = "";
         args = new List<string>();
         if (string.IsNullOrWhiteSpace(expression))

@@ -39,7 +39,7 @@ internal static partial class ProjectGenerator
             return !string.IsNullOrWhiteSpace(literalCode);
         }
 
-        var translated = TranslateXpaExpressionToCSharp(expr.LiteralNormalizedSyntax, task, dataObjects).Trim();
+        var translated = TranslateXpaExpressionToCSharp(expr.LiteralSourceSyntax, task, dataObjects).Trim();
         if (!TryGetWholeCSharpStringLiteral(translated, out var resolvedLiteralCode))
             return false;
 
@@ -128,7 +128,7 @@ internal static partial class ProjectGenerator
             trimmedLiteral.EndsWith("\"", StringComparison.Ordinal))
             return ToCSharpLiteral(trimmedLiteral[1..^1]);
 
-        return ToCSharpLiteral(expr.LiteralNormalizedSyntax);
+        return ToCSharpLiteral(expr.LiteralSourceSyntax);
     }
 }
 

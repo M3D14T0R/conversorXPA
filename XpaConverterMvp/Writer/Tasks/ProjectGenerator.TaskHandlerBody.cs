@@ -50,7 +50,6 @@ internal static partial class ProjectGenerator
                 if (item.LoopId.HasValue)
                 {
                     var loopCond = ResolveExpressionCode(item.LoopId.Value.ToString(), task, dataObjects, CreateBooleanConditionEmissionContext());
-                    loopCond = NormalizeStatementBooleanConditionSyntax(loopCond);
                     if (!string.IsNullOrWhiteSpace(loopCond))
                     {
                         sb.AppendLine($"{pad}u.StartBlockLoop();");
@@ -71,7 +70,6 @@ internal static partial class ProjectGenerator
                 if (item.ConditionId.HasValue)
                 {
                     var cond = ResolveExpressionCode(item.ConditionId.Value.ToString(), task, dataObjects, CreateBooleanConditionEmissionContext());
-                    cond = NormalizeStatementBooleanConditionSyntax(cond);
                     if (!string.IsNullOrWhiteSpace(cond))
                     {
                         sb.AppendLine($"{pad}if ({cond})");
@@ -127,7 +125,6 @@ internal static partial class ProjectGenerator
             if (up.ConditionExpressionId.HasValue)
             {
                 var cond = ResolveExpressionCode(up.ConditionExpressionId.Value.ToString(), task, dataObjects, CreateBooleanConditionEmissionContext());
-                cond = NormalizeStatementBooleanConditionSyntax(cond);
                 if (!string.IsNullOrWhiteSpace(cond))
                 {
                     sb.AppendLine($"{pad}if ({cond})");
@@ -148,7 +145,6 @@ internal static partial class ProjectGenerator
             var callCondition = call.ConditionExpressionId.HasValue
                 ? ResolveExpressionCode(call.ConditionExpressionId.Value.ToString(), task, dataObjects, CreateBooleanConditionEmissionContext())
                 : "";
-            callCondition = NormalizeStatementBooleanConditionSyntax(callCondition);
             var callPad = pad;
             if (!string.IsNullOrWhiteSpace(callCondition))
             {
@@ -192,7 +188,7 @@ internal static partial class ProjectGenerator
                             dataObjects,
                             selectMap,
                             allTasks);
-                    argsResolvedValues = AlignAndCoerceExternalCallArguments(
+                    argsResolvedValues = AlignAndEmitExternalCallArguments(
                         argsResolvedValues,
                         externalParameterTypes,
                         task);

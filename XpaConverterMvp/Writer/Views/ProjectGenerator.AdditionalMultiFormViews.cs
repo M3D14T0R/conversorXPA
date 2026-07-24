@@ -146,7 +146,7 @@ internal static partial class ProjectGenerator
                 var dataBindingExpr = ResolveControlDataExpressionBindingForView(c, t, dataObjects, tasks);
                 if (!string.IsNullOrWhiteSpace(dataBindingExpr) && SupportsDirectViewDataAssignment(c))
                 {
-                    dataBindingExpr = NormalizeViewDataAssignmentExpression(c, dataBindingExpr, t, tasks);
+                    dataBindingExpr = BuildViewDataAssignmentExpression(c, dataBindingExpr, t, tasks);
                     dataBindingExpr = PrefixControllerReferencesForView(dataBindingExpr, t, dataObjects);
                     dataBindingExpr = EnsureControllerScopedViewBinding(dataBindingExpr);
                     if (dataBindingExpr.Contains("_controller.", StringComparison.Ordinal))

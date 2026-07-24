@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
+using XpaConverterMvp.TypeSystem;
 
 namespace XpaConverterMvp;
 
@@ -100,7 +101,11 @@ internal static partial class ProjectGenerator
             if (trimmedValueExpression.StartsWith("() =>", StringComparison.Ordinal))
                 return $"new XPARuntimeCore.Box.UI.Advanced.CheckBoxData({trimmedValueExpression})";
 
-            return $"new XPARuntimeCore.Box.UI.Advanced.CheckBoxData(() => ENV.UserMethods.Instance.CastToBool({trimmedValueExpression}))";
+            var booleanValue = XpaExpressionTypeMap.Convert(
+                trimmedValueExpression,
+                XpaType.Object,
+                XpaType.Bool);
+            return $"new XPARuntimeCore.Box.UI.Advanced.CheckBoxData(() => {booleanValue})";
         }
 
         var fromMethod = ResolveViewControlDataFactoryMethod(c, attr);
@@ -110,7 +115,7 @@ internal static partial class ProjectGenerator
         return $"{fromMethod}({trimmedValueExpression})";
     }
 
-    private static string NormalizeViewDataAssignmentExpression(
+    private static string BuildViewDataAssignmentExpression(
         TaskFormControlDef c,
         string valueExpression,
         TaskSemantic? task = null,
@@ -125,7 +130,7 @@ internal static partial class ProjectGenerator
             IsSimpleMemberAccess(trimmed))
         {
             if (task is not null && allTasks is not null)
-                return NormalizeCheckBoxDirectDataAssignmentExpression(trimmed, task, allTasks);
+                return BuildCheckBoxDirectDataAssignmentExpression(trimmed, task, allTasks);
 
             return trimmed;
         }
@@ -136,10 +141,14 @@ internal static partial class ProjectGenerator
         if (trimmed.StartsWith("() =>", StringComparison.Ordinal))
             return $"new XPARuntimeCore.Box.UI.Advanced.CheckBoxData({trimmed})";
 
-        return $"new XPARuntimeCore.Box.UI.Advanced.CheckBoxData(() => ENV.UserMethods.Instance.CastToBool({trimmed}))";
+        var booleanValue = XpaExpressionTypeMap.Convert(
+            trimmed,
+            XpaType.Object,
+            XpaType.Bool);
+        return $"new XPARuntimeCore.Box.UI.Advanced.CheckBoxData(() => {booleanValue})";
     }
 
-    private static string NormalizeCheckBoxDirectDataAssignmentExpression(
+    private static string BuildCheckBoxDirectDataAssignmentExpression(
         string valueExpression,
         TaskSemantic task,
         IReadOnlyList<TaskSemantic> allTasks)
@@ -158,7 +167,7 @@ internal static partial class ProjectGenerator
         return $"(XPARuntimeCore.Box.UI.Advanced.CheckBoxData){trimmed}";
     }
 
-    private static string NormalizePushButtonDirectDataAssignmentExpression(
+    private static string BuildPushButtonDirectDataAssignmentExpression(
         string valueExpression,
         TaskSemantic task,
         IReadOnlyList<TaskSemantic> allTasks)
@@ -184,7 +193,7 @@ internal static partial class ProjectGenerator
         return $"(XPARuntimeCore.Box.UI.Advanced.ButtonData){trimmed}";
     }
 
-    private static string NormalizeImageDirectDataAssignmentExpression(
+    private static string BuildImageDirectDataAssignmentExpression(
         string valueExpression,
         TaskSemantic task,
         IReadOnlyList<TaskSemantic> allTasks)
@@ -203,9 +212,13 @@ internal static partial class ProjectGenerator
             unscoped = unscoped["_controller.".Length..];
 
         if (IsBlobViewDataExpression(unscoped, task, allTasks))
-            return $"XPARuntimeCore.Box.UI.Advanced.ImageData.FromByteArray(() => ENV.UserMethods.Instance.CastToByteArray({trimmed}))";
+            return $"XPARuntimeCore.Box.UI.Advanced.ImageData.FromByteArray(() => {trimmed})";
 
-        return $"XPARuntimeCore.Box.UI.Advanced.ImageData.FromText(() => ENV.UserMethods.Instance.CastToText({trimmed}))";
+        var textValue = XpaExpressionTypeMap.Convert(
+            trimmed,
+            XpaType.Object,
+            XpaType.Text);
+        return $"XPARuntimeCore.Box.UI.Advanced.ImageData.FromText(() => {textValue})";
     }
 
     private static bool IsLogicalViewDataExpression(string expression, TaskSemantic task, IReadOnlyList<TaskSemantic> allTasks)
