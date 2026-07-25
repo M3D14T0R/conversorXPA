@@ -168,7 +168,8 @@ internal static partial class ProjectGenerator
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         _subformTargetTaskOrdinals = request.Parsed.Tasks
             .SelectMany(t => t.View.SubformBindings)
-            .Select(b => b.TargetTaskOrdinal)
+            .Where(b => b.Kind == ViewSubformBindingKind.Task && b.TargetTaskOrdinal.HasValue)
+            .Select(b => b.TargetTaskOrdinal!.Value)
             .ToHashSet();
         _reservedViewClassNames = request.Parsed.Tasks
             .Select(t => t.View.ClassName)
@@ -176,14 +177,15 @@ internal static partial class ProjectGenerator
             .ToHashSet(StringComparer.OrdinalIgnoreCase)!;
         _multiFormCandidateCounts = BuildMultiFormCandidateCounts(request.Parsed.Tasks);
         _viewClassNameCounts = request.Parsed.Tasks
-            .Where(task => task.View.ShouldGenerate && !string.IsNullOrWhiteSpace(task.View.ClassName))
+            .Where(task => !string.IsNullOrWhiteSpace(task.View.ClassName))
             .GroupBy(task => task.View.ClassName!, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.Count(), StringComparer.OrdinalIgnoreCase);
         BuildTaskClassNameIndexes(request.Parsed.Tasks);
         _taskClassNameByOrdinal = new Dictionary<int, string>();
+        _taskClassNameAssignedRegistry = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         _taskClassNameResolutionInProgress = new HashSet<int>();
         _taskTypeReferenceByOrdinal = new Dictionary<int, string>();
-        _resourceMemberNameCache = new Dictionary<string, string>(StringComparer.Ordinal);
+        _resourceMemberNameCache = new System.Collections.Concurrent.ConcurrentDictionary<string, string>(StringComparer.Ordinal);
         _resourceMemberNameByTaskOrdinal = new Dictionary<int, Dictionary<int, string>>();
         _resourceMemberNameCacheBuiltTaskOrdinals = new HashSet<int>();
         _taskResourceByMemberNameCache = new Dictionary<int, Dictionary<string, TaskResourceColumnDef>>();
@@ -268,12 +270,14 @@ internal static partial class ProjectGenerator
         _statementBooleanConditionSyntaxCache = new Dictionary<string, string>(StringComparer.Ordinal);
         _remarkLinesCache = new Dictionary<string, string[]>(StringComparer.Ordinal);
         _controlDataExpressionCache = new Dictionary<string, string>(StringComparer.Ordinal);
+        _viewDotNetResourceByRootOrdinal = new Dictionary<int, IReadOnlyDictionary<string, TaskResourceColumnDef?>>();
         _viewPrefixSymbolBindingMapCache = new Dictionary<int, Dictionary<string, string>>();
         _controlHandlerControlCache = new Dictionary<string, TaskFormControlDef?>(StringComparer.OrdinalIgnoreCase);
         _controlHandlerExactControlMapCache = new Dictionary<int, Dictionary<string, TaskFormControlDef>>();
         _controlHandlerMethodNameCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         _accessibleParentFunctionTargetsCache = new Dictionary<int, Dictionary<string, string>>();
         PrecomputeStructuralGenerationIndexes(request.Parsed.Tasks);
+        _viewDotNetResourceByRootOrdinal = BuildViewDotNetResourceIndex(request.Parsed.Tasks);
         _uniqueResourceReturnTypeByMemberName = BuildUniqueResourceReturnTypeByMemberNameIndex();
     }
 

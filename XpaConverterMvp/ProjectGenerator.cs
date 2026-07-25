@@ -213,7 +213,9 @@ internal static partial class ProjectGenerator
         ["Upper"] = "u.Upper",
         ["Val"] = "u.Val",
         ["Visual"] = "u.Visual",
-        ["GetParam"] = "u.GetTextParam",
+        // GetParam is polymorphic in XPA. Keep the CLR object until the typed
+        // expression destination is known; the central type map materializes it.
+        ["GetParam"] = "u.GetParam",
         ["IsNull"] = "u.IsNull",
         ["IF"] = "u.If",
         ["RunMode"] = "u.RunMode",

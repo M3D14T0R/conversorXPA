@@ -2455,6 +2455,38 @@ internal static class SemanticBuilder
         foreach (var control in controls)
         {
             var taskNumber = control.SubformTaskNumber!.Value;
+            if (control.SubformComponentId.HasValue)
+            {
+                var externalName =
+                    !string.IsNullOrWhiteSpace(control.SubformTargetPublicName) ? control.SubformTargetPublicName! :
+                    !string.IsNullOrWhiteSpace(control.ControlName) ? control.ControlName! :
+                    $"SubformProgram{taskNumber}";
+                var externalBaseName = ToTaskClassName(externalName);
+                var externalMethodName = externalBaseName + "_SubForm";
+                var externalMethodIndex = 0;
+                while (!usedMethodNames.Add(externalMethodName))
+                {
+                    externalMethodName = externalMethodIndex == 0
+                        ? externalBaseName + "_SubForm_"
+                        : $"{externalBaseName}_SubForm_{externalMethodIndex}";
+                    externalMethodIndex++;
+                }
+
+                result.Add(new ViewSubformBinding(
+                    control.Id,
+                    ViewSubformBindingKind.ExternalProgram,
+                    TargetTaskOrdinal: null,
+                    TargetTaskClassName: externalBaseName,
+                    FieldName: "",
+                    MethodName: externalMethodName,
+                    RawArguments: control.SubformArguments.ToList(),
+                    TargetComponentId: control.SubformComponentId,
+                    TargetComponentName: control.SubformTargetComponentName,
+                    TargetObjectId: taskNumber,
+                    TargetPublicName: control.SubformTargetPublicName));
+                continue;
+            }
+
             var targetTask = GetChildTaskBySubtaskIndex(task.Ordinal, taskNumber)
                              ?? ResolveTaskByXpaId(taskNumber, allTasks);
             if (targetTask is null)
@@ -2481,11 +2513,16 @@ internal static class SemanticBuilder
 
             result.Add(new ViewSubformBinding(
                 control.Id,
+                ViewSubformBindingKind.Task,
                 targetTask.Ordinal,
                 baseName,
                 fieldName,
                 methodName,
-                control.SubformArguments.ToList()));
+                control.SubformArguments.ToList(),
+                TargetComponentId: null,
+                TargetComponentName: null,
+                TargetObjectId: null,
+                TargetPublicName: null));
         }
         return result;
     }

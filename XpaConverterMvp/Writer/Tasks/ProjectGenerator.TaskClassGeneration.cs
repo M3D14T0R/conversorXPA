@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Text;
 
 namespace XpaConverterMvp;
@@ -21,6 +22,9 @@ internal static partial class ProjectGenerator
         var subforms = TimeSection(() => BuildSubformBindingsFromSemantic(t, allTasks, dataObjects), "TASK_BUILD", className, "subforms");
         if (subforms.Count > 0)
             TimeSection(() => EmitSubformMethods(methods, t, subforms, allTasks), "TASK_BUILD", className, "emit-subform-methods");
+        var cachedSubforms = subforms
+            .Where(s => s.Kind == ViewSubformBindingKind.Task && s.TargetTask is not null)
+            .ToList();
         TimeSection(() => EmitExpressionMethodsForViewBindings(methods, t, dataObjects), "TASK_BUILD", className, "emit-view-expression-methods");
 
         var parentTask = GetTaskByOrdinal(t.ParentOrdinal, allTasks);
@@ -39,12 +43,12 @@ internal static partial class ProjectGenerator
         sb.AppendLine($"{classAccessibility} class {className} : {baseClass}");
         sb.AppendLine("{");
         TimeSection(() => EmitTaskMembers(sb, t, dataObjects, fieldModels), "TASK_BUILD", className, "emit-members");
-        if (subforms.Count > 0)
+        if (cachedSubforms.Count > 0)
         {
             sb.AppendLine("    #region Initialize CachedControllers");
-            foreach (var subform in subforms)
+            foreach (var subform in cachedSubforms)
             {
-                var targetClass = ResolveTaskClassName(subform.TargetTask, allTasks);
+                var targetClass = ResolveTaskClassName(subform.TargetTask!, allTasks);
                 sb.AppendLine($"    internal {targetClass} {subform.FieldName};");
             }
             sb.AppendLine("    #endregion");
@@ -66,11 +70,11 @@ internal static partial class ProjectGenerator
         sb.AppendLine("    {");
         if (needsParentRef)
             sb.AppendLine("        _parent = parent;");
-        if (subforms.Count > 0)
+        if (cachedSubforms.Count > 0)
         {
-            foreach (var subform in subforms)
+            foreach (var subform in cachedSubforms)
             {
-                var targetClass = ResolveTaskClassName(subform.TargetTask, allTasks);
+                var targetClass = ResolveTaskClassName(subform.TargetTask!, allTasks);
                 var targetCtor = subform.TargetNeedsParentCtor ? $"new {targetClass}(this)" : $"new {targetClass}()";
                 sb.AppendLine($"        {subform.FieldName} = {targetCtor};");
             }

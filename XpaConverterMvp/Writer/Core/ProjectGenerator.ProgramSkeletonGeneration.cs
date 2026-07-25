@@ -33,7 +33,7 @@ internal static partial class ProjectGenerator
         sb.AppendLine($"namespace {appNamespace};");
         sb.AppendLine();
         sb.Append(BuildTaskClassBlock(t, dataObjects, fieldModels, allTasks));
-        var generatedCode = PostProcessGeneratedTaskCode(sb.ToString());
+        var generatedCode = sb.ToString();
 
         var taskFolder = ResolveTaskOutputFolder(t.Folder);
         var targetDir = string.IsNullOrWhiteSpace(taskFolder) ? programsDir : Path.Combine(programsDir, taskFolder);

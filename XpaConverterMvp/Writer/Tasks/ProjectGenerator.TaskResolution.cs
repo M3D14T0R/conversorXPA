@@ -91,8 +91,25 @@ internal static partial class ProjectGenerator
                 ancestor = GetTaskByOrdinal(ancestor.ParentOrdinal, allTasks);
             }
 
+            if (!needsRename &&
+                !task.ParentOrdinal.HasValue &&
+                _taskClassNameAssignedRegistry.TryGetValue(candidate, out var assignedOrdinal) &&
+                assignedOrdinal != task.Ordinal)
+            {
+                // Another top-level task already owns this name case-insensitively.
+                // Top-level classes become files, and Windows file systems are
+                // case-insensitive, so ROTINAS/Rotinas/ROTINAS_ must diverge.
+                // Nested (child) task classes live inside the parent's file and
+                // are disambiguated by the sibling machinery instead.
+                needsRename = true;
+            }
+
             if (!needsRename)
+            {
+                if (!task.ParentOrdinal.HasValue)
+                    _taskClassNameAssignedRegistry[candidate] = task.Ordinal;
                 break;
+            }
 
             candidate += "_";
         }
@@ -223,11 +240,19 @@ internal static partial class ProjectGenerator
         {
             if (string.Equals(call.OperationType, "P", StringComparison.OrdinalIgnoreCase))
             {
-                if (_topLevelTasksByProgramIndex.TryGetValue(call.TaskId.Value, out var topLevelProgram))
+                var programIndex = call.TargetObjectId ?? call.TaskId;
+                if (programIndex.HasValue &&
+                    _topLevelTasksByProgramIndex.TryGetValue(programIndex.Value, out var topLevelProgram))
                 {
                     _resolvedCallTargetOrdinalCache[cacheKey] = topLevelProgram.Ordinal;
                     return topLevelProgram;
                 }
+
+                // A chamada P referencia um programa, nunca uma task interna.
+                // Reutilizar o mesmo XpaId em toda a árvore é válido e o
+                // fallback global escolhia, por acaso, um descendente homônimo.
+                _resolvedCallTargetOrdinalCache[cacheKey] = -1;
+                return null;
             }
 
             var resolved = ResolveTaskByXpaId(call.TaskId.Value, allTasks);

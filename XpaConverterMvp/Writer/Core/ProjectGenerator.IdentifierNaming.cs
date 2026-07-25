@@ -30,7 +30,7 @@ internal static partial class ProjectGenerator
         if (t.View.SelectedFormEntry?.Index == formEntry.Index &&
             !string.IsNullOrWhiteSpace(t.View.ClassName))
         {
-            return t.View.ClassName;
+            return ResolveViewClassName(t, allTasks);
         }
 
         if (formEntry.Form is not null && !string.IsNullOrWhiteSpace(formEntry.Form.FormName))
@@ -39,7 +39,11 @@ internal static partial class ProjectGenerator
             var formName = ToPascalIdentifier(formEntry.Form.FormName);
             var candidate = ownerTaskName + formName;
             if (HasMultiFormViewClassNameCollision(t, formEntry, candidate, allTasks))
-                candidate = ownerTaskName + ResolveTaskClassName(t, allTasks) + formName;
+                candidate = ownerTaskName +
+                            ResolveTaskClassName(t, allTasks) +
+                            formName +
+                            "_T" +
+                            t.Ordinal.ToString(System.Globalization.CultureInfo.InvariantCulture);
             return EnsureUniqueMultiFormViewClassName(t, candidate, allTasks);
         }
         return ResolveViewClassName(t, allTasks);

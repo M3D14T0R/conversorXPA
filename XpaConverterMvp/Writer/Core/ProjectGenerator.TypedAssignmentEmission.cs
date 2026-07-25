@@ -11,6 +11,12 @@ internal static partial class ProjectGenerator
         TaskLogicSelectDef select,
         string targetExpression)
     {
+        // A coluna real do DataView é a evidência autoritativa para BindValue.
+        // ColumnId também é usado por recursos auxiliares/expressões no XML e
+        // pode apontar para um tipo diferente do membro de destino.
+        if (TryResolveDataViewMemberTargetValueInfo(task, targetExpression, out var dataViewTarget))
+            return dataViewTarget;
+
         var resource = ResolveTaskResourceColumn(task, select.ColumnId);
         var info = ResolveTargetValueInfo(task, select.Name, targetExpression, resource);
         return string.IsNullOrWhiteSpace(info.TargetMember)
@@ -44,11 +50,28 @@ internal static partial class ProjectGenerator
     {
         if (string.IsNullOrWhiteSpace(rightExpression))
             return rightExpression;
-        var target = ResolveTargetValueInfo(task, null, leftExpression);
-        return EmitExpressionForContext(
-            rightExpression,
-            task,
-            CreateFilterComparisonEmissionContext(target));
+
+        // The declared DataView column is authoritative here.  A model can
+        // expose a custom column class whose CLR name does not describe its
+        // XPA scalar type, while the column metadata still does.
+        var target = TryResolveDataViewMemberTargetValueInfo(task, leftExpression, out var dataViewTarget)
+            ? dataViewTarget
+            : ResolveTargetValueInfo(task, null, leftExpression);
+        target = RecalibrateTargetInfoFromDeclaredTargetType(task, target, leftExpression);
+
+        var expectedReturnType = ResolveReturnTypeForExpectedContext(ExpectedTypeForTarget(target));
+        if (!string.IsNullOrWhiteSpace(expectedReturnType) &&
+            TryResolveKnownExpressionReturnTypeWithoutLegacy(task, rightExpression, out var sourceReturnType) &&
+            !string.IsNullOrWhiteSpace(sourceReturnType))
+        {
+            return EmitFromReliableTypeEvidence(
+                rightExpression,
+                sourceReturnType,
+                expectedReturnType,
+                "filter-comparison");
+        }
+
+        return rightExpression.Trim();
     }
 
     private static TargetValueInfo RecalibrateTargetInfoFromDeclaredTargetType(

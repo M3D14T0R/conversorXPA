@@ -548,61 +548,34 @@ public static class ConversionRunner
             return null;
 
         string? sanitizedSourcePath = null;
-        var sourcePath = xmlPath;
-        try
-        {
-            using var probe = System.Xml.XmlReader.Create(xmlPath, new System.Xml.XmlReaderSettings
-            {
-                CheckCharacters = false,
-                DtdProcessing = System.Xml.DtdProcessing.Parse
-            });
-            while (probe.Read())
-            {
-            }
-        }
-        catch (System.Xml.XmlException)
-        {
-            sanitizedSourcePath = XpaParser.CreateSanitizedXmlTempFile(xmlPath);
-            sourcePath = sanitizedSourcePath;
-        }
-
-        HashSet<int>? dependencyTopLevelIndexes = null;
-        if (includeTaskDependencies && (taskFilterSet.Count > 0 || taskRangeSet.HasRanges))
-            dependencyTopLevelIndexes = ResolveScopedDependencyTopLevelIndexes(sourcePath, taskFilterSet, taskRangeSet, normalizedFolderFilter);
-
         var tempPath = Path.Combine(Path.GetTempPath(), $"xpa_scoped_{Guid.NewGuid():N}.xml");
         try
         {
-            using var reader = System.Xml.XmlReader.Create(sourcePath, new System.Xml.XmlReaderSettings
+            try
             {
-                CheckCharacters = false,
-                DtdProcessing = System.Xml.DtdProcessing.Parse,
-                IgnoreComments = false,
-                IgnoreWhitespace = false,
-                IgnoreProcessingInstructions = false
-            });
-            using var writer = System.Xml.XmlWriter.Create(tempPath, new System.Xml.XmlWriterSettings
-            {
-                Indent = false,
-                OmitXmlDeclaration = false,
-                Encoding = System.Text.Encoding.UTF8
-            });
-
-            writer.WriteStartDocument();
-            while (reader.Read())
-            {
-                if (reader.NodeType == System.Xml.XmlNodeType.Element && reader.Name == "ProgramsRepository")
-                {
-                    WriteStartElement(reader, writer);
-                    if (!reader.IsEmptyElement)
-                        CopyFilteredProgramsRepository(reader, writer, taskFilterSet, taskRangeSet, normalizedFolderFilter, dependencyTopLevelIndexes);
-                    continue;
-                }
-
-                CopyCurrentNode(reader, writer);
+                WriteReducedMainXml(
+                    xmlPath,
+                    tempPath,
+                    taskFilterSet,
+                    taskRangeSet,
+                    normalizedFolderFilter,
+                    includeTaskDependencies);
             }
-            writer.WriteEndDocument();
-            writer.Flush();
+            catch (System.Xml.XmlException)
+            {
+                // Invalid legacy characters are uncommon.  Pay the sanitization
+                // cost only when the real streaming pass proves it is necessary,
+                // instead of reading every large source XML twice up front.
+                sanitizedSourcePath = XpaParser.CreateSanitizedXmlTempFile(xmlPath);
+                WriteReducedMainXml(
+                    sanitizedSourcePath,
+                    tempPath,
+                    taskFilterSet,
+                    taskRangeSet,
+                    normalizedFolderFilter,
+                    includeTaskDependencies);
+            }
+
             var reducedBytes = new FileInfo(tempPath).Length;
             ConversionTelemetry.Log(
                 "SCOPED_REDUCTION",
@@ -627,6 +600,64 @@ public static class ConversionRunner
         return tempPath;
     }
 
+    private static void WriteReducedMainXml(
+        string sourcePath,
+        string destinationPath,
+        HashSet<string> taskFilterSet,
+        TopLevelTaskRangeSet taskRangeSet,
+        string normalizedFolderFilter,
+        bool includeTaskDependencies)
+    {
+        HashSet<int>? dependencyTopLevelIndexes = null;
+        if (includeTaskDependencies && (taskFilterSet.Count > 0 || taskRangeSet.HasRanges))
+        {
+            dependencyTopLevelIndexes = ResolveScopedDependencyTopLevelIndexes(
+                sourcePath,
+                taskFilterSet,
+                taskRangeSet,
+                normalizedFolderFilter);
+        }
+
+        using var reader = System.Xml.XmlReader.Create(sourcePath, new System.Xml.XmlReaderSettings
+        {
+            CheckCharacters = false,
+            DtdProcessing = System.Xml.DtdProcessing.Parse,
+            IgnoreComments = false,
+            IgnoreWhitespace = false,
+            IgnoreProcessingInstructions = false
+        });
+        using var writer = System.Xml.XmlWriter.Create(destinationPath, new System.Xml.XmlWriterSettings
+        {
+            Indent = false,
+            OmitXmlDeclaration = false,
+            Encoding = System.Text.Encoding.UTF8
+        });
+
+        writer.WriteStartDocument();
+        while (reader.Read())
+        {
+            if (reader.NodeType == System.Xml.XmlNodeType.Element && reader.Name == "ProgramsRepository")
+            {
+                WriteStartElement(reader, writer);
+                if (!reader.IsEmptyElement)
+                {
+                    CopyFilteredProgramsRepository(
+                        reader,
+                        writer,
+                        taskFilterSet,
+                        taskRangeSet,
+                        normalizedFolderFilter,
+                        dependencyTopLevelIndexes);
+                }
+                continue;
+            }
+
+            CopyCurrentNode(reader, writer);
+        }
+        writer.WriteEndDocument();
+        writer.Flush();
+    }
+
     private static void CopyFilteredProgramsRepository(
         System.Xml.XmlReader reader,
         System.Xml.XmlWriter writer,
@@ -639,7 +670,10 @@ public static class ConversionRunner
         var selectedByRange = 0;
         var selectedByFilter = 0;
         var selectedByDependency = 0;
-        while (reader.Read())
+        if (!reader.Read())
+            return;
+
+        while (!reader.EOF)
         {
             if (reader.NodeType == System.Xml.XmlNodeType.EndElement && reader.Name == "ProgramsRepository")
             {
@@ -653,22 +687,31 @@ public static class ConversionRunner
             if (reader.NodeType == System.Xml.XmlNodeType.Element && reader.Name == "Task")
             {
                 topLevelIndex++;
+                var sourceTopLevelIndex =
+                    int.TryParse(reader.GetAttribute("_xpa_converter_original_top_level_index"), out var originalTopLevelIndex) &&
+                    originalTopLevelIndex > 0
+                        ? originalTopLevelIndex
+                        : topLevelIndex;
                 if (dependencyTopLevelIndexes is not null)
                 {
-                    if (dependencyTopLevelIndexes.Contains(topLevelIndex))
+                    if (dependencyTopLevelIndexes.Contains(sourceTopLevelIndex))
                     {
                         selectedByDependency++;
-                        CopyScopedTopLevelTask(writer, reader, topLevelIndex);
+                        CopyScopedTopLevelTask(writer, reader, sourceTopLevelIndex);
+                        if (!reader.Read())
+                            return;
                     }
                     else
                     {
                         reader.Skip();
                     }
                 }
-                else if (taskRangeSet.Contains(topLevelIndex))
+                else if (taskRangeSet.Contains(sourceTopLevelIndex))
                 {
                     selectedByRange++;
-                    CopyScopedTopLevelTask(writer, reader, topLevelIndex);
+                    CopyScopedTopLevelTask(writer, reader, sourceTopLevelIndex);
+                    if (!reader.Read())
+                        return;
                 }
                 else if (taskFilterSet.Count == 0 && string.IsNullOrWhiteSpace(normalizedFolderFilter))
                 {
@@ -681,6 +724,7 @@ public static class ConversionRunner
                     if (ShouldKeepTopLevelTask(taskElement, taskFilterSet, normalizedFolderFilter))
                     {
                         selectedByFilter++;
+                        taskElement.SetAttributeValue("_xpa_converter_original_top_level_index", sourceTopLevelIndex);
                         taskElement.WriteTo(writer);
                     }
                 }
@@ -688,6 +732,8 @@ public static class ConversionRunner
             }
 
             CopyCurrentNode(reader, writer);
+            if (!reader.Read())
+                return;
         }
     }
 
@@ -765,7 +811,12 @@ public static class ConversionRunner
                 if (reader.NodeType != System.Xml.XmlNodeType.Element || reader.Name != "Task")
                     continue;
 
-                var topLevelIndex = result.Count + 1;
+                var sequentialTopLevelIndex = result.Count + 1;
+                var topLevelIndex =
+                    int.TryParse(reader.GetAttribute("_xpa_converter_original_top_level_index"), out var originalTopLevelIndex) &&
+                    originalTopLevelIndex > 0
+                        ? originalTopLevelIndex
+                        : sequentialTopLevelIndex;
                 using var taskSubtree = reader.ReadSubtree();
                 result.Add(BuildScopedTopLevelTaskIndexEntry(topLevelIndex, taskSubtree, taskFilterSet, taskRangeSet, normalizedFolderFilter));
             }
@@ -804,6 +855,14 @@ public static class ConversionRunner
                 var headerDescription = taskReader.GetAttribute("Description");
                 var headerFolder = taskReader.GetAttribute("Folder");
                 if (TaskHeaderMatchesScope(headerDescription, headerFolder, taskFilterSet, normalizedFolderFilter))
+                    matchesRequestedScope = true;
+                continue;
+            }
+
+            if (taskReader.Name == "Public")
+            {
+                var publicName = taskReader.GetAttribute("val");
+                if (!string.IsNullOrWhiteSpace(publicName) && MatchesTaskFilter(publicName, taskFilterSet))
                     matchesRequestedScope = true;
                 continue;
             }
@@ -879,7 +938,11 @@ public static class ConversionRunner
         if (reader.HasAttributes)
         {
             while (reader.MoveToNextAttribute())
+            {
+                if (string.Equals(reader.LocalName, "_xpa_converter_original_top_level_index", StringComparison.Ordinal))
+                    continue;
                 writer.WriteAttributeString(reader.Prefix, reader.LocalName, reader.NamespaceURI, reader.Value);
+            }
             reader.MoveToElement();
         }
 
@@ -913,8 +976,12 @@ public static class ConversionRunner
         var header = taskElement.Element("Header");
         var description = header?.Attribute("Description")?.Value;
         var folder = header?.Attribute("Folder")?.Value;
+        var publicName = header?.Element("Public")?.Attribute("val")?.Value;
 
         if (!string.IsNullOrWhiteSpace(description) && MatchesTaskFilter(description, taskFilterSet))
+            return true;
+
+        if (!string.IsNullOrWhiteSpace(publicName) && MatchesTaskFilter(publicName, taskFilterSet))
             return true;
 
         if (!string.IsNullOrWhiteSpace(normalizedFolderFilter) &&

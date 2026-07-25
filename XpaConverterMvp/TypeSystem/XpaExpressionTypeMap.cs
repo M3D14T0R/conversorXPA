@@ -19,7 +19,8 @@ internal enum XpaType
 internal readonly record struct XpaTypedExpression(
     string Code,
     string ReturnType,
-    XpaType Type);
+    XpaType Type,
+    string? LiteralValue = null);
 
 internal readonly record struct XpaExpressionDestination(
     string ReturnType,

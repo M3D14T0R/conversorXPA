@@ -988,6 +988,7 @@ internal static partial class ProjectGenerator
         return normalized switch
         {
             "System.String" or "String" or "XPARuntimeCore.Box.Text" or "ENV.Data.TextColumn" => SetReturnType("Text", out returnType),
+            "System.Char" or "Char" => SetReturnType("System.Char", out returnType),
             "System.Boolean" or "Boolean" or "XPARuntimeCore.Box.Bool" or "ENV.Data.BoolColumn" => SetReturnType("Bool", out returnType),
             "System.Byte[]" or "Byte[]" => SetReturnType("byte[]", out returnType),
             "XPARuntimeCore.Box.Number" or "ENV.Data.NumberColumn" => SetReturnType("Number", out returnType),

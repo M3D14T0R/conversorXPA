@@ -27,7 +27,8 @@ internal static partial class ProjectGenerator
 
         return syntax.IndexOf("Cigam.Utils.Upgrade.Mail.", StringComparison.OrdinalIgnoreCase) >= 0
             || syntax.IndexOf("Cigam.WebServices.Apis.Upgrade.", StringComparison.OrdinalIgnoreCase) >= 0
-            || syntax.IndexOf("Cigam.Utils.BarCode.QRCode.", StringComparison.OrdinalIgnoreCase) >= 0;
+            || syntax.IndexOf("Cigam.Utils.BarCode.QRCode.", StringComparison.OrdinalIgnoreCase) >= 0
+            || syntax.IndexOf("DNCAST", StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     private static bool UsesComponentFunctionCompat(ProjectSemantic parsed)
@@ -53,8 +54,62 @@ internal static partial class ProjectGenerator
                     result.Add(call);
             }
         }
+        foreach (var call in BuildExternalSubformProgramCompatCalls(parsed))
+        {
+            var compatKey = BuildExternalProgramCompatKey(call);
+            if (seen.Add(compatKey))
+                result.Add(call);
+        }
 
         return result;
+    }
+
+    private static IEnumerable<TaskCallDef> BuildExternalSubformProgramCompatCalls(ProjectSemantic parsed)
+    {
+        foreach (var task in parsed.Tasks)
+        {
+            foreach (var binding in task.View.SubformBindings)
+            {
+                if (binding.Kind != ViewSubformBindingKind.ExternalProgram)
+                    continue;
+                if (string.IsNullOrWhiteSpace(binding.TargetComponentName) &&
+                    string.IsNullOrWhiteSpace(binding.TargetPublicName) &&
+                    !binding.TargetObjectId.HasValue)
+                    continue;
+
+                yield return new TaskCallDef(
+                    TaskId: null,
+                    TargetComponentId: binding.TargetComponentId,
+                    TargetObjectId: binding.TargetObjectId,
+                    TargetComponentName: binding.TargetComponentName,
+                    TargetPublicName: binding.TargetPublicName,
+                    OperationType: "P",
+                    ArgumentVariables: Array.Empty<string>(),
+                    ArgumentDefs: Array.Empty<TaskArgumentDef>(),
+                    ReturnVariable: null,
+                    ReturnValue: null,
+                    ConditionExpressionId: null,
+                    Direction: null,
+                    Modifier: null,
+                    Page: null,
+                    IoDeviceIndex: null,
+                    FormEntryIndex: null,
+                    WaitForCompletion: true,
+                    Lock: null,
+                    SyncData: null,
+                    RetainFocus: null,
+                    EventType: null,
+                    EventInternalEventId: null,
+                    DestSubformName: null,
+                    Disabled: false,
+                    FunctionName: null,
+                    SnippetCode: null,
+                    CompiledCode: null,
+                    IsRoute: null,
+                    RoutePath: null,
+                    XmlTrace: null);
+            }
+        }
     }
 
     private static bool ShouldEmitExternalProgramCompat(TaskSemantic task, TaskCallDef call, IReadOnlyList<TaskSemantic> allTasks)
@@ -746,6 +801,13 @@ internal static partial class ProjectGenerator
         sb.AppendLine();
         sb.AppendLine("        Debug.WriteLine($\"GAP: External static method {typeName}.{methodName} not resolved\");");
         sb.AppendLine("        return null;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    internal static T ConvertTo<T>(object value)");
+        sb.AppendLine("    {");
+        sb.AppendLine("        if (value is T typed)");
+        sb.AppendLine("            return typed;");
+        sb.AppendLine("        return (T)ConvertArgument(value, typeof(T));");
         sb.AppendLine("    }");
         sb.AppendLine();
         sb.AppendLine("    static bool TryCreateReal(string typeName, object[] args, out object instance)");

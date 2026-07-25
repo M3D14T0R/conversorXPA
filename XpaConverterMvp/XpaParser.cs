@@ -1787,7 +1787,17 @@ internal static class XpaParser
                                                     ?? raise?.Element("InternalEventID")?.Attribute("val")?.Value);
                 var raiseKeyCombinationId = ParseInt(raise?.Element("Event")?.Element("KeyCombinationID")?.Attribute("val")?.Value
                                                      ?? raise?.Element("KeyCombinationID")?.Attribute("val")?.Value);
-                var subformTaskNumber = ParseInt(cp.Element("TaskNumber")?.Attribute("obj")?.Value);
+                var taskNumberElement = cp.Element("TaskNumber");
+                var subformTaskNumber = ParseInt(taskNumberElement?.Attribute("obj")?.Value);
+                var subformComponentId = ParseInt(taskNumberElement?.Attribute("comp")?.Value);
+                string? subformTargetComponentName = null;
+                string? subformTargetPublicName = null;
+                if (subformComponentId.HasValue && subformTaskNumber.HasValue)
+                {
+                    var subformTargetMetadata = ResolveReferencedComponentMetadataFromCallingContext(ctx, subformComponentId.Value);
+                    subformTargetComponentName = subformTargetMetadata?.Name;
+                    subformTargetPublicName = ResolveReferencedComponentProgramPublicName(ctx, subformComponentId.Value, subformTaskNumber.Value);
+                }
                 var subformConnectTo = ParseInt(cp.Element("ConnectTo")?.Attribute("val")?.Value);
                 var subformArguments = ParseSubformArguments(cp).ToList();
                 var subformArgumentDefs = ParseArgumentDefs(cp.Element("Arguments"));
@@ -1897,6 +1907,9 @@ internal static class XpaParser
                     RaiseEventPublicComponentId: raiseEventPublicComponentId,
                     RaiseEventInternalEventId: raiseInternalEventId,
                     RaiseEventKeyCombinationId: raiseKeyCombinationId,
+                    SubformComponentId: subformComponentId,
+                    SubformTargetComponentName: string.IsNullOrWhiteSpace(subformTargetComponentName) ? null : subformTargetComponentName,
+                    SubformTargetPublicName: string.IsNullOrWhiteSpace(subformTargetPublicName) ? null : subformTargetPublicName,
                     SubformTaskNumber: subformTaskNumber,
                     SubformConnectTo: subformConnectTo,
                     SubformArguments: subformArguments,

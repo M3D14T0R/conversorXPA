@@ -51,6 +51,9 @@ internal static partial class ProjectGenerator
         sb.AppendLine();
         sb.AppendLine("internal static class ScopedTaskCompat");
         sb.AppendLine("{");
+        sb.AppendLine("    [System.STAThread]");
+        sb.AppendLine("    internal static void Main() { }");
+        sb.AppendLine();
         sb.AppendLine("    internal static System.Exception CreateMissingTaskException(string taskName)");
         sb.AppendLine("        => new System.NotImplementedException($\"Scoped task probe placeholder: {taskName}\");");
         sb.AppendLine("}");
@@ -58,6 +61,9 @@ internal static partial class ProjectGenerator
         sb.AppendLine("internal sealed class Application");
         sb.AppendLine("{");
         sb.AppendLine("    public static Application Instance { get; } = new();");
+        sb.AppendLine("    public static readonly CustomCommand Zoom_Post_Record_Update = new CustomCommand(\"Zoom_Post_Record_Update\");");
+        sb.AppendLine("    public static readonly CustomCommand Select_Post_Record_Update = new CustomCommand(\"Select_Post_Record_Update\");");
+        sb.AppendLine("    public static readonly CustomCommand Zoom_Editing = new CustomCommand(\"Zoom_Editing\");");
         sb.AppendLine("    public ScopedTaskCompatPrograms AllPrograms { get; } = new();");
         sb.AppendLine("    public ScopedTaskCompatEntities AllEntities { get; } = new();");
         var appTask = parsed.Tasks.FirstOrDefault(t => t.MainProgram) ?? parsed.Tasks.FirstOrDefault(t => t.ParentOrdinal is null);

@@ -209,7 +209,7 @@ internal static partial class ProjectGenerator
             }
             EmitAllowUserAbortIfNeeded();
         }
-        if (HasTextIoLayout(t))
+        if (ShouldDeclareTaskTextIoStreams(t))
         {
             foreach (var stream in ResolveTextIoStreams(t))
             {
@@ -244,12 +244,17 @@ internal static partial class ProjectGenerator
                             : "";
                         sb.AppendLine($"        {stream.VariableName} = new ENV.Printing.TextPrinterWriter({ioExpr}) {{ Name = \"{Escape(ioName)}\", IgnoreNewPage = true{printerProp} }};");
                     }
+                    else if (string.Equals(stream.StreamType, "WebWriter", StringComparison.OrdinalIgnoreCase))
+                    {
+                        sb.AppendLine($"        {stream.VariableName} = new ENV.IO.WebWriter({ioExpr}) {{ Name = \"{Escape(ioName)}\" }};");
+                    }
                     else if (NeedsUnicodeFileWriterEncoding(t, allTasks))
                         sb.AppendLine($"        {stream.VariableName} = new ENV.IO.FileWriter({ioExpr}, System.Text.Encoding.Unicode) {{ Name = \"{Escape(ioName)}\" }};");
                     else
                         sb.AppendLine($"        {stream.VariableName} = new ENV.IO.FileWriter({ioExpr}) {{ Name = \"{Escape(ioName)}\" }};");
                     if (!string.Equals(stream.StreamType, "FileReader", StringComparison.OrdinalIgnoreCase) &&
-                        !string.Equals(stream.StreamType, "TextPrinterWriter", StringComparison.OrdinalIgnoreCase))
+                        !string.Equals(stream.StreamType, "TextPrinterWriter", StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(stream.StreamType, "WebWriter", StringComparison.OrdinalIgnoreCase))
                         sb.AppendLine($"        {stream.VariableName}.Open();");
                 }
                 sb.AppendLine($"        Streams.Add({stream.VariableName});");
@@ -264,7 +269,7 @@ internal static partial class ProjectGenerator
             var streamVar = ResolveMergeStreamVariableName(t);
             var effectiveStreamExpr = ResolveMergeStreamExpression(t, allTasks);
             var mergeIo = ownedMergeIo;
-            if (mergeIo is not null)
+            if (mergeIo is not null && !ShouldDeclareTaskTextIoStreams(t))
             {
                 var ioName = !string.IsNullOrWhiteSpace(mergeIo.Description) ? mergeIo.Description! : t.Description;
                 var ioExpr = mergeIo.IoExpressionId.HasValue

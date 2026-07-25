@@ -163,6 +163,195 @@ internal static partial class ProjectGenerator
         return "";
     }
 
+    private static TaskResourceColumnDef? ResolveDataColumnSelectResource(
+        string? dataColumn,
+        TaskSemantic task,
+        IReadOnlyList<TaskSemantic> allTasks)
+    {
+        if (string.IsNullOrWhiteSpace(dataColumn))
+            return null;
+
+        var token = dataColumn.Trim();
+        var currentTask = task;
+        while (currentTask is not null)
+        {
+            if (currentTask.SelectsSemantic.ItemsByName.TryGetValue(token, out var select) &&
+                select is not null)
+            {
+                var resource = ResolveTaskResourceColumn(currentTask, select.ColumnId);
+                if (resource is not null)
+                    return resource;
+            }
+
+            if (!currentTask.ParentOrdinal.HasValue)
+                break;
+
+            currentTask = GetTaskByOrdinal(currentTask.ParentOrdinal.Value, allTasks);
+        }
+
+        return null;
+    }
+
+    private static TaskResourceColumnDef? ResolveViewDotNetDataResource(
+        TaskSemantic task,
+        string? dataExpression,
+        string? dataColumn,
+        IReadOnlyList<TaskSemantic> allTasks)
+    {
+        if (!string.IsNullOrWhiteSpace(dataExpression))
+        {
+            var byPath = ResolveResourceByTargetPath(task, dataExpression, allTasks);
+            if (byPath is not null && IsDotNetTaskResource(byPath))
+                return byPath;
+        }
+
+        var bySelect = ResolveDataColumnSelectResource(dataColumn, task, allTasks);
+        if (bySelect is not null && IsDotNetTaskResource(bySelect))
+            return bySelect;
+
+        if (string.IsNullOrWhiteSpace(dataExpression))
+            return null;
+
+        var remaining = dataExpression.Trim();
+        var currentTask = task;
+        while (remaining.StartsWith("_parent.", StringComparison.Ordinal))
+        {
+            if (!currentTask.ParentOrdinal.HasValue)
+                return null;
+
+            var parent = GetTaskByOrdinal(currentTask.ParentOrdinal.Value, allTasks);
+            if (parent is null)
+                return null;
+
+            currentTask = parent;
+            remaining = remaining["_parent.".Length..];
+        }
+
+        if (remaining.EndsWith(".Value", StringComparison.Ordinal))
+            remaining = remaining[..^".Value".Length];
+        if (remaining.Contains('.', StringComparison.Ordinal))
+            return null;
+
+        var directMatch = currentTask.ResourcesSemantic.Ordered.FirstOrDefault(resource =>
+            IsDotNetTaskResource(resource) &&
+            (string.Equals(resource.Name, remaining, StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(
+                 ResolveTaskResourceMemberName(currentTask, resource),
+                 remaining,
+                 StringComparison.Ordinal)));
+        if (directMatch is not null)
+            return directMatch;
+
+        var rootOrdinal = ResolveTopLevelTaskOrdinal(task, allTasks);
+        return _viewDotNetResourceByRootOrdinal.TryGetValue(rootOrdinal, out var resourcesByName) &&
+               resourcesByName.TryGetValue(remaining, out var relatedResource)
+            ? relatedResource
+            : null;
+    }
+
+    private static int ResolveTopLevelTaskOrdinal(
+        TaskSemantic task,
+        IReadOnlyList<TaskSemantic> allTasks)
+    {
+        var current = task;
+        while (current.ParentOrdinal.HasValue)
+        {
+            var parent = GetTaskByOrdinal(current.ParentOrdinal.Value, allTasks);
+            if (parent is null)
+                break;
+            current = parent;
+        }
+
+        return current.Ordinal;
+    }
+
+    private static Dictionary<int, IReadOnlyDictionary<string, TaskResourceColumnDef?>> BuildViewDotNetResourceIndex(
+        IReadOnlyList<TaskSemantic> allTasks)
+    {
+        var rootOrdinalByTask = new Dictionary<int, int>();
+        int RootOrdinal(TaskSemantic task)
+        {
+            if (rootOrdinalByTask.TryGetValue(task.Ordinal, out var cached))
+                return cached;
+
+            var path = new List<TaskSemantic>();
+            var current = task;
+            while (true)
+            {
+                if (rootOrdinalByTask.TryGetValue(current.Ordinal, out cached))
+                    break;
+                path.Add(current);
+                if (!current.ParentOrdinal.HasValue ||
+                    GetTaskByOrdinal(current.ParentOrdinal.Value, allTasks) is not { } parent)
+                {
+                    cached = current.Ordinal;
+                    break;
+                }
+                current = parent;
+            }
+
+            foreach (var item in path)
+                rootOrdinalByTask[item.Ordinal] = cached;
+            return cached;
+        }
+
+        var candidatesByRoot = new Dictionary<int, Dictionary<string, (TaskResourceColumnDef First, string? Type, bool Ambiguous)>>();
+        foreach (var candidateTask in allTasks)
+        {
+            var rootOrdinal = RootOrdinal(candidateTask);
+            if (!candidatesByRoot.TryGetValue(rootOrdinal, out var candidatesByName))
+            {
+                candidatesByName = new Dictionary<string, (TaskResourceColumnDef First, string? Type, bool Ambiguous)>(
+                    StringComparer.OrdinalIgnoreCase);
+                candidatesByRoot[rootOrdinal] = candidatesByName;
+            }
+
+            foreach (var resource in candidateTask.ResourcesSemantic.Ordered.Where(IsDotNetTaskResource))
+            {
+                var objectType = NormalizeDotNetObjectType(resource.ObjectType ?? "");
+                AddCandidate(resource.Name);
+                AddCandidate(ResolveTaskResourceMemberName(candidateTask, resource));
+
+                void AddCandidate(string? name)
+                {
+                    if (string.IsNullOrWhiteSpace(name))
+                        return;
+
+                    if (!candidatesByName.TryGetValue(name, out var aggregate))
+                    {
+                        candidatesByName[name] = (
+                            resource,
+                            string.IsNullOrWhiteSpace(objectType) ? null : objectType,
+                            false);
+                        return;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(objectType) &&
+                        aggregate.Type is not null &&
+                        !string.Equals(aggregate.Type, objectType, StringComparison.Ordinal))
+                    {
+                        aggregate.Ambiguous = true;
+                    }
+                    else if (aggregate.Type is null && !string.IsNullOrWhiteSpace(objectType))
+                    {
+                        aggregate.Type = objectType;
+                    }
+
+                    candidatesByName[name] = aggregate;
+                }
+            }
+        }
+
+        return candidatesByRoot.ToDictionary(
+            root => root.Key,
+            root => (IReadOnlyDictionary<string, TaskResourceColumnDef?>)root.Value.ToDictionary(
+                candidate => candidate.Key,
+                candidate => candidate.Value.Ambiguous || candidate.Value.Type is null
+                    ? null
+                    : candidate.Value.First,
+                StringComparer.OrdinalIgnoreCase));
+    }
+
     private static void EmitTreeControlInitialization(
         StringBuilder code,
         TaskFormControlDef control,

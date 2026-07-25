@@ -27,7 +27,7 @@ internal static partial class ProjectGenerator
             sb.AppendLine();
         }
 
-        if (HasTextIoLayout(t))
+        if (ShouldDeclareTaskTextIoStreams(t))
         {
             sb.AppendLine("    #region Streams");
             foreach (var stream in ResolveTextIoStreams(t))
@@ -35,28 +35,31 @@ internal static partial class ProjectGenerator
             sb.AppendLine("    #endregion");
             sb.AppendLine();
 
-            var allTasks = _allTasks ?? Array.Empty<TaskSemantic>();
-            var textIoNamespaceSegment = ResolveTextIoNamespaceSegment(t, allTasks);
-            var textForms = GetEffectiveTextIoForms(t);
-            if (textForms.Count > 0)
+            if (HasTextIoLayout(t))
             {
-                sb.AppendLine("    #region Layouts");
-                var emittedVariables = new HashSet<string>(StringComparer.Ordinal);
-                foreach (var formEntry in textForms)
+                var allTasks = _allTasks ?? Array.Empty<TaskSemantic>();
+                var textIoNamespaceSegment = ResolveTextIoNamespaceSegment(t, allTasks);
+                var textForms = GetEffectiveTextIoForms(t);
+                if (textForms.Count > 0)
                 {
-                    var layoutClass = BuildTextIoLayoutClassName(t, allTasks, formEntry);
-                    var variableName = ResolveTextIoLayoutVariableName(t, formEntry.Index);
-                    if (!emittedVariables.Add(variableName))
-                        continue;
-                    sb.AppendLine($"    {textIoNamespaceSegment}.{layoutClass} {variableName} => Cached<{textIoNamespaceSegment}.{layoutClass}>();");
+                    sb.AppendLine("    #region Layouts");
+                    var emittedVariables = new HashSet<string>(StringComparer.Ordinal);
+                    foreach (var formEntry in textForms)
+                    {
+                        var layoutClass = BuildTextIoLayoutClassName(t, allTasks, formEntry);
+                        var variableName = ResolveTextIoLayoutVariableName(t, formEntry.Index);
+                        if (!emittedVariables.Add(variableName))
+                            continue;
+                        sb.AppendLine($"    {textIoNamespaceSegment}.{layoutClass} {variableName} => Cached<{textIoNamespaceSegment}.{layoutClass}>();");
+                    }
+                    sb.AppendLine("    #endregion");
+                    sb.AppendLine();
                 }
-                sb.AppendLine("    #endregion");
-                sb.AppendLine();
             }
         }
 
         var ownedMergeIo = ResolveOwnedMergeIoDefinition(t);
-        if (ownedMergeIo is not null)
+        if (ownedMergeIo is not null && !ShouldDeclareTaskTextIoStreams(t))
         {
             sb.AppendLine("    #region Streams");
             var mergeStreamType = string.Equals(ownedMergeIo.Media, "S", StringComparison.OrdinalIgnoreCase)

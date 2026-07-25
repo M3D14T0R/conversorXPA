@@ -22,6 +22,35 @@ internal static partial class ProjectGenerator
         foreach (var control in controls)
         {
             var taskNumber = control.SubformTaskNumber!.Value;
+            if (control.SubformComponentId.HasValue)
+            {
+                var externalBaseName = ToCodeIdentifierPreservingCase(
+                    !string.IsNullOrWhiteSpace(control.SubformTargetPublicName) ? control.SubformTargetPublicName! :
+                    !string.IsNullOrWhiteSpace(control.ControlName) ? control.ControlName! :
+                    $"SubformProgram{taskNumber}");
+                var externalMethodName = externalBaseName + "_SubForm";
+                var externalMethodIndex = 1;
+                while (!usedMethodNames.Add(externalMethodName))
+                {
+                    externalMethodName = externalBaseName + "_SubForm" + new string('_', externalMethodIndex);
+                    externalMethodIndex++;
+                }
+
+                result.Add(new SubformBindingDef(
+                    Control: control,
+                    Kind: ViewSubformBindingKind.ExternalProgram,
+                    TargetTask: null,
+                    FieldName: "",
+                    MethodName: externalMethodName,
+                    TargetNeedsParentCtor: false,
+                    RunArguments: BuildSubformRunArguments(currentTask, dataObjects, control.SubformArguments),
+                    TargetComponentId: control.SubformComponentId,
+                    TargetComponentName: control.SubformTargetComponentName,
+                    TargetObjectId: taskNumber,
+                    TargetPublicName: control.SubformTargetPublicName));
+                continue;
+            }
+
             var targetTask = GetChildTasks(currentTask.Ordinal, allTasks).FirstOrDefault(t => t.SubtaskIndex == taskNumber)
                              ?? ResolveTaskByXpaId(taskNumber, allTasks);
             if (targetTask is null)
@@ -44,29 +73,18 @@ internal static partial class ProjectGenerator
                 j++;
             }
 
-            var runArgs = new List<string>();
-            foreach (var rawArg in control.SubformArguments)
-            {
-                string? converted = null;
-                if (rawArg.StartsWith("EXP:", StringComparison.OrdinalIgnoreCase))
-                {
-                    converted = ResolveExpressionCode(rawArg["EXP:".Length..], currentTask, dataObjects, CreateCallArgumentEmissionContext());
-                }
-                else
-                {
-                    converted = ResolveSelectExpressionByName(rawArg, currentTask, dataObjects) ?? rawArg;
-                }
-                if (!string.IsNullOrWhiteSpace(converted))
-                    runArgs.Add(converted);
-            }
-
             result.Add(new SubformBindingDef(
                 Control: control,
+                Kind: ViewSubformBindingKind.Task,
                 TargetTask: targetTask,
                 FieldName: fieldName,
                 MethodName: methodName,
                 TargetNeedsParentCtor: TaskNeedsParentReference(targetTask, allTasks, dataObjects),
-                RunArguments: runArgs
+                RunArguments: BuildSubformRunArguments(currentTask, dataObjects, control.SubformArguments),
+                TargetComponentId: null,
+                TargetComponentName: null,
+                TargetObjectId: null,
+                TargetPublicName: null
             ));
         }
 
@@ -83,36 +101,67 @@ internal static partial class ProjectGenerator
             if (control is null)
                 continue;
 
+            var runArgs = BuildSubformRunArguments(currentTask, dataObjects, binding.RawArguments);
+            if (binding.Kind == ViewSubformBindingKind.ExternalProgram)
+            {
+                result.Add(new SubformBindingDef(
+                    Control: control,
+                    Kind: ViewSubformBindingKind.ExternalProgram,
+                    TargetTask: null,
+                    FieldName: "",
+                    MethodName: binding.MethodName,
+                    TargetNeedsParentCtor: false,
+                    RunArguments: runArgs,
+                    TargetComponentId: binding.TargetComponentId,
+                    TargetComponentName: binding.TargetComponentName,
+                    TargetObjectId: binding.TargetObjectId,
+                    TargetPublicName: binding.TargetPublicName));
+                continue;
+            }
+
             var targetTask = GetTaskByOrdinal(binding.TargetTaskOrdinal, allTasks);
             if (targetTask is null)
                 continue;
 
-            var runArgs = new List<string>();
-            foreach (var rawArg in binding.RawArguments)
-            {
-                string? converted;
-                if (rawArg.StartsWith("EXP:", StringComparison.OrdinalIgnoreCase))
-                    converted = ResolveExpressionCode(rawArg["EXP:".Length..], currentTask, dataObjects, CreateCallArgumentEmissionContext());
-                else
-                    converted = ResolveSelectExpressionByName(rawArg, currentTask, dataObjects) ?? rawArg;
-
-                if (!string.IsNullOrWhiteSpace(converted))
-                    runArgs.Add(converted);
-            }
-
             result.Add(new SubformBindingDef(
                 Control: control,
+                Kind: ViewSubformBindingKind.Task,
                 TargetTask: targetTask,
                 FieldName: binding.FieldName,
                 MethodName: binding.MethodName,
                 TargetNeedsParentCtor: TaskNeedsParentReference(targetTask, allTasks, dataObjects),
-                RunArguments: runArgs));
+                RunArguments: runArgs,
+                TargetComponentId: null,
+                TargetComponentName: null,
+                TargetObjectId: null,
+                TargetPublicName: null));
         }
 
         if (result.Count > 0)
             return result;
 
         return BuildSubformBindings(currentTask, allTasks, dataObjects);
+    }
+
+    private static List<string> BuildSubformRunArguments(
+        TaskSemantic currentTask,
+        IReadOnlyList<DataObjectDef> dataObjects,
+        IReadOnlyList<string> rawArguments)
+    {
+        var runArgs = new List<string>();
+        foreach (var rawArg in rawArguments)
+        {
+            string? converted;
+            if (rawArg.StartsWith("EXP:", StringComparison.OrdinalIgnoreCase))
+                converted = ResolveExpressionCode(rawArg["EXP:".Length..], currentTask, dataObjects, CreateCallArgumentEmissionContext());
+            else
+                converted = ResolveSelectExpressionByName(rawArg, currentTask, dataObjects) ?? rawArg;
+
+            if (!string.IsNullOrWhiteSpace(converted))
+                runArgs.Add(converted);
+        }
+
+        return runArgs;
     }
 }
 

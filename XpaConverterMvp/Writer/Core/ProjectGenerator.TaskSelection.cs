@@ -56,7 +56,9 @@ internal static partial class ProjectGenerator
     {
         foreach (var binding in task.View.SubformBindings)
         {
-            if (tasksByOrdinal.TryGetValue(binding.TargetTaskOrdinal, out var subformTask))
+            if (binding.Kind == ViewSubformBindingKind.Task &&
+                binding.TargetTaskOrdinal.HasValue &&
+                tasksByOrdinal.TryGetValue(binding.TargetTaskOrdinal.Value, out var subformTask))
                 yield return subformTask;
         }
 

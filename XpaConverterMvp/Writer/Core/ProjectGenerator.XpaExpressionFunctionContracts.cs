@@ -35,6 +35,7 @@ internal static partial class ProjectGenerator
         {
             ["DNEXCEPTIONOCCURRED"] = "Bool",
             ["IMAGERELOAD"] = "Bool",
+            ["STAT"] = "Bool",
             ["FILEEXIST"] = "Bool",
             ["CLIENTFILEEXIST"] = "Bool",
             ["FILEDELETE"] = "Bool",
@@ -120,7 +121,7 @@ internal static partial class ProjectGenerator
             ["DATAVIEWTOTEXT"] = "Bool",
             ["DATAVIEWTOHTML"] = "Bool",
             ["DATAVIEWTOXML"] = "Bool",
-            ["GETPARAM"] = "Text",
+            ["GETPARAM"] = "object",
             ["GETTEXTPARAM"] = "Text",
             ["GETPARAMATTR"] = "Text",
             ["GETPARAMNAMES"] = "Text",
@@ -545,6 +546,7 @@ internal static partial class ProjectGenerator
             "DSTR" when argumentIndex == 0 => "Date",
             "TSTR" when argumentIndex == 0 => "Time",
             "NOT" when argumentIndex == 0 => "Bool",
+            "KBPUT" when argumentIndex == 0 => "Text",
             "DBNAME" when argumentIndex is 0 or 1 => "Number",
 
             "TRIM" or "LTRIM" or "RTRIM" or "UPPER" or "LOWER" or "FLIP" or "LEN"

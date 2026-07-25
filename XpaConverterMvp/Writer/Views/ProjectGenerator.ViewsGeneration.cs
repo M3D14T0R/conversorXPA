@@ -28,7 +28,7 @@ internal static partial class ProjectGenerator
                 ? viewsDir
                 : Path.Combine(outputRoot, taskFolder, "Views");
             Directory.CreateDirectory(taskViewsDir);
-            var viewClass = t.View.ClassName;
+            var viewClass = ResolveViewClassName(t, tasks);
             var viewStopwatch = Stopwatch.StartNew();
             LogProgress($"View start: {viewClass} [{t.Description}]");
             var controllerType = ResolveTaskTypeReference(t, tasks);
@@ -135,7 +135,10 @@ internal static partial class ProjectGenerator
                 if (control is null)
                     continue;
                 var controlVar = Var(control);
-                code.AppendLine($"        {controlVar}.SetController(_controller.{s.FieldName}, _controller.{s.MethodName});");
+                if (s.Kind == ViewSubformBindingKind.ExternalProgram)
+                    code.AppendLine($"        {controlVar}.SetController(_controller, _controller.{s.MethodName});");
+                else
+                    code.AppendLine($"        {controlVar}.SetController(_controller.{s.FieldName}, _controller.{s.MethodName});");
             }
             code.AppendLine("    }");
             foreach (var h in clickHandlers)
@@ -194,12 +197,16 @@ internal static partial class ProjectGenerator
             }
             foreach (var h in bindListHandlers)
             {
+                var bindListDataObject = dataObjects.FirstOrDefault(d => d.Ordinal == h.DataObjectOrdinal);
+                var bindListEntityType = bindListDataObject is null
+                    ? $"Models.{h.EntityTypeName}"
+                    : ResolveModelTypeReference(bindListDataObject, t);
                 code.AppendLine();
                 code.AppendLine($"    void {h.HandlerName}(object sender, System.EventArgs e)");
                 code.AppendLine("    {");
                 code.AppendLine("        if (_controller is null)");
                 code.AppendLine("            return;");
-                code.AppendLine($"        var {h.EntityVarName} = new Models.{h.EntityTypeName}();");
+                code.AppendLine($"        var {h.EntityVarName} = new {bindListEntityType}();");
                 code.AppendLine($"        {h.ComboVarName}.ListSource = {h.EntityVarName};");
                 if (!string.IsNullOrWhiteSpace(h.ValueColumnName))
                     code.AppendLine($"        {h.ComboVarName}.ValueColumn = {h.EntityVarName}.{h.ValueColumnName};");
@@ -442,6 +449,15 @@ internal static partial class ProjectGenerator
                 var dataExpr = ResolveControlDataExpression(c, t, tasks, dataObjects);
                 var hasXmlDataBindingHint = c.DataExpressionId.HasValue || !string.IsNullOrWhiteSpace(c.DataColumn);
                 var didBindData = false;
+                var directDataInfo = string.IsNullOrWhiteSpace(dataExpr)
+                    ? default
+                    : ResolveTargetValueInfo(t, null, dataExpr);
+                var directDataResource = directDataInfo.IsDotNet && directDataInfo.Resource is not null
+                    ? directDataInfo.Resource
+                    : ResolveViewDotNetDataResource(t, dataExpr, c.DataColumn, tasks);
+                var directDataIsDotNet =
+                    directDataInfo.IsDotNet ||
+                    (directDataResource is not null && IsDotNetTaskResource(directDataResource));
                 if (!string.IsNullOrWhiteSpace(dataExpr) &&
                     string.Equals(c.Model, "CTRL_GUI0_PUSH_BUTTON", StringComparison.OrdinalIgnoreCase))
                 {
@@ -462,6 +478,25 @@ internal static partial class ProjectGenerator
                     AppendRuntimeControllerBindingStatement(controllerBindingStatements, $"{varName}.Data = {imageDataExpr};");
                     didBindData = true;
                 }
+                else if (!string.IsNullOrWhiteSpace(dataExpr) &&
+                         directDataIsDotNet &&
+                         SupportsDirectViewDataAssignment(c))
+                {
+                    var resolvedDataResource = directDataInfo.Resource ?? directDataResource;
+                    var objectType = resolvedDataResource is null
+                        ? "object"
+                        : NormalizeDotNetObjectType(resolvedDataResource.ObjectType ?? "");
+                    var attr = MapReturnTypeToSourceExpressionAttribute(NormalizeReturnTypeToken(objectType));
+                    var dataBindingExpr = BuildViewDataBindingExpression(
+                        c,
+                        attr,
+                        $"() => _controller.{dataExpr}");
+                    if (!string.IsNullOrWhiteSpace(dataBindingExpr))
+                    {
+                        AppendRuntimeControllerBindingStatement(controllerBindingStatements, $"{varName}.Data = {dataBindingExpr};");
+                        didBindData = true;
+                    }
+                }
                 else if (!string.IsNullOrWhiteSpace(dataExpr) && SupportsDirectViewDataAssignment(c))
                 {
                     AppendRuntimeControllerBindingStatement(controllerBindingStatements, $"{varName}.Data = _controller.{dataExpr};");
@@ -472,9 +507,9 @@ internal static partial class ProjectGenerator
                     var dataBindingExpr = ResolveControlDataExpressionBindingForView(c, t, dataObjects, tasks);
                     if (!string.IsNullOrWhiteSpace(dataBindingExpr) && SupportsDirectViewDataAssignment(c))
                     {
-                        dataBindingExpr = BuildViewDataAssignmentExpression(c, dataBindingExpr, t, tasks);
                         dataBindingExpr = PrefixControllerReferencesForView(dataBindingExpr, t, dataObjects);
                         dataBindingExpr = EnsureControllerScopedViewBinding(dataBindingExpr);
+                        dataBindingExpr = BuildResolvedViewDataAssignmentExpression(c, dataBindingExpr, t, tasks);
                         if (dataBindingExpr.Contains("_controller.", StringComparison.Ordinal))
                             AppendRuntimeControllerBindingStatement(controllerBindingStatements, $"{varName}.Data = {dataBindingExpr};");
                         else

@@ -23,7 +23,10 @@ internal static partial class ProjectGenerator
 
             foreach (var binding in owner.View.SubformBindings)
             {
-                var target = tasks.FirstOrDefault(t => t.Ordinal == binding.TargetTaskOrdinal);
+                if (binding.Kind != ViewSubformBindingKind.Task || !binding.TargetTaskOrdinal.HasValue)
+                    continue;
+
+                var target = tasks.FirstOrDefault(t => t.Ordinal == binding.TargetTaskOrdinal.Value);
                 if (target is not null &&
                     target.ParentOrdinal is null &&
                     IsStructuralTask(target))

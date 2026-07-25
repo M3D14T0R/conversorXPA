@@ -434,6 +434,9 @@ internal sealed record TaskFormControlDef(
     int? RaiseEventPublicComponentId,
     int? RaiseEventInternalEventId,
     int? RaiseEventKeyCombinationId,
+    int? SubformComponentId,
+    string? SubformTargetComponentName,
+    string? SubformTargetPublicName,
     int? SubformTaskNumber,
     int? SubformConnectTo,
     IReadOnlyList<string> SubformArguments,
@@ -1194,13 +1197,24 @@ internal sealed record ViewClickHandler(
     IReadOnlyList<TaskArgumentDef> ArgumentDefs
 );
 
+internal enum ViewSubformBindingKind
+{
+    Task,
+    ExternalProgram
+}
+
 internal sealed record ViewSubformBinding(
     int ControlId,
-    int TargetTaskOrdinal,
+    ViewSubformBindingKind Kind,
+    int? TargetTaskOrdinal,
     string TargetTaskClassName,
     string FieldName,
     string MethodName,
-    IReadOnlyList<string> RawArguments
+    IReadOnlyList<string> RawArguments,
+    int? TargetComponentId,
+    string? TargetComponentName,
+    int? TargetObjectId,
+    string? TargetPublicName
 );
 
 internal sealed record ViewBooleanBinding(

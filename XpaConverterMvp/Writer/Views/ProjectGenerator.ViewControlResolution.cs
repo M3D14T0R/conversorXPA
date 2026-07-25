@@ -121,10 +121,25 @@ internal static partial class ProjectGenerator
         TaskSemantic? task = null,
         IReadOnlyList<TaskSemantic>? allTasks = null)
     {
-        if (!IsViewCheckBoxControl(c) || string.IsNullOrWhiteSpace(valueExpression))
+        if (string.IsNullOrWhiteSpace(valueExpression))
             return valueExpression;
 
         var trimmed = valueExpression.Trim();
+        if (string.Equals(c.Model, "CTRL_GUI0_PUSH_BUTTON", StringComparison.OrdinalIgnoreCase))
+        {
+            if (task is not null && allTasks is not null)
+                return BuildPushButtonDirectDataAssignmentExpression(trimmed, task, allTasks);
+
+            if (trimmed.StartsWith("new XPARuntimeCore.Box.UI.Advanced.ButtonData(", StringComparison.Ordinal) ||
+                trimmed.StartsWith("(XPARuntimeCore.Box.UI.Advanced.ButtonData)", StringComparison.Ordinal))
+                return trimmed;
+
+            return $"(XPARuntimeCore.Box.UI.Advanced.ButtonData){trimmed}";
+        }
+
+        if (!IsViewCheckBoxControl(c))
+            return valueExpression;
+
         if (trimmed.StartsWith("_controller.", StringComparison.Ordinal) ||
             trimmed.StartsWith("_parent.", StringComparison.Ordinal) ||
             IsSimpleMemberAccess(trimmed))
@@ -146,6 +161,35 @@ internal static partial class ProjectGenerator
             XpaType.Object,
             XpaType.Bool);
         return $"new XPARuntimeCore.Box.UI.Advanced.CheckBoxData(() => {booleanValue})";
+    }
+
+    private static string BuildResolvedViewDataAssignmentExpression(
+        TaskFormControlDef c,
+        string valueExpression,
+        TaskSemantic task,
+        IReadOnlyList<TaskSemantic> allTasks)
+    {
+        if (string.IsNullOrWhiteSpace(valueExpression))
+            return valueExpression;
+
+        var assignmentExpression = BuildViewDataAssignmentExpression(c, valueExpression, task, allTasks);
+        var targetExpression = assignmentExpression.Trim();
+        if (targetExpression.StartsWith("_controller.", StringComparison.Ordinal))
+            targetExpression = targetExpression["_controller.".Length..];
+
+        var targetInfo = ResolveTargetValueInfo(task, null, targetExpression);
+        if (!targetInfo.IsDotNet)
+            return assignmentExpression;
+
+        var objectType = NormalizeDotNetObjectType(targetInfo.Resource?.ObjectType ?? "");
+        var attr = MapReturnTypeToSourceExpressionAttribute(NormalizeReturnTypeToken(objectType));
+        var wrappedExpression = BuildViewDataBindingExpression(
+            c,
+            attr,
+            $"() => {assignmentExpression}");
+        return string.IsNullOrWhiteSpace(wrappedExpression)
+            ? assignmentExpression
+            : wrappedExpression;
     }
 
     private static string BuildCheckBoxDirectDataAssignmentExpression(
@@ -184,12 +228,10 @@ internal static partial class ProjectGenerator
             trimmed.StartsWith("(XPARuntimeCore.Box.UI.Advanced.ButtonData)", StringComparison.Ordinal))
             return trimmed;
 
-        if (IsTextViewDataExpression(unscoped, task, allTasks))
-            return trimmed;
-
-        if (IsLogicalViewDataExpression(unscoped, task, allTasks))
-            return $"(XPARuntimeCore.Box.UI.Advanced.ButtonData){trimmed}";
-
+        // Button.Data is not a scalar binding.  XPA permits columns of
+        // several scalar types here and the runtime exposes the corresponding
+        // explicit conversion to ButtonData.  Emit that conversion regardless
+        // of the source scalar type, as the legacy converter did.
         return $"(XPARuntimeCore.Box.UI.Advanced.ButtonData){trimmed}";
     }
 

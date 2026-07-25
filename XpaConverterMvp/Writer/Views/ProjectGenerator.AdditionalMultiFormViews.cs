@@ -143,12 +143,31 @@ internal static partial class ProjectGenerator
                     if (!string.IsNullOrWhiteSpace(buttonDesignText))
                         designer.AppendLine($"        {varName}.Text = {ToCSharpLiteral(buttonDesignText)};");
                 }
-                var dataBindingExpr = ResolveControlDataExpressionBindingForView(c, t, dataObjects, tasks);
+                var directDataExpression = ResolveControlDataExpression(c, t, tasks, dataObjects);
+                var directDotNetResource = ResolveViewDotNetDataResource(
+                    t,
+                    directDataExpression,
+                    c.DataColumn,
+                    tasks);
+                var dataBindingExpr = "";
+                if (!string.IsNullOrWhiteSpace(directDataExpression) &&
+                    directDotNetResource is not null &&
+                    SupportsDirectViewDataAssignment(c))
+                {
+                    var objectType = NormalizeDotNetObjectType(directDotNetResource.ObjectType ?? "");
+                    var attr = MapReturnTypeToSourceExpressionAttribute(NormalizeReturnTypeToken(objectType));
+                    dataBindingExpr = BuildViewDataBindingExpression(
+                        c,
+                        attr,
+                        $"() => _controller.{directDataExpression}");
+                }
+                if (string.IsNullOrWhiteSpace(dataBindingExpr))
+                    dataBindingExpr = ResolveControlDataExpressionBindingForView(c, t, dataObjects, tasks);
                 if (!string.IsNullOrWhiteSpace(dataBindingExpr) && SupportsDirectViewDataAssignment(c))
                 {
-                    dataBindingExpr = BuildViewDataAssignmentExpression(c, dataBindingExpr, t, tasks);
                     dataBindingExpr = PrefixControllerReferencesForView(dataBindingExpr, t, dataObjects);
                     dataBindingExpr = EnsureControllerScopedViewBinding(dataBindingExpr);
+                    dataBindingExpr = BuildResolvedViewDataAssignmentExpression(c, dataBindingExpr, t, tasks);
                     if (dataBindingExpr.Contains("_controller.", StringComparison.Ordinal))
                         AppendRuntimeControllerBindingStatement(controllerBindingStatements, $"{varName}.Data = {dataBindingExpr};");
                     else

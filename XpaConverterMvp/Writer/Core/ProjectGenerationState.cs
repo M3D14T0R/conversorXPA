@@ -43,9 +43,12 @@ internal sealed class ProjectGenerationState
     public Dictionary<int, string> TaskClassBaseNameByOrdinal { get; set; } = new();
     public Dictionary<int, int> TaskClassSiblingCollisionIndexByOrdinal { get; set; } = new();
     public Dictionary<int, string> TaskClassNameByOrdinal { get; set; } = new();
+    public Dictionary<string, int> TaskClassNameAssignedRegistry { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public HashSet<int> TaskClassNameResolutionInProgress { get; set; } = new();
     public Dictionary<int, string> TaskTypeReferenceByOrdinal { get; set; } = new();
-    public Dictionary<string, string> ResourceMemberNameCache { get; set; } = new(StringComparer.Ordinal);
+    // Written lazily during parallel task emission (cross-task resource
+    // resolution), so it must be thread-safe: all workers share this instance.
+    public ConcurrentDictionary<string, string> ResourceMemberNameCache { get; set; } = new(StringComparer.Ordinal);
     public Dictionary<int, Dictionary<int, string>> ResourceMemberNameByTaskOrdinal { get; set; } = new();
     public HashSet<int> ResourceMemberNameCacheBuiltTaskOrdinals { get; set; } = new();
     public Dictionary<int, Dictionary<string, TaskResourceColumnDef>> TaskResourceByMemberNameCache { get; set; } = new();
@@ -132,6 +135,7 @@ internal sealed class ProjectGenerationState
     public Dictionary<string, string> StatementBooleanConditionSyntaxCache { get; set; } = new(StringComparer.Ordinal);
     public Dictionary<string, string[]> RemarkLinesCache { get; set; } = new(StringComparer.Ordinal);
     public Dictionary<string, string> ControlDataExpressionCache { get; set; } = new(StringComparer.Ordinal);
+    public Dictionary<int, IReadOnlyDictionary<string, TaskResourceColumnDef?>> ViewDotNetResourceByRootOrdinal { get; set; } = new();
     public Dictionary<int, Dictionary<string, string>> ViewPrefixSymbolBindingMapCache { get; set; } = new();
     public Dictionary<string, TaskFormControlDef?> ControlHandlerControlCache { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<int, Dictionary<string, TaskFormControlDef>> ControlHandlerExactControlMapCache { get; set; } = new();

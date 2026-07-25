@@ -1161,14 +1161,19 @@ internal sealed class MainForm : Form
         // Recursive filesystem discovery can be slow and must never read a
         // TextBox/DataGridView from the worker thread.
         var roots = EnumerateReferenceRoots().ToArray();
+        var recursiveRoots = EnumerateReferenceIndexRoots().ToArray();
         var requests = pending
             .Select(item => (item.Kind, item.Name, item.XmlHint))
             .ToArray();
+        var requestedLookupNames = requests
+            .SelectMany(request => BuildDllLookupNames(request.Name ?? "", request.XmlHint))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var oldText = autoMapButton.Text;
         autoMapButton.Enabled = false;
         autoMapButton.Text = "Mapeando...";
         UseWaitCursor = true;
+        var mappingStopwatch = System.Diagnostics.Stopwatch.StartNew();
 
         string?[] resolvedPaths;
         try
@@ -1177,7 +1182,7 @@ internal sealed class MainForm : Form
             {
                 var result = new string?[requests.Length];
                 var recursiveIndex = new Lazy<ReferenceCandidateIndex>(
-                    () => BuildReferenceCandidateIndex(roots),
+                    () => BuildReferenceCandidateIndex(recursiveRoots, requestedLookupNames),
                     LazyThreadSafetyMode.ExecutionAndPublication);
                 for (var index = 0; index < requests.Length; index++)
                 {
@@ -1204,6 +1209,7 @@ internal sealed class MainForm : Form
         }
         finally
         {
+            mappingStopwatch.Stop();
             UseWaitCursor = false;
             autoMapButton.Text = oldText;
             autoMapButton.Enabled = true;
@@ -1226,6 +1232,18 @@ internal sealed class MainForm : Form
         var message = updated == 0
             ? "Nenhuma referência visível foi resolvida automaticamente."
             : $"{updated} referência(s) foram mapeadas automaticamente.";
+        var unresolvedNames = pending
+            .Where((_, index) => string.IsNullOrWhiteSpace(resolvedPaths[index]))
+            .Select(item => item.Name)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var elapsed = mappingStopwatch.Elapsed.TotalSeconds.ToString(
+            "0.0",
+            System.Globalization.CultureInfo.InvariantCulture);
+        message += $"{Environment.NewLine}Tempo: {elapsed}s.";
+        if (unresolvedNames.Length > 0)
+            message += $"{Environment.NewLine}{unresolvedNames.Length} não encontrada(s): {string.Join(", ", unresolvedNames)}";
         MessageBox.Show(this, message, "Auto map", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
@@ -1391,8 +1409,10 @@ internal sealed class MainForm : Form
                 if (isXpaReference)
                 {
                     var projectName = Path.GetFileNameWithoutExtension(name) + ".csproj";
+                    var projectFolder = Path.GetFileNameWithoutExtension(name);
                     candidates.Add(Path.Combine(root, projectName));
-                    candidates.Add(Path.Combine(root, Path.GetFileNameWithoutExtension(name), projectName));
+                    candidates.Add(Path.Combine(root, projectFolder, projectName));
+                    candidates.Add(Path.Combine(root, projectFolder, projectFolder, projectName));
                 }
                 candidates.Add(Path.Combine(root, fileName));
                 candidates.Add(Path.Combine(root, "Resources", fileName));
@@ -1428,11 +1448,23 @@ internal sealed class MainForm : Form
         IReadOnlyDictionary<string, string> ProjectByName,
         IReadOnlyDictionary<string, string> DllByName);
 
-    private static ReferenceCandidateIndex BuildReferenceCandidateIndex(IReadOnlyList<string> referenceRoots)
+    private static ReferenceCandidateIndex BuildReferenceCandidateIndex(
+        IReadOnlyList<string> referenceRoots,
+        IReadOnlySet<string> requestedLookupNames)
     {
         var projects = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var dlls = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var visitedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (requestedLookupNames.Count == 0)
+            return new ReferenceCandidateIndex(projects, dlls);
+
+        var enumerationOptions = new EnumerationOptions
+        {
+            RecurseSubdirectories = true,
+            IgnoreInaccessible = true,
+            ReturnSpecialDirectories = false,
+            AttributesToSkip = FileAttributes.ReparsePoint
+        };
 
         foreach (var root in referenceRoots)
         {
@@ -1441,11 +1473,13 @@ internal sealed class MainForm : Form
 
             try
             {
-                foreach (var projectPath in Directory.EnumerateFiles(root, "*.csproj", SearchOption.AllDirectories))
+                foreach (var projectPath in Directory.EnumerateFiles(root, "*.csproj", enumerationOptions))
                 {
                     if (!visitedFiles.Add(projectPath))
                         continue;
                     var projectName = Path.GetFileNameWithoutExtension(projectPath);
+                    if (!requestedLookupNames.Contains(projectName))
+                        continue;
                     projects.TryAdd(projectName, projectPath);
                 }
             }
@@ -1455,17 +1489,15 @@ internal sealed class MainForm : Form
 
             try
             {
-                foreach (var dllPath in Directory.EnumerateFiles(root, "*.dll", SearchOption.AllDirectories))
+                foreach (var dllPath in Directory.EnumerateFiles(root, "*.dll", enumerationOptions))
                 {
                     if (!visitedFiles.Add(dllPath))
                         continue;
 
                     var fileName = Path.GetFileNameWithoutExtension(dllPath);
+                    if (!requestedLookupNames.Contains(fileName))
+                        continue;
                     dlls.TryAdd(fileName, dllPath);
-
-                    var assemblyIdentity = TryResolveAssemblyIdentity(dllPath);
-                    if (!string.IsNullOrWhiteSpace(assemblyIdentity))
-                        dlls.TryAdd(assemblyIdentity, dllPath);
                 }
             }
             catch
@@ -1541,6 +1573,8 @@ internal sealed class MainForm : Form
         foreach (var candidate in new[]
                  {
                      _runtimeRootPath.Text.Trim(),
+                     ResolveLegacyConversionsRoot(),
+                     ResolveReferenceOutputRoot(),
                      Path.Combine(@"D:\DLLs"),
                      Path.Combine(Directory.GetCurrentDirectory(), "DLLs"),
                      Path.Combine(Directory.GetCurrentDirectory(), "Resources")
@@ -1552,6 +1586,54 @@ internal sealed class MainForm : Form
             var fullPath = Path.GetFullPath(candidate);
             if (seen.Add(fullPath))
                 yield return fullPath;
+        }
+    }
+
+    private IEnumerable<string> EnumerateReferenceIndexRoots()
+    {
+        var outputRoot = ResolveReferenceOutputRoot();
+        return EnumerateReferenceRoots()
+            .Where(root => !string.Equals(root, outputRoot, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string ResolveLegacyConversionsRoot()
+    {
+        const string configuredRoot = @"D:\Projetos_CSharp\Conversoes";
+        if (Directory.Exists(configuredRoot))
+            return configuredRoot;
+
+        foreach (var seed in new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory })
+        {
+            var current = new DirectoryInfo(seed);
+            for (var depth = 0; current is not null && depth < 8; depth++, current = current.Parent)
+            {
+                var parent = current.Parent;
+                if (parent is null)
+                    break;
+
+                var sibling = Path.Combine(parent.FullName, "Conversoes");
+                if (Directory.Exists(sibling))
+                    return sibling;
+            }
+        }
+
+        return "";
+    }
+
+    private string ResolveReferenceOutputRoot()
+    {
+        var outputPath = _outputDir.Text.Trim();
+        if (string.IsNullOrWhiteSpace(outputPath))
+            return "";
+
+        try
+        {
+            var fullOutputPath = Path.GetFullPath(outputPath);
+            return Directory.GetParent(fullOutputPath)?.FullName ?? fullOutputPath;
+        }
+        catch
+        {
+            return "";
         }
     }
 

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -38,6 +39,7 @@ internal static partial class ProjectGenerator
         // remain empty in the new state: their keys contain program context and
         // were the unbounded part of long conversions.
         next.TaskClassNameByOrdinal = previous.TaskClassNameByOrdinal;
+        next.TaskClassNameAssignedRegistry = previous.TaskClassNameAssignedRegistry;
         next.TaskTypeReferenceByOrdinal = previous.TaskTypeReferenceByOrdinal;
         next.ResourceMemberNameCache = previous.ResourceMemberNameCache;
         next.ResourceMemberNameByTaskOrdinal = previous.ResourceMemberNameByTaskOrdinal;
@@ -64,6 +66,7 @@ internal static partial class ProjectGenerator
         next.IncomingParameterCountCache = previous.IncomingParameterCountCache;
         next.ObservedTaskParameterEvidenceCache = previous.ObservedTaskParameterEvidenceCache;
         next.TaskParametersCache = previous.TaskParametersCache;
+        next.ViewDotNetResourceByRootOrdinal = previous.ViewDotNetResourceByRootOrdinal;
         next.ViewPrefixSymbolBindingMapCache = previous.ViewPrefixSymbolBindingMapCache;
         next.ControlHandlerExactControlMapCache = previous.ControlHandlerExactControlMapCache;
         next.AccessibleParentFunctionTargetsCache = previous.AccessibleParentFunctionTargetsCache;
@@ -117,6 +120,7 @@ internal static partial class ProjectGenerator
             TaskClassBaseNameByOrdinal = source.TaskClassBaseNameByOrdinal,
             TaskClassSiblingCollisionIndexByOrdinal = source.TaskClassSiblingCollisionIndexByOrdinal,
             TaskClassNameByOrdinal = source.TaskClassNameByOrdinal,
+            TaskClassNameAssignedRegistry = source.TaskClassNameAssignedRegistry,
             TaskClassNameResolutionInProgress = new HashSet<int>(),
             TaskTypeReferenceByOrdinal = source.TaskTypeReferenceByOrdinal,
             ResourceMemberNameCache = source.ResourceMemberNameCache,
@@ -146,6 +150,7 @@ internal static partial class ProjectGenerator
             ExternalManifestColumnAttrObjIndex = source.ExternalManifestColumnAttrObjIndex,
             ApplicationResourceBindingMap = source.ApplicationResourceBindingMap,
             TaskCommandMemberMapCache = source.TaskCommandMemberMapCache,
+            ViewDotNetResourceByRootOrdinal = source.ViewDotNetResourceByRootOrdinal,
             ComponentFunctionSourceByName = source.ComponentFunctionSourceByName,
             ComponentFunctionReturnTypeByName = source.ComponentFunctionReturnTypeByName
         };
@@ -180,9 +185,10 @@ internal static partial class ProjectGenerator
     private static Dictionary<int, string> _taskClassBaseNameByOrdinal { get => _state.TaskClassBaseNameByOrdinal; set => _state.TaskClassBaseNameByOrdinal = value; }
     private static Dictionary<int, int> _taskClassSiblingCollisionIndexByOrdinal { get => _state.TaskClassSiblingCollisionIndexByOrdinal; set => _state.TaskClassSiblingCollisionIndexByOrdinal = value; }
     private static Dictionary<int, string> _taskClassNameByOrdinal { get => _state.TaskClassNameByOrdinal; set => _state.TaskClassNameByOrdinal = value; }
+    private static Dictionary<string, int> _taskClassNameAssignedRegistry { get => _state.TaskClassNameAssignedRegistry; set => _state.TaskClassNameAssignedRegistry = value; }
     private static HashSet<int> _taskClassNameResolutionInProgress { get => _state.TaskClassNameResolutionInProgress; set => _state.TaskClassNameResolutionInProgress = value; }
     private static Dictionary<int, string> _taskTypeReferenceByOrdinal { get => _state.TaskTypeReferenceByOrdinal; set => _state.TaskTypeReferenceByOrdinal = value; }
-    private static Dictionary<string, string> _resourceMemberNameCache { get => _state.ResourceMemberNameCache; set => _state.ResourceMemberNameCache = value; }
+    private static ConcurrentDictionary<string, string> _resourceMemberNameCache { get => _state.ResourceMemberNameCache; set => _state.ResourceMemberNameCache = value; }
     private static Dictionary<int, Dictionary<int, string>> _resourceMemberNameByTaskOrdinal { get => _state.ResourceMemberNameByTaskOrdinal; set => _state.ResourceMemberNameByTaskOrdinal = value; }
     private static HashSet<int> _resourceMemberNameCacheBuiltTaskOrdinals { get => _state.ResourceMemberNameCacheBuiltTaskOrdinals; set => _state.ResourceMemberNameCacheBuiltTaskOrdinals = value; }
     private static Dictionary<int, Dictionary<string, TaskResourceColumnDef>> _taskResourceByMemberNameCache { get => _state.TaskResourceByMemberNameCache; set => _state.TaskResourceByMemberNameCache = value; }
@@ -265,6 +271,7 @@ internal static partial class ProjectGenerator
     private static Dictionary<string, string> _statementBooleanConditionSyntaxCache { get => _state.StatementBooleanConditionSyntaxCache; set => _state.StatementBooleanConditionSyntaxCache = value; }
     private static Dictionary<string, string[]> _remarkLinesCache { get => _state.RemarkLinesCache; set => _state.RemarkLinesCache = value; }
     private static Dictionary<string, string> _controlDataExpressionCache { get => _state.ControlDataExpressionCache; set => _state.ControlDataExpressionCache = value; }
+    private static Dictionary<int, IReadOnlyDictionary<string, TaskResourceColumnDef?>> _viewDotNetResourceByRootOrdinal { get => _state.ViewDotNetResourceByRootOrdinal; set => _state.ViewDotNetResourceByRootOrdinal = value; }
     private static Dictionary<int, Dictionary<string, string>> _viewPrefixSymbolBindingMapCache { get => _state.ViewPrefixSymbolBindingMapCache; set => _state.ViewPrefixSymbolBindingMapCache = value; }
     private static Dictionary<string, TaskFormControlDef?> _controlHandlerControlCache { get => _state.ControlHandlerControlCache; set => _state.ControlHandlerControlCache = value; }
     private static Dictionary<int, Dictionary<string, TaskFormControlDef>> _controlHandlerExactControlMapCache { get => _state.ControlHandlerExactControlMapCache; set => _state.ControlHandlerExactControlMapCache = value; }

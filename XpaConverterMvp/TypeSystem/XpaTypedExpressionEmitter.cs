@@ -7,6 +7,7 @@ namespace XpaConverterMvp.TypeSystem;
 internal readonly record struct XpaTypedExpressionContext(
     Func<string, XpaTypedExpression?> ResolveSymbol,
     Func<string, IReadOnlyList<XpaTypedExpression>, XpaTypedExpression?> ResolveFunction,
+    Func<string, string, XpaTypedExpression?> ResolveLiteralSuffix,
     XpaExpressionDestination Destination);
 
 /// <summary>
@@ -72,14 +73,57 @@ internal static class XpaTypedExpressionEmitter
         private XpaTypedExpression ParseExpression(int minimumPrecedence)
         {
             var left = ParsePrefix();
-            while (TryGetBinaryOperator(_current, out var op, out var precedence) &&
+            while (TryGetBinaryOperator(out var op, out var precedence) &&
                    precedence >= minimumPrecedence)
             {
                 Advance();
+                if (op == "NOT LIKE")
+                    Advance();
                 var right = ParseExpression(precedence + 1);
                 left = EmitBinary(op, left, right);
             }
             return left;
+        }
+
+        // Word operators (AND/OR/MOD/LIKE/NOT LIKE) are valid only in infix
+        // position. In operand position the same words are legacy variable
+        // names (XPA codes such as OR, AND, MOD) and stay identifiers.
+        private bool TryGetBinaryOperator(out string op, out int precedence)
+        {
+            if (_current.Kind == TokenKind.Identifier)
+            {
+                switch (_current.Text.ToUpperInvariant())
+                {
+                    case "OR":
+                        op = "||";
+                        precedence = 10;
+                        return true;
+                    case "AND":
+                        op = "&&";
+                        precedence = 20;
+                        return true;
+                    case "LIKE":
+                        op = "LIKE";
+                        precedence = 30;
+                        return true;
+                    case "MOD":
+                        op = "%";
+                        precedence = 50;
+                        return true;
+                    case "NOT":
+                        var next = _lexer.Peek();
+                        if (next.Kind == TokenKind.Identifier &&
+                            string.Equals(next.Text, "LIKE", StringComparison.OrdinalIgnoreCase))
+                        {
+                            op = "NOT LIKE";
+                            precedence = 30;
+                            return true;
+                        }
+                        break;
+                }
+            }
+
+            return XpaTypedExpressionEmitter.TryGetBinaryOperator(_current, out op, out precedence);
         }
 
         private XpaTypedExpression ParsePrefix()
@@ -109,7 +153,7 @@ internal static class XpaTypedExpressionEmitter
                 var value = _current.Text;
                 Advance();
                 return ParsePostfix(ApplyLiteralSuffix(
-                    new XpaTypedExpression(ToCSharpString(value), "Text", XpaType.Text),
+                    new XpaTypedExpression(ToCSharpString(value), "Text", XpaType.Text, value),
                     value));
             }
 
@@ -159,6 +203,13 @@ internal static class XpaTypedExpressionEmitter
                 return literal;
 
             var suffix = _current.Text.ToUpperInvariant();
+            var contextualResult = _context.ResolveLiteralSuffix(suffix, literalValue);
+            if (contextualResult.HasValue)
+            {
+                Advance();
+                return contextualResult.Value;
+            }
+
             XpaTypedExpression result;
             switch (suffix)
             {
@@ -251,7 +302,19 @@ internal static class XpaTypedExpressionEmitter
                 case "HEB":
                 case "DSOURCE":
                 case "RIGHT":
+                case "MENU":
                     result = literal with { ReturnType = "Text", Type = XpaType.Text };
+                    break;
+                case "F":
+                    if (!decimal.TryParse(
+                            literalValue,
+                            NumberStyles.Number,
+                            CultureInfo.InvariantCulture,
+                            out _))
+                    {
+                        return literal;
+                    }
+                    result = new XpaTypedExpression(literalValue, "Number", XpaType.Number);
                     break;
                 case "FORM":
                     if (!decimal.TryParse(
@@ -268,7 +331,13 @@ internal static class XpaTypedExpressionEmitter
                         XpaType.Number);
                     break;
                 case "VAR":
-                    result = _context.ResolveSymbol(literalValue) ?? literal;
+                    var variable = _context.ResolveSymbol(literalValue);
+                    result = variable is null
+                        ? literal
+                        : new XpaTypedExpression(
+                            $"u.IndexOf({variable.Value.Code})",
+                            "Number",
+                            XpaType.Number);
                     break;
                 case "KBD":
                     result = new XpaTypedExpression(
@@ -442,8 +511,15 @@ internal static class XpaTypedExpressionEmitter
                     left.Type);
             }
 
-            if (op == "-" && left.Type == right.Type &&
-                left.Type is XpaType.Date or XpaType.Time)
+            if (op == "-" && left.Type == right.Type && left.Type == XpaType.Time)
+            {
+                return new XpaTypedExpression(
+                    $"u.ToNumber({left.Code}) - u.ToNumber({right.Code})",
+                    "Number",
+                    XpaType.Number);
+            }
+
+            if (op == "-" && left.Type == right.Type && left.Type == XpaType.Date)
             {
                 return new XpaTypedExpression(
                     $"{left.Code} - {right.Code}",
@@ -473,13 +549,19 @@ internal static class XpaTypedExpressionEmitter
                 XpaType.Bool);
         }
 
-        private static XpaTypedExpression EmitConditional(
+        private XpaTypedExpression EmitConditional(
             XpaTypedExpression condition,
             XpaTypedExpression whenTrue,
             XpaTypedExpression whenFalse)
         {
             var boolean = ConvertRequired(condition, XpaType.Bool);
             var resultType = XpaExpressionTypeMap.Unify(whenTrue.Type, whenFalse.Type);
+            if (resultType == XpaType.Object &&
+                _current.Kind == TokenKind.End &&
+                _context.Destination.Type is not (XpaType.Unknown or XpaType.Object))
+            {
+                resultType = _context.Destination.Type;
+            }
             var trueValue = ConvertRequired(whenTrue, resultType);
             var falseValue = ConvertRequired(whenFalse, resultType);
             return new XpaTypedExpression(
@@ -554,8 +636,6 @@ internal static class XpaTypedExpressionEmitter
                 return new Token(TokenKind.End, "");
 
             var ch = _source[_position];
-            if (ch == '\'' && TryReadApostropheSuffix(out var suffix))
-                return new Token(TokenKind.Identifier, suffix);
             if (ch is '\'' or '"')
                 return ReadString(ch);
             if (char.IsDigit(ch))
@@ -574,6 +654,7 @@ internal static class XpaTypedExpressionEmitter
                 ',' => new Token(TokenKind.Comma, ","),
                 '+' or '-' or '*' or '/' or '%' or '^' =>
                     new Token(TokenKind.Operator, ch.ToString()),
+                '=' when Match('=') => new Token(TokenKind.Operator, "=="),
                 '=' => new Token(TokenKind.Operator, "=="),
                 '!' when Match('=') => new Token(TokenKind.Operator, "!="),
                 '!' => new Token(TokenKind.Operator, "!"),
@@ -614,49 +695,37 @@ internal static class XpaTypedExpressionEmitter
             throw new ExpressionParseException();
         }
 
-        private bool TryReadApostropheSuffix(out string suffix)
-        {
-            suffix = "";
-            var start = _position + 1;
-            if (start >= _source.Length || !char.IsLetter(_source[start]))
-                return false;
-
-            var end = start + 1;
-            while (end < _source.Length && char.IsLetter(_source[end]))
-                end++;
-
-            var candidate = _source[start..end];
-            if (!IsTypedSuffix(candidate) ||
-                (end < _source.Length && IsIdentifierPart(_source[end])))
-            {
-                return false;
-            }
-
-            _position = end;
-            suffix = candidate;
-            return true;
-        }
-
-        private static bool IsTypedSuffix(string value)
-            => value.ToUpperInvariant() is
-                "DSOURCE" or "RIGHT" or "LOG" or "VAR" or "EXP" or
-                "DATE" or "TIME" or "KBD" or "EVENT" or "HEB" or
-                "FORM" or "PROG" or "MODE" or "INDEX";
-
         private Token ReadNumber()
         {
+            // XPA stores decimals with '.', never with locale ','. A comma is
+            // always an argument/item separator, so it must not be consumed
+            // here (otherwise Stat(0,'C'MODE) lexes "0," as a number and the
+            // whole call fails to parse).
             var start = _position;
-            while (_position < _source.Length &&
-                   (char.IsDigit(_source[_position]) ||
-                    _source[_position] is '.' or ','))
-            {
+            while (_position < _source.Length && char.IsDigit(_source[_position]))
                 _position++;
+
+            if (_position < _source.Length && _source[_position] == '.')
+            {
+                var dot = _position;
+                _position++;
+                while (_position < _source.Length && char.IsDigit(_source[_position]))
+                    _position++;
+
+                // XPA tolerates a trailing dot ("0."); C# does not, so drop it.
+                if (_position == dot + 1)
+                    return new Token(TokenKind.Number, _source[start..dot]);
             }
 
-            var raw = _source[start.._position].Replace(',', '.');
-            if (!decimal.TryParse(raw, NumberStyles.Number, CultureInfo.InvariantCulture, out _))
-                throw new ExpressionParseException();
-            return new Token(TokenKind.Number, raw);
+            return new Token(TokenKind.Number, _source[start.._position]);
+        }
+
+        internal Token Peek()
+        {
+            var saved = _position;
+            var token = Next();
+            _position = saved;
+            return token;
         }
 
         private Token ReadIdentifierOrWordOperator()
@@ -665,25 +734,11 @@ internal static class XpaTypedExpressionEmitter
             while (_position < _source.Length && IsIdentifierPart(_source[_position]))
                 _position++;
 
-            var value = _source[start.._position];
-            if (string.Equals(value, "AND", StringComparison.OrdinalIgnoreCase))
-                return new Token(TokenKind.Operator, "&&");
-            if (string.Equals(value, "OR", StringComparison.OrdinalIgnoreCase))
-                return new Token(TokenKind.Operator, "||");
-            if (string.Equals(value, "MOD", StringComparison.OrdinalIgnoreCase))
-                return new Token(TokenKind.Operator, "%");
-            if (string.Equals(value, "LIKE", StringComparison.OrdinalIgnoreCase))
-                return new Token(TokenKind.Operator, "LIKE");
-            if (string.Equals(value, "NOT", StringComparison.OrdinalIgnoreCase))
-            {
-                var saved = _position;
-                SkipWhiteSpace();
-                if (ReadWord("LIKE"))
-                    return new Token(TokenKind.Operator, "NOT LIKE");
-                _position = saved;
-            }
-
-            return new Token(TokenKind.Identifier, value);
+            // AND/OR/MOD/LIKE/NOT are returned as plain identifiers. Whether a
+            // word acts as an operator or as a legacy variable name (OR, AND,
+            // MOD are valid XPA variable codes) is decided by the parser from
+            // the syntactic position, not by the lexer.
+            return new Token(TokenKind.Identifier, _source[start.._position]);
         }
 
         private bool ReadWord(string expected)

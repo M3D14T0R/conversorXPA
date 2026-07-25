@@ -114,6 +114,47 @@ internal static partial class ProjectGenerator
         return t.Layout.TextForms.Count > 0;
     }
 
+    private static bool ShouldDeclareTaskTextIoStreams(TaskSemantic task)
+    {
+        if (HasTextIoLayout(task))
+            return true;
+
+        var ios = task.Ios.Count > 0
+            ? task.Ios
+            : (task.Io is null ? Array.Empty<TaskIoDef>() : new[] { task.Io });
+        return ios.Count > 0 && HasDescendantTextFormIoTargetingTaskIo(task, 1);
+    }
+
+    private static bool HasDescendantTextFormIoTargetingTaskIo(TaskSemantic task, int depth)
+    {
+        var allTasks = _allTasks ?? Array.Empty<TaskSemantic>();
+        foreach (var child in GetChildTasks(task.Ordinal, allTasks))
+        {
+            if (TaskHasTextFormIoTargetingAncestorIo(child, depth))
+                return true;
+
+            if (HasDescendantTextFormIoTargetingTaskIo(child, depth + 1))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool TaskHasTextFormIoTargetingAncestorIo(TaskSemantic task, int depth)
+    {
+        if (!HasTextIoLayout(task))
+            return false;
+
+        var textFormIndexes = task.Layout.TextForms
+            .Select(form => form.Index)
+            .ToHashSet();
+        return task.FormIos.Any(io =>
+            string.Equals(io.OperationType, "O", StringComparison.OrdinalIgnoreCase) &&
+            io.FormEntryIndex.HasValue &&
+            textFormIndexes.Contains(io.FormEntryIndex.Value) &&
+            io.IoDeviceParent.GetValueOrDefault() == depth);
+    }
+
     private static bool ShouldSuppressViewForBusinessProcessTextIo(TaskSemantic t)
     {
         return ResolveBaseClass(t) == "BusinessProcessBase" &&
@@ -138,6 +179,8 @@ internal static partial class ProjectGenerator
         io ??= t.Io;
         if (string.Equals(io?.Media, "P", StringComparison.OrdinalIgnoreCase))
             return "TextPrinterWriter";
+        if (string.Equals(io?.Media, "R", StringComparison.OrdinalIgnoreCase))
+            return "WebWriter";
         if (!IsByteArrayTextIo(t, io))
             return string.Equals(io?.Access, "R", StringComparison.OrdinalIgnoreCase)
                 ? "FileReader"
@@ -313,13 +356,13 @@ internal static partial class ProjectGenerator
             return streams[0].VariableName;
         if (idx < streams.Count)
             return streams[idx].VariableName;
-        if (idx == streams.Count && HasMergeLayout(t))
+        if (idx == streams.Count && ResolveOwnedMergeIoDefinition(t) is not null)
             return ResolveMergeStreamExpression(t, _allTasks ?? Array.Empty<TaskSemantic>());
         return streams[0].VariableName;
     }
 
     private static bool DeclaresTextIoStream(TaskSemantic task)
-        => HasTextIoLayout(task) ||
+        => ShouldDeclareTaskTextIoStreams(task) ||
            (HasMergeLayout(task) && task.Io is not null);
 
     private static string ResolveParentBlobExpression(TaskSemantic task, IReadOnlyList<TaskSemantic> allTasks)
@@ -362,18 +405,21 @@ internal static partial class ProjectGenerator
 
     private static string ResolveMergeStreamExpression(TaskSemantic t, IReadOnlyList<TaskSemantic> allTasks)
     {
-        if (HasTextIoLayout(t) && TryResolveTextIoWriteStreamVariableName(t, out var textIoWriter))
+        if (ShouldDeclareTaskTextIoStreams(t) && TryResolveTextIoWriteStreamVariableName(t, out var textIoWriter))
             return textIoWriter;
 
-        if (t.Io is not null)
+        if (ResolveOwnedMergeIoDefinition(t) is not null)
             return ResolveMergeStreamVariableName(t);
 
         if (t.ParentOrdinal.HasValue)
         {
             var parent = GetTaskByOrdinal(t.ParentOrdinal.Value, allTasks);
-            if (parent is not null && (HasMergeLayout(parent) || parent.Io is not null))
+            if (parent is not null)
                 return $"_parent.{ResolveMergeStreamExpression(parent, allTasks)}";
         }
+
+        if (TryResolveTextIoWriteStreamVariableName(t, out textIoWriter))
+            return textIoWriter;
 
         return ResolveMergeStreamVariableName(t);
     }

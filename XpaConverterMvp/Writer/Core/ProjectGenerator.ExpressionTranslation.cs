@@ -18,7 +18,13 @@ internal static partial class ProjectGenerator
         var simpleMember = IsSimpleMemberPath(bindExpr);
         var hasOperatorsOrCalls = ContainsDynamicOperators(bindExpr);
         var isNowProperty = bindExpr.EndsWith(".Now", StringComparison.Ordinal);
-        if (simpleMember && !hasOperatorsOrCalls)
+        var isLiteral =
+            string.Equals(bindExpr, "true", StringComparison.Ordinal) ||
+            string.Equals(bindExpr, "false", StringComparison.Ordinal) ||
+            string.Equals(bindExpr, "null", StringComparison.Ordinal) ||
+            IsWholeStringLiteralExpression(bindExpr) ||
+            IsNumericLiteralExpressionCentral(bindExpr);
+        if (simpleMember && !hasOperatorsOrCalls && !isLiteral)
         {
             if (isNowProperty)
                 return $".BindValue(() => {bindExpr})";
@@ -69,6 +75,42 @@ internal static partial class ProjectGenerator
                 return directExpr;
         }
 
+        // Resolve inherited selects with the writer's complete data-object/model
+        // context.  The semantic map is intentionally kept as a fallback because
+        // it is built before external model metadata is fully available and can
+        // therefore retain a synthetic resource name for relational selects.
+        var parentOrdinal = task.ParentOrdinal;
+        var parentDepth = 1;
+        while (parentOrdinal.HasValue)
+        {
+            var parentTask = GetTaskByOrdinal(parentOrdinal, allTasks);
+            if (parentTask is null)
+                break;
+
+            var inheritedSelect = parentTask.SelectsSemantic.Items
+                .FirstOrDefault(s => string.Equals(s.Name, normalized, StringComparison.OrdinalIgnoreCase));
+            if (inheritedSelect is null &&
+                parentTask.SelectsSemantic.ItemsByName.TryGetValue(normalized, out var mappedParentSelect) &&
+                mappedParentSelect is not null)
+                inheritedSelect = mappedParentSelect;
+
+            if (inheritedSelect is not null)
+            {
+                var inheritedExpression = ResolveSelectExpression(inheritedSelect, parentTask, dataObjects, "");
+                if (!string.IsNullOrWhiteSpace(inheritedExpression))
+                {
+                    if (inheritedExpression.StartsWith("Application.", StringComparison.Ordinal))
+                        return inheritedExpression;
+
+                    var prefix = string.Concat(Enumerable.Repeat("_parent.", parentDepth));
+                    return prefix + inheritedExpression;
+                }
+            }
+
+            parentOrdinal = parentTask.ParentOrdinal;
+            parentDepth++;
+        }
+
         if (_parentSelectMapByTaskOrdinal.TryGetValue(task.Ordinal, out var parentSelectMap) &&
             parentSelectMap.TryGetValue(normalized, out var parentSelectExpr) &&
             !string.IsNullOrWhiteSpace(parentSelectExpr))
@@ -105,7 +147,7 @@ internal static partial class ProjectGenerator
         {
             if (task.ParentOrdinal.HasValue)
             {
-                var parentBinding = ResolveOrdinalBindingFromParentChain(columnIndex, task, allTasks);
+                var parentBinding = ResolveOrdinalBindingFromParentChain(columnIndex, task, allTasks, dataObjects);
                 if (!string.IsNullOrWhiteSpace(parentBinding))
                     return parentBinding;
             }
@@ -116,9 +158,12 @@ internal static partial class ProjectGenerator
         }
 
         if (columnIndex <= task.ResourcesSemantic.Ordered.Count)
-            return ResolveTaskResourceMemberName(task, task.ResourcesSemantic.Ordered[columnIndex - 1]);
+            return ResolveTaskResourceBindingExpression(
+                task,
+                task.ResourcesSemantic.Ordered[columnIndex - 1],
+                dataObjects);
 
-        var fallbackParentBinding = ResolveOrdinalBindingFromParentChain(columnIndex, task, allTasks);
+        var fallbackParentBinding = ResolveOrdinalBindingFromParentChain(columnIndex, task, allTasks, dataObjects);
         if (!string.IsNullOrWhiteSpace(fallbackParentBinding))
             return fallbackParentBinding;
 
@@ -173,7 +218,11 @@ internal static partial class ProjectGenerator
         return null;
     }
 
-    private static string ResolveOrdinalBindingFromParentChain(int columnIndex, TaskSemantic task, IReadOnlyList<TaskSemantic> allTasks)
+    private static string ResolveOrdinalBindingFromParentChain(
+        int columnIndex,
+        TaskSemantic task,
+        IReadOnlyList<TaskSemantic> allTasks,
+        IReadOnlyList<DataObjectDef> dataObjects)
     {
         if (columnIndex <= 0)
             return "";
@@ -187,13 +236,41 @@ internal static partial class ProjectGenerator
                 break;
 
             if (columnIndex <= parentTask.ResourcesSemantic.Ordered.Count)
-                return $"{parentPrefix}.{ResolveTaskResourceMemberName(parentTask, parentTask.ResourcesSemantic.Ordered[columnIndex - 1])}";
+            {
+                var binding = ResolveTaskResourceBindingExpression(
+                    parentTask,
+                    parentTask.ResourcesSemantic.Ordered[columnIndex - 1],
+                    dataObjects);
+                return $"{parentPrefix}.{binding}";
+            }
 
             parentOrdinal = parentTask.ParentOrdinal;
             parentPrefix += "._parent";
         }
 
         return "";
+    }
+
+    private static string ResolveTaskResourceBindingExpression(
+        TaskSemantic task,
+        TaskResourceColumnDef resource,
+        IReadOnlyList<DataObjectDef> dataObjects)
+    {
+        foreach (var select in task.SelectsSemantic.Items)
+        {
+            if (!string.Equals(select.Type, "R", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var selectResource = ResolveTaskResourceColumn(task, select.ColumnId);
+            if (selectResource is null || selectResource.Id != resource.Id)
+                continue;
+
+            var binding = ResolveSelectExpression(select, task, dataObjects, "");
+            if (!string.IsNullOrWhiteSpace(binding))
+                return binding;
+        }
+
+        return ResolveTaskResourceMemberName(task, resource);
     }
 
     private static int ToAlphabeticSlot(string? token)
@@ -240,7 +317,12 @@ internal static partial class ProjectGenerator
             XpaExpressionTypeMap.FromReturnType(expectedReturnType));
         var context = new XpaTypedExpressionContext(
             name => ResolveTypedXpaSymbol(name, task, dataObjects),
-            (name, arguments) => ResolveTypedXpaFunction(name, arguments, task),
+            (name, arguments) => ResolveTypedXpaFunction(name, arguments, task, destination),
+            (suffix, literalValue) => ResolveTypedXpaLiteralSuffix(
+                suffix,
+                literalValue,
+                task,
+                dataObjects),
             destination);
 
         if (XpaTypedExpressionEmitter.TryEmit(source, context, out emitted))
@@ -252,6 +334,38 @@ internal static partial class ProjectGenerator
                 CultureInfo.InvariantCulture,
                 $"task={task.Ordinal} attr={expressionAttr ?? ""} source={QuoteTelemetry(TruncateTelemetryValue(source))}"));
         return false;
+    }
+
+    private static XpaTypedExpression? ResolveTypedXpaLiteralSuffix(
+        string suffix,
+        string literalValue,
+        TaskSemantic task,
+        IReadOnlyList<DataObjectDef> dataObjects)
+    {
+        if (!string.Equals(suffix, "DSOURCE", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        var commaIndex = literalValue.IndexOf(',');
+        var objectToken = commaIndex >= 0
+            ? literalValue[..commaIndex]
+            : literalValue;
+        if (!int.TryParse(
+                objectToken.Trim(),
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out var objectOrdinal))
+        {
+            return null;
+        }
+
+        var dataObject = ResolveDataObjectByOrdinal(dataObjects, objectOrdinal);
+        if (dataObject is null)
+            return null;
+
+        return new XpaTypedExpression(
+            $"typeof({ResolveModelTypeReference(dataObject, task)})",
+            "System.Type",
+            XpaType.Object);
     }
 
     private static XpaTypedExpression? ResolveTypedXpaSymbol(
@@ -290,6 +404,20 @@ internal static partial class ProjectGenerator
         }
 
         if (string.IsNullOrWhiteSpace(binding))
+        {
+            var accessibleResources = BuildAccessibleLegacyResourceReferenceMap(task, dataObjects);
+            if (accessibleResources.TryGetValue(name, out var accessibleBinding) &&
+                !string.IsNullOrWhiteSpace(accessibleBinding))
+            {
+                binding = accessibleBinding;
+                resolvedResource = ResolveResourceByTargetPath(
+                    task,
+                    binding,
+                    _allTasks ?? Array.Empty<TaskSemantic>());
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(binding))
             binding = name;
 
         var returnType = "";
@@ -308,14 +436,88 @@ internal static partial class ProjectGenerator
     private static XpaTypedExpression? ResolveTypedXpaFunction(
         string name,
         IReadOnlyList<XpaTypedExpression> arguments,
-        TaskSemantic task)
+        TaskSemantic task,
+        XpaExpressionDestination expressionDestination)
     {
+        var normalizedFunction = NormalizeXpaFunctionContractName(name);
+        if (normalizedFunction == "DNSET" && arguments.Count == 2)
+        {
+            return new XpaTypedExpression(
+                $"{arguments[0].Code} = {arguments[1].Code}",
+                "object",
+                XpaType.Object);
+        }
+
+        if (normalizedFunction == "DNCAST" &&
+            arguments.Count == 2 &&
+            TryResolveDotNetCastTypeName(arguments[1].Code, out var castTypeName))
+        {
+            return new XpaTypedExpression(
+                $"ExternalTypeCompat.ConvertTo<{castTypeName}>({arguments[0].Code})",
+                castTypeName,
+                XpaType.Object);
+        }
+
+        if (string.Equals(name, "ExpCalc", StringComparison.OrdinalIgnoreCase) &&
+            arguments.Count == 1 &&
+            TryReadRegisteredExpressionOrdinalArgument(arguments[0].Code, out var expressionOrdinal))
+        {
+            var expressionReturnType = "";
+            if (task.ExpressionsSemantic.EntriesByOrdinal.TryGetValue(expressionOrdinal, out var expression) &&
+                expression is not null)
+            {
+                expressionReturnType = NormalizeReturnTypeToken(
+                    ResolveIntrinsicReturnTypeForExpressionEntry(expression));
+            }
+
+            var expressionType = XpaExpressionTypeMap.FromReturnType(expressionReturnType);
+            return new XpaTypedExpression(
+                $"Exp_{expressionOrdinal}()",
+                string.IsNullOrWhiteSpace(expressionReturnType) ? "object" : expressionReturnType,
+                expressionType == XpaType.Unknown ? XpaType.Object : expressionType);
+        }
+
         var target = ResolveTypedXpaFunctionTarget(name, task);
         var renderedArguments = new string[arguments.Count];
         for (var i = 0; i < arguments.Count; i++)
         {
             var argument = arguments[i];
-            if (TryResolveTypedFunctionArgumentDestination(
+            if (i == 0 &&
+                RequiresVariableIndexArgument(name) &&
+                argument.Type != XpaType.Number)
+            {
+                argument = new XpaTypedExpression(
+                    $"u.IndexOf({argument.Code})",
+                    "Number",
+                    XpaType.Number);
+            }
+            else if (ShouldApplyExpressionDestinationToFunctionResultArgument(
+                         normalizedFunction,
+                         i,
+                         arguments.Count,
+                         expressionDestination) &&
+                     XpaExpressionTypeMap.TryApply(argument, expressionDestination, out var contextualArgument))
+            {
+                argument = contextualArgument;
+            }
+            else if (TryReadDotNetMethodArgumentTypeEvidence(
+                         target,
+                         task,
+                         i,
+                         arguments.Count,
+                         out var dotNetParameterType) &&
+                     string.Equals(
+                         NormalizeReturnTypeToken(dotNetParameterType),
+                         "System.Char",
+                         StringComparison.Ordinal) &&
+                     argument.LiteralValue is { Length: 1 } charLiteral)
+            {
+                argument = new XpaTypedExpression(
+                    ToCSharpCharLiteral(charLiteral[0]),
+                    "System.Char",
+                    XpaType.Object);
+            }
+            else if (TryResolveTypedFunctionArgumentDestination(
                     name,
                     target,
                     i,
@@ -335,6 +537,8 @@ internal static partial class ProjectGenerator
             returnType = accessibleContract.ReturnType;
         else if (TryGetComponentFunctionCallContract(name, out var componentContract))
             returnType = componentContract.ReturnType;
+        else if (TryReadDotNetMethodCallEvidence(renderedCode, task, out var dotNetReturnType))
+            returnType = dotNetReturnType;
         else
             TryResolveKnownXpaFunctionReturnType(target, renderedArguments, out returnType);
 
@@ -343,6 +547,43 @@ internal static partial class ProjectGenerator
             renderedCode,
             string.IsNullOrWhiteSpace(returnType) ? "object" : returnType,
             type == XpaType.Unknown ? XpaType.Object : type);
+    }
+
+    private static bool ShouldApplyExpressionDestinationToFunctionResultArgument(
+        string normalizedFunction,
+        int argumentIndex,
+        int argumentCount,
+        XpaExpressionDestination destination)
+    {
+        if (destination.Type is XpaType.Unknown or XpaType.Object)
+            return false;
+
+        if (normalizedFunction == "IF")
+            return argumentCount >= 3 && argumentIndex is 1 or 2;
+
+        if (normalizedFunction is not ("CASE" or "CASEUNTYPED") || argumentCount < 4)
+            return false;
+
+        return (argumentIndex >= 2 && argumentIndex % 2 == 0) ||
+               argumentIndex == argumentCount - 1;
+    }
+
+    private static bool TryResolveDotNetCastTypeName(string typeExpression, out string typeName)
+    {
+        typeName = (typeExpression ?? "").Trim();
+        if (typeName.StartsWith("DotNet.", StringComparison.OrdinalIgnoreCase))
+            typeName = typeName["DotNet.".Length..];
+        if (typeName.StartsWith("global::", StringComparison.Ordinal))
+            typeName = typeName["global::".Length..];
+
+        return !string.IsNullOrWhiteSpace(typeName) &&
+               IsSimpleIdentifierPath(typeName);
+    }
+
+    private static bool RequiresVariableIndexArgument(string functionName)
+    {
+        var normalized = NormalizeXpaFunctionContractName(functionName);
+        return normalized is "VARMOD" or "VARPREV" or "VARCURR" or "VARSET" or "VECSET";
     }
 
     private static string ResolveTypedXpaFunctionTarget(string name, TaskSemantic task)
@@ -361,19 +602,42 @@ internal static partial class ProjectGenerator
         if (applicationFunctions.TryGetValue(name, out var applicationTarget))
             return applicationTarget;
 
-        if (_xpaFunctionMap.TryGetValue(name, out var xpaTarget))
-            return xpaTarget;
+        if (TryGetComponentFunctionCallContract(name, out var componentContract))
+            return componentContract.TargetName;
 
         var userMethods = GetUserMethodsPublicNameMap();
         if (userMethods.TryGetValue(name, out var userMethod))
             return $"u.{userMethod}";
 
-        if (TryGetComponentFunctionCallContract(name, out var componentContract))
-            return componentContract.TargetName;
+        if (_xpaFunctionMap.TryGetValue(name, out var xpaTarget))
+            return xpaTarget;
+
+        if (TryResolveComponentFunctionTargetWithoutContract(name, out var componentTarget))
+            return componentTarget;
 
         return name.Contains('.', StringComparison.Ordinal)
             ? name
             : $"u.{name}";
+    }
+
+    private static bool TryResolveComponentFunctionTargetWithoutContract(
+        string functionName,
+        out string target)
+    {
+        target = "";
+        var lookupName = ExtractFunctionLookupName(functionName);
+        if (string.IsNullOrWhiteSpace(lookupName) ||
+            ReservedRuntimeFunctionNames.Contains(lookupName) ||
+            !_componentFunctionSourceByName.TryGetValue(lookupName, out var componentName) ||
+            string.IsNullOrWhiteSpace(componentName))
+        {
+            return false;
+        }
+
+        var componentNamespace = ResolveNamespaceForComponent(componentName);
+        var methodName = ToCodeIdentifierPreservingCase(lookupName);
+        target = $"global::{componentNamespace}.ComponentFunctions.{methodName}";
+        return true;
     }
 
     private static bool TryResolveTypedFunctionArgumentDestination(
@@ -388,6 +652,12 @@ internal static partial class ProjectGenerator
         string returnType;
         if (!TryGetAccessibleFunctionArgumentType(task, sourceName, argumentIndex, out returnType) &&
             !TryGetComponentFunctionArgumentType(sourceName, argumentIndex, out returnType) &&
+            !TryReadDotNetMethodArgumentTypeEvidence(
+                targetName,
+                task,
+                argumentIndex,
+                argumentCount,
+                out returnType) &&
             !TryResolveXpaFunctionEmissionArgumentReturnTypeContract(
                 targetName,
                 argumentIndex,
