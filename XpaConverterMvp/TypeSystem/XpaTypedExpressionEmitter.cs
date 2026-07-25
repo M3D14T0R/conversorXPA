@@ -166,6 +166,24 @@ internal static class XpaTypedExpressionEmitter
                     value));
             }
 
+            if (_current.Kind == TokenKind.Date)
+            {
+                var value = _current.Text;
+                Advance();
+                var parts = value.Split('/');
+                if (parts.Length != 3 ||
+                    !int.TryParse(parts[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out var day) ||
+                    !int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var month) ||
+                    !int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var year))
+                {
+                    throw new ExpressionParseException();
+                }
+
+                return ParsePostfix(day == 0 || month == 0 || year == 0
+                    ? new XpaTypedExpression("Date.Empty", "Date", XpaType.Date)
+                    : new XpaTypedExpression($"new Date({year}, {month}, {day})", "Date", XpaType.Date));
+            }
+
             if (_current.Kind == TokenKind.OpenParenthesis)
             {
                 Advance();
@@ -190,9 +208,30 @@ internal static class XpaTypedExpressionEmitter
             if (string.Equals(name, "NULL", StringComparison.OrdinalIgnoreCase))
                 return ParsePostfix(new XpaTypedExpression("u.Null()", "object", XpaType.Object));
 
-            return ParsePostfix(
-                _context.ResolveSymbol(name) ??
-                new XpaTypedExpression(name, "object", XpaType.Object));
+            var resolvedSymbol = _context.ResolveSymbol(name);
+            // Some XPA exports concatenate the unary NOT token with the
+            // alphabetic variable alias (for example NOTCH instead of NOT CH).
+            // Split it only when the complete token is not a symbol and the
+            // suffix is a real symbol in the current task.
+            if (name.Length > 3 &&
+                name.StartsWith("NOT", StringComparison.OrdinalIgnoreCase))
+            {
+                var operand = _context.ResolveSymbol(name[3..]);
+                var fullTokenIsUnresolved =
+                    !resolvedSymbol.HasValue ||
+                    (resolvedSymbol.Value.Type == XpaType.Object &&
+                     string.Equals(resolvedSymbol.Value.Code, name, StringComparison.OrdinalIgnoreCase));
+                if (fullTokenIsUnresolved &&
+                    operand.HasValue &&
+                    !(operand.Value.Type == XpaType.Object &&
+                      string.Equals(operand.Value.Code, name[3..], StringComparison.OrdinalIgnoreCase)))
+                    return ParsePostfix(EmitUnary("!", operand.Value));
+            }
+
+            if (resolvedSymbol.HasValue)
+                return ParsePostfix(resolvedSymbol.Value);
+
+            return ParsePostfix(new XpaTypedExpression(name, "object", XpaType.Object));
         }
 
         private XpaTypedExpression ApplyLiteralSuffix(
@@ -388,9 +427,17 @@ internal static class XpaTypedExpressionEmitter
                     continue;
                 }
 
-                target = _context.ResolveSymbol(qualifiedName) ??
-                         new XpaTypedExpression(qualifiedName, "object", XpaType.Object);
+                // DotNet is an XPA namespace marker, not a C# identifier. Keep
+                // the complete qualified path intact until we know whether its
+                // terminal node is a type constructor, static call or member.
+                target = qualifiedName.StartsWith("DotNet.", StringComparison.Ordinal)
+                    ? new XpaTypedExpression(qualifiedName, "object", XpaType.Object)
+                    : _context.ResolveSymbol(qualifiedName) ??
+                      new XpaTypedExpression(qualifiedName, "object", XpaType.Object);
             }
+
+            if (target.Code.StartsWith("DotNet.", StringComparison.Ordinal))
+                target = _context.ResolveSymbol(target.Code) ?? target;
 
             return target;
         }
@@ -639,7 +686,7 @@ internal static class XpaTypedExpressionEmitter
             if (ch is '\'' or '"')
                 return ReadString(ch);
             if (char.IsDigit(ch))
-                return ReadNumber();
+                return TryReadDate(out var date) ? date : ReadNumber();
             if (IsIdentifierStart(ch))
                 return ReadIdentifierOrWordOperator();
 
@@ -718,6 +765,57 @@ internal static class XpaTypedExpressionEmitter
             }
 
             return new Token(TokenKind.Number, _source[start.._position]);
+        }
+
+        private bool TryReadDate(out Token token)
+        {
+            token = default;
+            var start = _position;
+            var cursor = start;
+
+            var dayDigits = ReadDigits(ref cursor, 2);
+            if (dayDigits is < 1 or > 2 ||
+                cursor >= _source.Length ||
+                _source[cursor++] != '/')
+            {
+                return false;
+            }
+
+            var monthDigits = ReadDigits(ref cursor, 2);
+            if (monthDigits is < 1 or > 2 ||
+                cursor >= _source.Length ||
+                _source[cursor++] != '/')
+            {
+                return false;
+            }
+
+            var yearStart = cursor;
+            var yearDigits = ReadDigits(ref cursor, 4);
+            var isZeroTwoDigitYear =
+                yearDigits == 2 &&
+                _source.AsSpan(yearStart, yearDigits).Trim('0').Length == 0;
+            if ((yearDigits != 4 && !isZeroTwoDigitYear) ||
+                (cursor < _source.Length && (char.IsDigit(_source[cursor]) || _source[cursor] == '/')))
+            {
+                return false;
+            }
+
+            _position = cursor;
+            token = new Token(TokenKind.Date, _source[start..cursor]);
+            return true;
+        }
+
+        private int ReadDigits(ref int cursor, int maximum)
+        {
+            var start = cursor;
+            while (cursor < _source.Length &&
+                   cursor - start < maximum &&
+                   char.IsDigit(_source[cursor]))
+            {
+                cursor++;
+            }
+
+            return cursor - start;
         }
 
         internal Token Peek()
@@ -808,6 +906,7 @@ internal static class XpaTypedExpressionEmitter
         End,
         Identifier,
         Number,
+        Date,
         String,
         Operator,
         OpenParenthesis,

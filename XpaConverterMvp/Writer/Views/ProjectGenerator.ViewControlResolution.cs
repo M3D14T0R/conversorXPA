@@ -32,9 +32,16 @@ internal static partial class ProjectGenerator
             {
                 if (CanInlineStringLiteralExpression(task, exp.Ordinal, dataObjects))
                 {
-                    TryResolveExpressionAsStringLiteralCode(task, exp.Ordinal, dataObjects, out var literalCode);
-                    literalCode = EmitExpressionForContext(literalCode, task, CreateViewBindingEmissionContext(exp.Attribute));
-                    return BuildViewDataBindingExpression(c, exp.Attribute, $"() => {literalCode}");
+                    // Preserve the source type while emitting the inline value.
+                    // A raw C# string cannot safely be coerced after its type
+                    // evidence has been discarded (for example a numeric model
+                    // column used by a text control).
+                    var inlineCode = ResolveTypedExpressionEntryCode(
+                        exp,
+                        task,
+                        dataObjects,
+                        CreateViewBindingEmissionContext(exp.Attribute)).Code;
+                    return BuildViewDataBindingExpression(c, exp.Attribute, $"() => {inlineCode}");
                 }
                 return BuildViewDataBindingExpression(c, exp.Attribute, $"_controller.Exp_{exp.Ordinal}");
             }
@@ -322,6 +329,13 @@ internal static partial class ProjectGenerator
             return string.Equals(attr, "O", StringComparison.OrdinalIgnoreCase)
                 ? "XPARuntimeCore.Box.UI.Advanced.ImageData.FromByteArray"
                 : "XPARuntimeCore.Box.UI.Advanced.ImageData.FromText";
+        }
+
+        if (string.Equals(c.Model, "CTRL_GUI0_RICH_EDIT", StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Equals(attr, "O", StringComparison.OrdinalIgnoreCase)
+                ? "XPARuntimeCore.Box.UI.Advanced.RichTextBoxData.FromByteArray"
+                : "XPARuntimeCore.Box.UI.Advanced.RichTextBoxData.FromText";
         }
 
         var fromMethod = attr switch
@@ -621,6 +635,7 @@ internal static partial class ProjectGenerator
             and not "CTRL_GUI0_COLUMN"
             and not "CTRL_GUI0_SUBFORM"
             and not "CTRL_GUI0_TREE"
+            and not "CTRL_GUI0_TABLE"
             and not "CTRL_GUI0_DOTNET"
             and not "CTRL_GUI0_BROWSER";
     }

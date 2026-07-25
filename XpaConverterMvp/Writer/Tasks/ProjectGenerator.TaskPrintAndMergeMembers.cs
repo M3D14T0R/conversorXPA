@@ -34,27 +34,27 @@ internal static partial class ProjectGenerator
                 sb.AppendLine($"    {ResolveTextIoStreamFieldType(stream.StreamType)} {stream.VariableName};");
             sb.AppendLine("    #endregion");
             sb.AppendLine();
+        }
 
-            if (HasTextIoLayout(t))
+        if (HasTextIoLayout(t))
+        {
+            var allTasks = _allTasks ?? Array.Empty<TaskSemantic>();
+            var textIoNamespaceSegment = ResolveTextIoNamespaceSegment(t, allTasks);
+            var textForms = GetEffectiveTextIoForms(t);
+            if (textForms.Count > 0)
             {
-                var allTasks = _allTasks ?? Array.Empty<TaskSemantic>();
-                var textIoNamespaceSegment = ResolveTextIoNamespaceSegment(t, allTasks);
-                var textForms = GetEffectiveTextIoForms(t);
-                if (textForms.Count > 0)
+                sb.AppendLine("    #region Layouts");
+                var emittedVariables = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var formEntry in textForms)
                 {
-                    sb.AppendLine("    #region Layouts");
-                    var emittedVariables = new HashSet<string>(StringComparer.Ordinal);
-                    foreach (var formEntry in textForms)
-                    {
-                        var layoutClass = BuildTextIoLayoutClassName(t, allTasks, formEntry);
-                        var variableName = ResolveTextIoLayoutVariableName(t, formEntry.Index);
-                        if (!emittedVariables.Add(variableName))
-                            continue;
-                        sb.AppendLine($"    {textIoNamespaceSegment}.{layoutClass} {variableName} => Cached<{textIoNamespaceSegment}.{layoutClass}>();");
-                    }
-                    sb.AppendLine("    #endregion");
-                    sb.AppendLine();
+                    var layoutClass = BuildTextIoLayoutClassName(t, allTasks, formEntry);
+                    var variableName = ResolveTextIoLayoutVariableName(t, formEntry.Index);
+                    if (!emittedVariables.Add(variableName))
+                        continue;
+                    sb.AppendLine($"    {textIoNamespaceSegment}.{layoutClass} {variableName} => Cached<{textIoNamespaceSegment}.{layoutClass}>();");
                 }
+                sb.AppendLine("    #endregion");
+                sb.AppendLine();
             }
         }
 

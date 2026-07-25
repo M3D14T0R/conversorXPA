@@ -12,7 +12,7 @@ internal static partial class ProjectGenerator
         var result = new HashSet<int>(_subformTargetTaskOrdinals);
         foreach (var owner in tasks)
         {
-            foreach (var call in owner.TabCalls)
+            foreach (var call in EnumerateTaskCalls(owner))
             {
                 var target = ResolveTaskByCall(owner, call, tasks);
                 if (target is not null &&

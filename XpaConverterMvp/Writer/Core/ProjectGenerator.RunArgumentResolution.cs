@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using XpaConverterMvp.TypeSystem;
 
 namespace XpaConverterMvp;
 
@@ -25,6 +26,35 @@ internal static partial class ProjectGenerator
             return EmitExpressionForContext(value, task, effectiveContext);
         }
 
+        string ApplyKnownResourceArgumentContext(
+            string value,
+            TaskResourceColumnDef resource,
+            TaskSemantic ownerTask)
+        {
+            if (string.IsNullOrWhiteSpace(value) ||
+                context.PreserveBinding ||
+                !context.Expected.HasExpectation ||
+                !TryResolveTaskResourceStrictReturnType(resource, ownerTask, out var sourceReturnType))
+            {
+                return value;
+            }
+
+            var sourceType = XpaExpressionTypeMap.FromReturnType(sourceReturnType);
+            var destinationReturnType = ResolveReturnTypeForExpectedContext(context.Expected);
+            var destinationType = XpaExpressionTypeMap.FromReturnType(destinationReturnType);
+            if (sourceType == XpaType.Unknown ||
+                destinationType == XpaType.Unknown ||
+                !XpaExpressionTypeMap.TryApply(
+                    new XpaTypedExpression(value, sourceReturnType, sourceType),
+                    new XpaExpressionDestination(destinationReturnType, destinationType),
+                    out var emitted))
+            {
+                return value;
+            }
+
+            return emitted.Code;
+        }
+
         if (argToken.StartsWith("EXP:", StringComparison.OrdinalIgnoreCase))
         {
             var expId = argToken.Substring(4);
@@ -35,17 +65,41 @@ internal static partial class ProjectGenerator
             return string.IsNullOrWhiteSpace(code) ? "null" : code;
         }
         if (selectMap.TryGetValue(argToken, out var expr))
+        {
+            var selectedResource = ResolveResourceByTargetPath(
+                task,
+                expr,
+                allTasks ?? _allTasks ?? Array.Empty<TaskSemantic>());
+            if (selectedResource is not null)
+            {
+                var owner = ResolveOwningTaskForResource(selectedResource) ?? task;
+                return ApplyKnownResourceArgumentContext(expr, selectedResource, owner);
+            }
+
             return ApplyArgumentContext(expr);
+        }
 
         task.ResourcesSemantic.ByName.TryGetValue(argToken, out var taskResource);
         if (taskResource is not null)
-            return ApplyArgumentContext(ResolveTaskResourceMemberName(task, taskResource));
+        {
+            var member = ResolveTaskResourceMemberName(task, taskResource);
+            return ApplyKnownResourceArgumentContext(member, taskResource, task);
+        }
 
         if (allTasks is not null)
         {
             var binding = ResolveExpressionOrdinalBinding(argToken, task, allTasks, dataObjects);
             if (!string.IsNullOrWhiteSpace(binding))
+            {
+                var boundResource = ResolveResourceByTargetPath(task, binding, allTasks);
+                if (boundResource is not null)
+                {
+                    var owner = ResolveOwningTaskForResource(boundResource) ?? task;
+                    return ApplyKnownResourceArgumentContext(binding, boundResource, owner);
+                }
+
                 return ApplyArgumentContext(binding);
+            }
         }
 
         return "null";
@@ -229,14 +283,30 @@ internal static partial class ProjectGenerator
         if (resources.Count <= desiredCount)
             return resources;
 
-        var selectMappedParameters = GetDeclaredParameterResourcesFromVirtualSelects(targetTask, desiredCount);
-        if (selectMappedParameters.Count >= desiredCount)
-            return selectMappedParameters.Take(desiredCount).ToList();
-
         var evidence = observedEvidence ?? BuildObservedTaskParameterEvidence(targetTask);
+        var selectMappedParameters = GetDeclaredParameterResourcesFromVirtualSelects(targetTask, desiredCount);
+        if (selectMappedParameters.Count >= desiredCount &&
+            selectMappedParameters
+                .Take(desiredCount)
+                .Select((resource, index) => ParameterResourceMatchesObservedEvidence(
+                    targetTask,
+                    resource,
+                    evidence.ElementAtOrDefault(index)))
+                .All(matches => matches))
+        {
+            return selectMappedParameters.Take(desiredCount).ToList();
+        }
+
         var selected = new List<TaskResourceColumnDef>(desiredCount);
-        if (selectMappedParameters.Count > 0)
-            selected.AddRange(selectMappedParameters);
+        for (var i = 0; i < selectMappedParameters.Count && selected.Count < desiredCount; i++)
+        {
+            var resource = selectMappedParameters[i];
+            if (ParameterResourceMatchesObservedEvidence(
+                    targetTask,
+                    resource,
+                    evidence.ElementAtOrDefault(i)))
+                selected.Add(resource);
+        }
         var remainingResources = resources
             .Where(r => selected.All(s => s.Id != r.Id))
             .ToList();
@@ -266,6 +336,18 @@ internal static partial class ProjectGenerator
         return selected;
     }
 
+    private static bool ParameterResourceMatchesObservedEvidence(
+        TaskSemantic task,
+        TaskResourceColumnDef resource,
+        IReadOnlyDictionary<string, int>? evidence)
+    {
+        if (evidence is null || evidence.Count == 0)
+            return true;
+
+        var parameterType = ResolveParameterType(resource, task);
+        return evidence.TryGetValue(parameterType, out var matches) && matches > 0;
+    }
+
     private static IReadOnlyList<TaskResourceColumnDef> GetDeclaredParameterResourcesFromVirtualSelects(TaskSemantic targetTask, int desiredCount)
     {
         if (desiredCount <= 0)
@@ -273,7 +355,10 @@ internal static partial class ProjectGenerator
 
         var allowedNames = GetAllowedParameterSelectNames(targetTask);
         var orderedParameterSelects = targetTask.SelectsSemantic.Items
-            .Where(s => s.Type == "V" && s.IsParameter)
+            .Where(s =>
+                string.Equals(s.Type, "V", StringComparison.OrdinalIgnoreCase) &&
+                s.IsParameter &&
+                IsTaskRunParameterSelectOrigin(s))
             .Where(s => allowedNames.Count == 0 || allowedNames.Contains(s.Name))
             .ToList();
 
@@ -420,6 +505,8 @@ internal static partial class ProjectGenerator
     private static string ResolveParameterType(TaskResourceColumnDef rc, TaskSemantic task)
     {
         var resolvedColumnType = ResolveTaskResourceColumnType(rc, _allFieldModels, task);
+        if (IsDotNetTaskResource(rc))
+            return resolvedColumnType;
         if (resolvedColumnType.StartsWith("ArrayColumn<", StringComparison.Ordinal))
             return $"ArrayParameter<{ResolveArrayColumnItemType(rc, _allFieldModels, task)}>";
         return rc.AttrObj switch
@@ -460,6 +547,12 @@ internal static partial class ProjectGenerator
                     if (!string.IsNullOrWhiteSpace(arrayType))
                         return ExpectedTypeForReturnType(arrayType);
                 }
+
+                var scalarReturnType = IsDotNetTaskResource(resource)
+                    ? columnType
+                    : MapAttrObjToReturnType(resource.AttrObj);
+                if (!string.IsNullOrWhiteSpace(scalarReturnType))
+                    return ExpectedTypeForReturnType(scalarReturnType);
             }
         }
 
@@ -496,6 +589,12 @@ internal static partial class ProjectGenerator
                     if (nextExpected.HasExpectation && ExpectedTypesMatch(actual, nextExpected))
                         return true;
                 }
+
+                // A mismatch is itself sufficient evidence that an old XPA call
+                // contract may contain skipped parameter slots.  Restricting the
+                // alignment to values that matched only the immediately following
+                // parameter left trailing and multi-slot shifts untouched.
+                return true;
             }
         }
 

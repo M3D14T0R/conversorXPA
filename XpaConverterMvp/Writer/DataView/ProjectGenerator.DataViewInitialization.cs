@@ -438,21 +438,32 @@ internal static partial class ProjectGenerator
                 $"bind-expr-ms={bindExprMs} adjust-bind-ms={adjustBindMs} emit-ms={emitMs}");
         }, "DATAVIEW", className, "emit-selects");
 
-        TimeSection(() =>
+        if (ResolveBaseClass(t) != "BusinessProcessBase")
         {
-            foreach (var v in t.FlowValidations)
+            TimeSection(() =>
             {
-                var cond = ResolveExpressionCode(v.ConditionExpressionId?.ToString(), t, dataObjects, CreateBooleanConditionEmissionContext());
-                var msg = ResolveExpressionCode(v.MessageExpressionId?.ToString(), t, dataObjects, CreateMessageTextEmissionContext());
-                if (string.IsNullOrWhiteSpace(cond) || string.IsNullOrWhiteSpace(msg))
-                    continue;
-                sb.AppendLine($"        Flow.Add(() => ENV.Message.ShowError({msg}), () => {cond});");
-            }
-        }, "DATAVIEW", className, "emit-flow-validations");
+                foreach (var v in t.FlowValidations)
+                {
+                    var cond = ResolveExpressionCode(v.ConditionExpressionId?.ToString(), t, dataObjects, CreateBooleanConditionEmissionContext());
+                    var msg = ResolveExpressionCode(v.MessageExpressionId?.ToString(), t, dataObjects, CreateMessageTextEmissionContext());
+                    if (string.IsNullOrWhiteSpace(cond) || string.IsNullOrWhiteSpace(msg))
+                        continue;
+                    sb.AppendLine($"        Flow.Add(() => ENV.Message.ShowError({msg}), () => {cond});");
+                }
+            }, "DATAVIEW", className, "emit-flow-validations");
+        }
 
         if (ResolveBaseClass(t) != "BusinessProcessBase")
             TimeSection(() => EmitTabFlowCalls(sb, t, dataObjects, allTasks), "DATAVIEW", className, "emit-tabflow-calls");
-        var paramMembers = GetTaskParameters(t).Select(p => p.ColumnMember).Distinct().ToArray();
+        var dotNetResourceMembers = t.ResourcesSemantic.Ordered
+            .Where(IsDotNetTaskResource)
+            .Select(resource => ResolveTaskResourceMemberName(t, resource))
+            .ToHashSet(StringComparer.Ordinal);
+        var paramMembers = GetTaskParameters(t)
+            .Select(p => p.ColumnMember)
+            .Where(member => !dotNetResourceMembers.Contains(member))
+            .Distinct()
+            .ToArray();
         if (paramMembers.Length > 0)
             TimeSection(() => sb.AppendLine($"        MarkParameterColumns({string.Join(", ", paramMembers)});"), "DATAVIEW", className, "emit-mark-parameter-columns");
         sb.AppendLine("    }");

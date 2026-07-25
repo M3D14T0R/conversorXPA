@@ -9,6 +9,9 @@ namespace XpaConverterMvp;
 
 internal static partial class ProjectGenerator
 {
+    [ThreadStatic]
+    private static HashSet<string>? _arrayItemTypeCallInferenceStack;
+
     internal readonly record struct TargetValueInfo(
         TaskResourceColumnDef? Resource,
         string? ModelAttrObj,
@@ -444,6 +447,10 @@ internal static partial class ProjectGenerator
             return "Text";
 
         if (currentTask is not null &&
+            TryInferArrayColumnItemTypeFromCallContracts(c, currentTask, out var callContractItemType))
+            return callContractItemType;
+
+        if (currentTask is not null &&
             TryInferArrayColumnItemTypeFromSemanticEvidence(c, currentTask, out var inferredItemType))
             return inferredItemType;
 
@@ -484,6 +491,89 @@ internal static partial class ProjectGenerator
             "FIELD_LOGICAL" => "Bool",
             _ => "Text"
         };
+    }
+
+    private static bool TryInferArrayColumnItemTypeFromCallContracts(
+        TaskResourceColumnDef resource,
+        TaskSemantic currentTask,
+        out string itemType)
+    {
+        itemType = "";
+        var allTasks = _allTasks ?? Array.Empty<TaskSemantic>();
+        if (allTasks.Count == 0)
+            return false;
+
+        var inferenceKey = currentTask.Ordinal.ToString(CultureInfo.InvariantCulture) + ":" +
+                           resource.Id.ToString(CultureInfo.InvariantCulture);
+        var stack = _arrayItemTypeCallInferenceStack ??= new HashSet<string>(StringComparer.Ordinal);
+        if (!stack.Add(inferenceKey))
+            return false;
+
+        try
+        {
+            var dataObjects = _dataObjectsByOrdinal.Values.OrderBy(d => d.Ordinal).ToArray();
+            var evidence = new Dictionary<string, int>(StringComparer.Ordinal);
+            var tasksToInspect = new Stack<TaskSemantic>();
+            tasksToInspect.Push(currentTask);
+
+            while (tasksToInspect.Count > 0)
+            {
+                var ownerTask = tasksToInspect.Pop();
+                foreach (var child in GetChildTasks(ownerTask.Ordinal, allTasks))
+                    tasksToInspect.Push(child);
+
+                var selectMap = BuildSelectNameToExpressionMap(ownerTask, dataObjects);
+                foreach (var call in EnumerateTaskCalls(ownerTask))
+                {
+                    var targetTask = ResolveTaskByCall(ownerTask, call, allTasks);
+                    var parameterTypes = ResolveCompatCallParameterTypes(call, targetTask);
+                    if (parameterTypes is null || parameterTypes.Count == 0)
+                        continue;
+
+                    var arguments = ResolveCallArgumentExpressionsPreservingPositions(
+                        call.ArgumentDefs,
+                        call.ArgumentVariables,
+                        ownerTask,
+                        dataObjects,
+                        selectMap,
+                        allTasks);
+                    var limit = Math.Min(arguments.Count, parameterTypes.Count);
+                    for (var i = 0; i < limit; i++)
+                    {
+                        var argumentResource = ResolveResourceByTargetPath(ownerTask, arguments[i], allTasks);
+                        if (!ReferenceEquals(argumentResource, resource))
+                            continue;
+
+                        var match = Regex.Match(
+                            parameterTypes[i],
+                            @"^ArrayParameter<(?<item>.+)>$",
+                            RegexOptions.CultureInvariant);
+                        if (!match.Success)
+                            continue;
+
+                        var candidate = NormalizeReturnTypeToken(match.Groups["item"].Value);
+                        if (candidate is not ("Text" or "Number" or "Date" or "Time" or "Bool" or "byte[]"))
+                            continue;
+                        evidence[candidate] = evidence.TryGetValue(candidate, out var count) ? count + 1 : 1;
+                    }
+                }
+            }
+
+            if (evidence.Count == 0)
+                return false;
+
+            itemType = evidence
+                .OrderByDescending(pair => pair.Value)
+                .ThenBy(pair => string.Equals(pair.Key, "byte[]", StringComparison.Ordinal) ? 1 : 0)
+                .ThenBy(pair => pair.Key, StringComparer.Ordinal)
+                .First()
+                .Key;
+            return true;
+        }
+        finally
+        {
+            stack.Remove(inferenceKey);
+        }
     }
 
     private static bool TryInferArrayColumnItemTypeFromSemanticEvidence(TaskResourceColumnDef c, TaskSemantic currentTask, out string itemType)

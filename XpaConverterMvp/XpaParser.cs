@@ -2144,7 +2144,11 @@ internal static class XpaParser
             .Where(x => x.Id.HasValue && string.Equals(x.Attr, "FIELD_LOGICAL", StringComparison.OrdinalIgnoreCase))
             .Select(x => x.Id!.Value)
             .ToHashSet();
-        int? primaryDbObj = null;
+        // In XPA, Information DB is the implicit primary DataView source when
+        // no DATAVIEW_SRC statement overrides it.  Keeping this null loses the
+        // source of Type="R" selects (for example DQ/FW aliases) and leaves the
+        // generated expression with an unresolved alphabetic token.
+        int? primaryDbObj = informationDbObj;
         var selects = new List<TaskLogicSelectDef>();
         var links = new List<TaskLogicLinkDef>();
         var dataViewSources = new List<TaskDataViewSourceDef>();

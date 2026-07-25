@@ -16,12 +16,20 @@ internal static partial class ProjectGenerator
         string viewsDir,
         string appNamespace,
         TaskSemantic? mainTask,
-        bool includeApplicationView = true)
+        bool includeApplicationView = true,
+        bool includeMissingScopedViewPlaceholders = false)
     {
         WriteViewSupportControls(parsed, viewsDir, appNamespace, buttonModels, tasks);
         var outputRoot = Directory.GetParent(viewsDir)?.FullName ?? viewsDir;
+        var referencedStructuralTopLevelTasks = ResolveReferencedStructuralTopLevelTasks(tasks);
 
-        foreach (var t in tasks.Where(t => !t.MainProgram && !IsStructuralTask(t)).Where(ShouldGenerateView))
+        foreach (var t in tasks
+                     .Where(t => !t.MainProgram)
+                     .Where(ShouldGenerateView)
+                     .Where(t => HasGeneratedControllerForView(
+                         t,
+                         tasks,
+                         referencedStructuralTopLevelTasks)))
         {
             var taskFolder = ResolveEffectiveTaskOutputFolder(t, tasks);
             var taskViewsDir = string.IsNullOrWhiteSpace(taskFolder)
@@ -546,15 +554,41 @@ internal static partial class ProjectGenerator
                 else if (!string.IsNullOrWhiteSpace(c.RaiseEventType))
                     designer.AppendLine($"        // GAP: View event binding not resolved for control {varName} (ControlId={c.Id}, RaiseEventType={c.RaiseEventType}, RaiseEventObject={c.RaiseEventObject ?? "?"}).");
                 if (c.VisibleExpressionId.HasValue)
-                    designer.AppendLine($"        {varName}.BindVisible += new XPARuntimeCore.Box.UI.Advanced.BindingEventHandler<XPARuntimeCore.Box.UI.Advanced.BooleanBindingEventArgs>(Exp_{c.VisibleExpressionId.Value}_Bindings);");
+                {
+                    if (isNativeWinFormsControl)
+                        AppendRuntimeControllerBindingStatement(
+                            controllerBindingStatements,
+                            $"{varName}.Visible = {ResolveBooleanBindingExpression(t, c.VisibleExpressionId.Value)};");
+                    else
+                        designer.AppendLine($"        {varName}.BindVisible += new XPARuntimeCore.Box.UI.Advanced.BindingEventHandler<XPARuntimeCore.Box.UI.Advanced.BooleanBindingEventArgs>(Exp_{c.VisibleExpressionId.Value}_Bindings);");
+                }
                 if (c.EnabledExpressionId.HasValue)
-                    designer.AppendLine($"        {varName}.BindEnabled += new XPARuntimeCore.Box.UI.Advanced.BindingEventHandler<XPARuntimeCore.Box.UI.Advanced.BooleanBindingEventArgs>(Exp_{c.EnabledExpressionId.Value}_Bindings);");
+                {
+                    if (isNativeWinFormsControl)
+                        AppendRuntimeControllerBindingStatement(
+                            controllerBindingStatements,
+                            $"{varName}.Enabled = {ResolveBooleanBindingExpression(t, c.EnabledExpressionId.Value)};");
+                    else
+                        designer.AppendLine($"        {varName}.BindEnabled += new XPARuntimeCore.Box.UI.Advanced.BindingEventHandler<XPARuntimeCore.Box.UI.Advanced.BooleanBindingEventArgs>(Exp_{c.EnabledExpressionId.Value}_Bindings);");
+                }
                 var bind = bindListHandlers.FirstOrDefault(x => x.ControlId == c.Id);
                 if (bind is not null)
                     designer.AppendLine($"        {varName}.BindListSource += new XPARuntimeCore.Box.UI.Advanced.BindingEventHandler<System.EventArgs>({bind.HandlerName});");
                 foreach (var binding in controlHandlerBindings.Where(x => x.ControlId == c.Id))
                 {
-                    designer.AppendLine($"        {varName}.{binding.EventName} += new System.Action({binding.WrapperName});");
+                    if (string.Equals(c.Model, "CTRL_GUI0_STATIC", StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(binding.EventName, "InputValidation", StringComparison.Ordinal))
+                    {
+                        designer.AppendLine($"        // GAP: Static label does not expose InputValidation; handler {binding.WrapperName} retained on the controller.");
+                    }
+                    else if (isNativeWinFormsControl)
+                    {
+                        designer.AppendLine($"        {varName}.{binding.EventName} += (_, _) => {binding.WrapperName}();");
+                    }
+                    else
+                    {
+                        designer.AppendLine($"        {varName}.{binding.EventName} += new System.Action({binding.WrapperName});");
+                    }
                 }
             }
 
@@ -709,7 +743,7 @@ internal static partial class ProjectGenerator
             ConversionTelemetry.LogDuration("VIEW", appViewClass, appViewStopwatch.Elapsed, "description=\"Application\"");
         }
 
-        if (!includeApplicationView)
+        if (includeMissingScopedViewPlaceholders)
             WriteMissingScopedViewPlaceholders(tasks, viewsDir, appNamespace);
     }
 
@@ -720,7 +754,7 @@ internal static partial class ProjectGenerator
     {
         var outputRoot = Directory.GetParent(viewsDir)?.FullName ?? viewsDir;
         var placeholders = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var task in tasks.Where(t => !t.MainProgram && !IsStructuralTask(t)))
+        foreach (var task in tasks.Where(t => !t.MainProgram))
         {
             foreach (var viewClass in EnumerateExpectedScopedViewClasses(task, tasks))
             {

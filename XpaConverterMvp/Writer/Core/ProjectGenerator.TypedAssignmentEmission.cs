@@ -17,6 +17,23 @@ internal static partial class ProjectGenerator
         if (TryResolveDataViewMemberTargetValueInfo(task, targetExpression, out var dataViewTarget))
             return dataViewTarget;
 
+        if (string.Equals(select.Type, "R", StringComparison.OrdinalIgnoreCase) &&
+            targetExpression.StartsWith("Select_", StringComparison.Ordinal))
+        {
+            var returnType = ResolveUnmappedRelationalSelectReturnType(
+                select,
+                task,
+                _dataObjectsByOrdinal.Values.ToList());
+            var attrObj = MapReturnTypeToAttrObj(returnType);
+            var compatibilityInfo = ResolveTargetValueInfo(
+                task,
+                select.Name,
+                targetExpression,
+                resolvedResource: null);
+            if (!string.IsNullOrWhiteSpace(attrObj))
+                return RecalibrateTargetInfoFromAttrObj(compatibilityInfo, attrObj);
+        }
+
         var resource = ResolveTaskResourceColumn(task, select.ColumnId);
         var info = ResolveTargetValueInfo(task, select.Name, targetExpression, resource);
         return string.IsNullOrWhiteSpace(info.TargetMember)

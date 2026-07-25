@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net472</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <RootNamespace>XpaRuntime.GenericLauncher</RootNamespace>
+    <AssemblyName>XpaRuntime.GenericLauncher</AssemblyName>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="XpaRuntime.GenericLauncher.ini" CopyToOutputDirectory="Always" />
+    <None Include="XpaRuntime.GenericLauncher.CGGeral.ini" CopyToOutputDirectory="Always" />
+  </ItemGroup>
+</Project>

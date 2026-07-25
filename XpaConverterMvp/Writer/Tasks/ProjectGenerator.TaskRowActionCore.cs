@@ -63,9 +63,12 @@ internal static partial class ProjectGenerator
         }
         else
         {
-            if (TryEmitAssignmentValueFromKnownTypes(value, task, targetInfo, out var knownTypedValue))
+            if (TryEmitAssignmentValueFromKnownTypes(value, up, task, targetInfo, out var knownTypedValue))
                 value = knownTypedValue;
         }
+        if (IsArrayAssignmentTarget(task, target, resource, resolvedColumnType, targetInfo) &&
+            IsSourceNullExpression(value))
+            value = "null";
         if (TryEmitBlobWrappedNewClrExpression(value, out var directClrAssignmentValue))
             value = directClrAssignmentValue;
         typeEmissionStopwatch.Stop();

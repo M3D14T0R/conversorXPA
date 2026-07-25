@@ -1139,11 +1139,20 @@ internal static partial class ProjectGenerator
             }
         }
 
+        var nMonthReceivesDate =
+            string.Equals(normalizedFunction, "NMONTH", StringComparison.Ordinal) &&
+            info.ActualArgumentReturnTypes.Length > 0 &&
+            string.Equals(
+                GetValueReturnType(NormalizeReturnTypeToken(info.ActualArgumentReturnTypes[0])),
+                "Date",
+                StringComparison.Ordinal);
         var targetFunctionName = hasTaskFunctionContract
             ? taskFunctionTargetName
             : hasComponentFunctionContract
                 ? componentFunctionContract.TargetName
             : ResolveTypedSourceFunctionTargetName(functionName, normalizedFunction, returnType);
+        if (nMonthReceivesDate)
+            targetFunctionName = "u.CMonth";
         if (string.IsNullOrWhiteSpace(targetFunctionName))
             return false;
 
@@ -1153,6 +1162,8 @@ internal static partial class ProjectGenerator
             var expectedArgType = i < info.ExpectedArgumentReturnTypes.Length
                 ? NormalizeReturnTypeToken(info.ExpectedArgumentReturnTypes[i])
                 : "";
+            if (nMonthReceivesDate && i == 0)
+                expectedArgType = "Date";
             if (string.Equals(normalizedFunction, "CNDRANGE", StringComparison.Ordinal) &&
                 i == 1 &&
                 IsSourceScalarReturnType(returnType))
@@ -4912,21 +4923,15 @@ internal static partial class ProjectGenerator
     {
         returnType = "";
         if (string.Equals(select.Type, "R", StringComparison.OrdinalIgnoreCase) &&
-            select.SourceDbObj.HasValue)
+            TryResolveRelationalSelectColumn(select, task, dataObjects, out var dataObject, out var column))
         {
-            var dataObject = ResolveDataObjectByOrdinal(dataObjects, select.SourceDbObj.Value);
-            var column = dataObject?.Columns.FirstOrDefault(c => c.Id == select.ColumnId);
-            if (dataObject is not null &&
-                column is null &&
-                select.ColumnId > 0 &&
-                select.ColumnId <= dataObject.Columns.Count)
-                column = dataObject.Columns[select.ColumnId - 1];
-
-            if (column is not null)
-            {
-                returnType = NormalizeReturnTypeToken(MapAttrObjToReturnType(ResolveEffectiveDataColumnAttrObj(column)));
-                return !string.IsNullOrWhiteSpace(returnType);
-            }
+            returnType = NormalizeReturnTypeToken(MapAttrObjToReturnType(ResolveEffectiveDataColumnAttrObj(column)));
+            return !string.IsNullOrWhiteSpace(returnType);
+        }
+        else if (string.Equals(select.Type, "R", StringComparison.OrdinalIgnoreCase))
+        {
+            returnType = ResolveUnmappedRelationalSelectReturnType(select, task, dataObjects);
+            return !string.IsNullOrWhiteSpace(returnType);
         }
         else
         {

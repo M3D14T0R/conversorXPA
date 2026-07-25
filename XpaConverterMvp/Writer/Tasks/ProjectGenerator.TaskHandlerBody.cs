@@ -179,6 +179,7 @@ internal static partial class ProjectGenerator
                 if (!string.IsNullOrWhiteSpace(externalTargetClass))
                 {
                     var externalParameterTypes = ResolveCompatCallParameterTypes(call, targetTask);
+                    var externalParameterDirections = ResolveCompatCallParameterDirections(targetTask);
                     var argsResolvedValues = externalParameterTypes is { Count: 0 }
                         ? Array.Empty<string>()
                         : ResolveCallArgumentExpressionsPreservingPositions(
@@ -187,7 +188,9 @@ internal static partial class ProjectGenerator
                             task,
                             dataObjects,
                             selectMap,
-                            allTasks);
+                            allTasks,
+                            externalParameterTypes,
+                            externalParameterDirections);
                     argsResolvedValues = AlignAndEmitExternalCallArguments(
                         argsResolvedValues,
                         externalParameterTypes,

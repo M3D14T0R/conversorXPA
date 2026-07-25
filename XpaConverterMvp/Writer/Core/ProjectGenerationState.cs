@@ -88,6 +88,9 @@ internal sealed class ProjectGenerationState
     public Dictionary<int, TaskIoDef> OwnedMergeIoDefinitionCache { get; set; } = new();
     public bool OwnedMergeIoDefinitionCacheInitialized { get; set; }
     public object OwnedMergeIoDefinitionCacheLock { get; } = new();
+    public Dictionary<string, HashSet<int>> TextIoLayoutClassOwners { get; set; } = new(StringComparer.Ordinal);
+    public bool TextIoLayoutClassOwnersInitialized { get; set; }
+    public object TextIoLayoutClassOwnersLock { get; } = new();
     public Dictionary<int, IdentifierBindingPreparation> IdentifierBindingPreparationCache { get; set; } = new();
     public Dictionary<int, Dictionary<string, string>> TaskCommandMemberMapCache { get; set; } = new();
     public Dictionary<int, HashSet<string>> AllowedParameterSelectNamesCache { get; set; } = new();

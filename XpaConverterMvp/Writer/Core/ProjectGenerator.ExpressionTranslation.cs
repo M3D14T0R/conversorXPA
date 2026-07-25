@@ -22,6 +22,8 @@ internal static partial class ProjectGenerator
             string.Equals(bindExpr, "true", StringComparison.Ordinal) ||
             string.Equals(bindExpr, "false", StringComparison.Ordinal) ||
             string.Equals(bindExpr, "null", StringComparison.Ordinal) ||
+            string.Equals(bindExpr, "Date.Empty", StringComparison.Ordinal) ||
+            string.Equals(bindExpr, "Time.Empty", StringComparison.Ordinal) ||
             IsWholeStringLiteralExpression(bindExpr) ||
             IsNumericLiteralExpressionCentral(bindExpr);
         if (simpleMember && !hasOperatorsOrCalls && !isLiteral)
@@ -162,6 +164,17 @@ internal static partial class ProjectGenerator
                 task,
                 task.ResourcesSemantic.Ordered[columnIndex - 1],
                 dataObjects);
+
+        // Some XPA tasks have more DataView select slots than local resource
+        // columns (typically relational fields). Their alphabetic aliases still
+        // use the select ordinal, so resolve that semantic node directly.
+        if (columnIndex <= task.SelectsSemantic.Items.Count)
+        {
+            var ordinalSelect = task.SelectsSemantic.Items[columnIndex - 1];
+            var selectBinding = ResolveSelectExpression(ordinalSelect, task, dataObjects, "");
+            if (!string.IsNullOrWhiteSpace(selectBinding))
+                return selectBinding;
+        }
 
         var fallbackParentBinding = ResolveOrdinalBindingFromParentChain(columnIndex, task, allTasks, dataObjects);
         if (!string.IsNullOrWhiteSpace(fallbackParentBinding))
@@ -373,6 +386,14 @@ internal static partial class ProjectGenerator
         TaskSemantic task,
         IReadOnlyList<DataObjectDef> dataObjects)
     {
+        if (name.StartsWith("DotNet.", StringComparison.Ordinal))
+        {
+            return new XpaTypedExpression(
+                $"global::{name["DotNet.".Length..]}",
+                "object",
+                XpaType.Object);
+        }
+
         TaskResourceColumnDef? resolvedResource = null;
         var binding = ResolveExpressionOrdinalBinding(
             name,
@@ -477,12 +498,86 @@ internal static partial class ProjectGenerator
                 expressionType == XpaType.Unknown ? XpaType.Object : expressionType);
         }
 
-        var target = ResolveTypedXpaFunctionTarget(name, task);
+        var target = ResolveTypedXpaFunctionTarget(name, task, arguments.Count);
+        var addTimeToDate =
+            normalizedFunction == "ADDTIME" &&
+            arguments.Count > 0 &&
+            arguments[0].Type == XpaType.Date;
+        if (addTimeToDate)
+            target = "u.AddDate";
+        var nMonthReceivesDate =
+            normalizedFunction == "NMONTH" &&
+            arguments.Count > 0 &&
+            arguments[0].Type == XpaType.Date;
+        if (nMonthReceivesDate)
+            target = "u.CMonth";
+
+        var conditionalResultType = ResolveConditionalFunctionResultType(
+            normalizedFunction,
+            arguments);
+        var conditionalDestination = conditionalResultType is XpaType.Unknown or XpaType.Object
+            ? default
+            : new XpaExpressionDestination(
+                XpaExpressionTypeMap.TypeName(conditionalResultType),
+                conditionalResultType);
+        var variableAccessorReturnType = ResolveTypedVariableAccessorReturnType(
+            normalizedFunction,
+            arguments,
+            task);
         var renderedArguments = new string[arguments.Count];
+        var rangeArgumentType = XpaType.Unknown;
+        if (normalizedFunction == "RANGE" && arguments.Count == 3)
+        {
+            rangeArgumentType = XpaExpressionTypeMap.Unify(arguments[1].Type, arguments[2].Type);
+            rangeArgumentType = XpaExpressionTypeMap.Unify(rangeArgumentType, arguments[0].Type);
+        }
+
         for (var i = 0; i < arguments.Count; i++)
         {
             var argument = arguments[i];
-            if (i == 0 &&
+            if (normalizedFunction == "RANGE" &&
+                rangeArgumentType != XpaType.Unknown &&
+                XpaExpressionTypeMap.TryApply(
+                    argument,
+                    new XpaExpressionDestination(
+                        XpaExpressionTypeMap.CanonicalTypeName(
+                            rangeArgumentType switch
+                            {
+                                XpaType.Text => "Text",
+                                XpaType.Number => "Number",
+                                XpaType.Date => "Date",
+                                XpaType.Time => "Time",
+                                XpaType.Bool => "Bool",
+                                _ => ""
+                            }),
+                        rangeArgumentType),
+                    out var rangeArgument))
+            {
+                argument = rangeArgument;
+            }
+            else if (normalizedFunction == "CNDRANGE" &&
+                     i == 0 &&
+                     XpaExpressionTypeMap.TryApply(
+                         argument,
+                         new XpaExpressionDestination("Bool", XpaType.Bool),
+                         out var cndRangeCondition))
+            {
+                argument = cndRangeCondition;
+            }
+            else if (normalizedFunction == "CNDRANGE" &&
+                     i == 1 &&
+                     argument.Type == XpaType.Time &&
+                     XpaExpressionTypeMap.TryApply(
+                         argument,
+                         new XpaExpressionDestination("Number", XpaType.Number),
+                         out var cndRangeTimeValue))
+            {
+                // ENV.UserMethods has no Time overload for CndRange. XPA time
+                // is carried as its numeric representation and converted back
+                // by the surrounding typed expression.
+                argument = cndRangeTimeValue;
+            }
+            else if (i == 0 &&
                 RequiresVariableIndexArgument(name) &&
                 argument.Type != XpaType.Number)
             {
@@ -491,14 +586,27 @@ internal static partial class ProjectGenerator
                     "Number",
                     XpaType.Number);
             }
-            else if (ShouldApplyExpressionDestinationToFunctionResultArgument(
+            else if (IsConditionalFunctionResultArgument(
                          normalizedFunction,
                          i,
-                         arguments.Count,
-                         expressionDestination) &&
-                     XpaExpressionTypeMap.TryApply(argument, expressionDestination, out var contextualArgument))
+                         arguments.Count) &&
+                     conditionalDestination.Type is not (XpaType.Unknown or XpaType.Object) &&
+                     XpaExpressionTypeMap.TryApply(argument, conditionalDestination, out var contextualArgument))
             {
                 argument = contextualArgument;
+            }
+            else if (addTimeToDate && i == 0)
+            {
+                // AddTime over a Date is the XPA date-arithmetic overload.
+                // XPARuntimeCore exposes that overload as AddDate.
+            }
+            else if (TryApplyDotNetConstructorArgumentEvidence(
+                         target,
+                         arguments,
+                         i,
+                         out var constructorArgument))
+            {
+                argument = constructorArgument;
             }
             else if (TryReadDotNetMethodArgumentTypeEvidence(
                          target,
@@ -533,7 +641,15 @@ internal static partial class ProjectGenerator
 
         var renderedCode = $"{target}({string.Join(", ", renderedArguments)})";
         var returnType = "";
-        if (TryGetAccessibleFunctionContract(task, name, out var accessibleContract, out _))
+        if (addTimeToDate)
+            returnType = "Date";
+        else if (!string.IsNullOrWhiteSpace(variableAccessorReturnType))
+            returnType = variableAccessorReturnType;
+        else if (conditionalResultType is not (XpaType.Unknown or XpaType.Object))
+            returnType = XpaExpressionTypeMap.TypeName(conditionalResultType);
+        else if (normalizedFunction == "CNDRANGE" && arguments.Count >= 2)
+            returnType = arguments[1].Type == XpaType.Time ? "Number" : arguments[1].ReturnType;
+        else if (TryGetAccessibleFunctionContract(task, name, out var accessibleContract, out _))
             returnType = accessibleContract.ReturnType;
         else if (TryGetComponentFunctionCallContract(name, out var componentContract))
             returnType = componentContract.ReturnType;
@@ -543,29 +659,83 @@ internal static partial class ProjectGenerator
             TryResolveKnownXpaFunctionReturnType(target, renderedArguments, out returnType);
 
         var type = XpaExpressionTypeMap.FromReturnType(returnType);
+        var materializedReturnType = !string.IsNullOrWhiteSpace(variableAccessorReturnType)
+            ? variableAccessorReturnType
+            : FunctionReturnsClrObjectBeforeXpaMaterialization(normalizedFunction)
+                ? returnType
+                : "";
+        if (!string.IsNullOrWhiteSpace(materializedReturnType) &&
+            !string.Equals(
+                NormalizeReturnTypeToken(materializedReturnType),
+                "object",
+                StringComparison.Ordinal))
+            renderedCode = EmitFromReliableTypeEvidence(
+                renderedCode,
+                "object",
+                materializedReturnType,
+                normalizedFunction);
         return new XpaTypedExpression(
             renderedCode,
             string.IsNullOrWhiteSpace(returnType) ? "object" : returnType,
             type == XpaType.Unknown ? XpaType.Object : type);
     }
 
-    private static bool ShouldApplyExpressionDestinationToFunctionResultArgument(
+    private static XpaType ResolveConditionalFunctionResultType(
+        string normalizedFunction,
+        IReadOnlyList<XpaTypedExpression> arguments)
+    {
+        if (normalizedFunction == "IF" && arguments.Count >= 3)
+            return XpaExpressionTypeMap.Unify(arguments[1].Type, arguments[2].Type);
+
+        if (normalizedFunction is not ("CASE" or "CASEUNTYPED") || arguments.Count < 3)
+            return XpaType.Unknown;
+
+        var result = XpaType.Unknown;
+        for (var i = 2; i < arguments.Count; i += 2)
+            result = XpaExpressionTypeMap.Unify(result, arguments[i].Type);
+        if (arguments.Count % 2 == 0)
+            result = XpaExpressionTypeMap.Unify(result, arguments[^1].Type);
+        return result;
+    }
+
+    private static bool IsConditionalFunctionResultArgument(
         string normalizedFunction,
         int argumentIndex,
-        int argumentCount,
-        XpaExpressionDestination destination)
+        int argumentCount)
     {
-        if (destination.Type is XpaType.Unknown or XpaType.Object)
-            return false;
-
         if (normalizedFunction == "IF")
             return argumentCount >= 3 && argumentIndex is 1 or 2;
-
-        if (normalizedFunction is not ("CASE" or "CASEUNTYPED") || argumentCount < 4)
+        if (normalizedFunction is not ("CASE" or "CASEUNTYPED") || argumentCount < 3)
             return false;
-
         return (argumentIndex >= 2 && argumentIndex % 2 == 0) ||
-               argumentIndex == argumentCount - 1;
+               (argumentCount % 2 == 0 && argumentIndex == argumentCount - 1);
+    }
+
+    private static string ResolveTypedVariableAccessorReturnType(
+        string normalizedFunction,
+        IReadOnlyList<XpaTypedExpression> arguments,
+        TaskSemantic task)
+    {
+        if (normalizedFunction is not ("VARPREV" or "VARCURR" or "VARCURRN") ||
+            arguments.Count != 1)
+            return "";
+
+        var argument = arguments[0];
+        if (TryParseFunctionCall(argument.Code, out var indexFunction, out var indexArguments) &&
+            IsTopLevelCall(indexFunction, "u.IndexOf") &&
+            indexArguments.Count > 0 &&
+            TryResolveKnownExpressionReturnTypeWithoutLegacy(
+                task,
+                indexArguments[0],
+                out var indexedReturnType))
+        {
+            return NormalizeReturnTypeToken(GetValueReturnType(indexedReturnType));
+        }
+
+        var directReturnType = NormalizeReturnTypeToken(GetValueReturnType(argument.ReturnType));
+        return argument.Type is XpaType.Unknown or XpaType.Object or XpaType.Number
+            ? ""
+            : directReturnType;
     }
 
     private static bool TryResolveDotNetCastTypeName(string typeExpression, out string typeName)
@@ -586,8 +756,21 @@ internal static partial class ProjectGenerator
         return normalized is "VARMOD" or "VARPREV" or "VARCURR" or "VARSET" or "VECSET";
     }
 
-    private static string ResolveTypedXpaFunctionTarget(string name, TaskSemantic task)
+    private static string ResolveTypedXpaFunctionTarget(
+        string name,
+        TaskSemantic task,
+        int argumentCount)
     {
+        if (name.StartsWith("DotNet.", StringComparison.Ordinal))
+        {
+            var qualifiedName = name["DotNet.".Length..];
+            return HasClrConstructorEvidenceFromMetadata(qualifiedName, argumentCount) ||
+                   (TryLoadClrTypeFromMappedReference(qualifiedName, out var clrType) &&
+                    clrType is not null)
+                ? $"new global::{qualifiedName}"
+                : $"global::{qualifiedName}";
+        }
+
         if (task.FunctionOverridesSemantic.Any(
                 function => string.Equals(function.Name, name, StringComparison.OrdinalIgnoreCase)))
         {

@@ -9,6 +9,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "XpaConverterMvp.Gui", "XpaC
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "XpaTaskExplorer.Vsix", "XpaTaskExplorer.Vsix\XpaTaskExplorer.Vsix.csproj", "{E22D6376-1180-4536-9D28-6D99148F1F71}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "XpaRuntime.GenericLauncher", "XpaRuntime.GenericLauncher\XpaRuntime.GenericLauncher.csproj", "{990C3EFA-AA17-4885-907C-FAE343953C42}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -55,6 +57,18 @@ Global
 		{E22D6376-1180-4536-9D28-6D99148F1F71}.Release|x64.Build.0 = Release|Any CPU
 		{E22D6376-1180-4536-9D28-6D99148F1F71}.Release|x86.ActiveCfg = Release|Any CPU
 		{E22D6376-1180-4536-9D28-6D99148F1F71}.Release|x86.Build.0 = Release|Any CPU
+		{990C3EFA-AA17-4885-907C-FAE343953C42}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{990C3EFA-AA17-4885-907C-FAE343953C42}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{990C3EFA-AA17-4885-907C-FAE343953C42}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{990C3EFA-AA17-4885-907C-FAE343953C42}.Debug|x64.Build.0 = Debug|Any CPU
+		{990C3EFA-AA17-4885-907C-FAE343953C42}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{990C3EFA-AA17-4885-907C-FAE343953C42}.Debug|x86.Build.0 = Debug|Any CPU
+		{990C3EFA-AA17-4885-907C-FAE343953C42}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{990C3EFA-AA17-4885-907C-FAE343953C42}.Release|Any CPU.Build.0 = Release|Any CPU
+		{990C3EFA-AA17-4885-907C-FAE343953C42}.Release|x64.ActiveCfg = Release|Any CPU
+		{990C3EFA-AA17-4885-907C-FAE343953C42}.Release|x64.Build.0 = Release|Any CPU
+		{990C3EFA-AA17-4885-907C-FAE343953C42}.Release|x86.ActiveCfg = Release|Any CPU
+		{990C3EFA-AA17-4885-907C-FAE343953C42}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

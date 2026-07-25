@@ -16,6 +16,7 @@ internal static class SemanticBuilder
     private static IReadOnlyDictionary<int, bool> _shouldGenerateViewByTaskOrdinal = new Dictionary<int, bool>();
     private static IReadOnlyDictionary<int, string> _viewClassBaseNameByTaskOrdinal = new Dictionary<int, string>();
     private static IReadOnlyDictionary<int, int> _viewClassDuplicateIndexByTaskOrdinal = new Dictionary<int, int>();
+    private static IReadOnlyDictionary<int, string> _printLayoutClassNameByTaskOrdinal = new Dictionary<int, string>();
     private static TaskDef? _applicationTask;
 
     public static void ReleaseBuildState()
@@ -30,6 +31,7 @@ internal static class SemanticBuilder
         _shouldGenerateViewByTaskOrdinal = new Dictionary<int, bool>();
         _viewClassBaseNameByTaskOrdinal = new Dictionary<int, string>();
         _viewClassDuplicateIndexByTaskOrdinal = new Dictionary<int, int>();
+        _printLayoutClassNameByTaskOrdinal = new Dictionary<int, string>();
         _applicationTask = null;
     }
 
@@ -37,6 +39,7 @@ internal static class SemanticBuilder
     {
         _taskDefs = parsed.Tasks;
         BuildTaskIndexes(parsed.Tasks);
+        BuildPrintLayoutClassNameIndex(parsed.Tasks);
         _dataObjectsByOrdinal = parsed.DataObjects
             .GroupBy(d => d.Ordinal)
             .ToDictionary(g => g.Key, g => g.First());
@@ -2103,6 +2106,33 @@ internal static class SemanticBuilder
     }
 
     private static string BuildPrintLayoutClassName(TaskDef task, IReadOnlyList<TaskDef> allTasks)
+    {
+        return _printLayoutClassNameByTaskOrdinal.TryGetValue(task.Ordinal, out var resolved)
+            ? resolved
+            : BuildPrintLayoutClassNameCore(task);
+    }
+
+    private static void BuildPrintLayoutClassNameIndex(IReadOnlyList<TaskDef> allTasks)
+    {
+        var candidates = allTasks.ToDictionary(
+            task => task.Ordinal,
+            BuildPrintLayoutClassNameCore);
+        var collidingCandidates = allTasks
+            .Where(task => task.FormEntries.Any(entry =>
+                string.Equals(entry.Model, "FORM_GUI1", StringComparison.OrdinalIgnoreCase)))
+            .GroupBy(task => candidates[task.Ordinal], StringComparer.Ordinal)
+            .Where(group => group.Count() > 1)
+            .Select(group => group.Key)
+            .ToHashSet(StringComparer.Ordinal);
+
+        _printLayoutClassNameByTaskOrdinal = allTasks.ToDictionary(
+            task => task.Ordinal,
+            task => collidingCandidates.Contains(candidates[task.Ordinal])
+                ? $"{candidates[task.Ordinal]}_T{task.Ordinal}"
+                : candidates[task.Ordinal]);
+    }
+
+    private static string BuildPrintLayoutClassNameCore(TaskDef task)
     {
         var printForms = task.FormEntries
             .Where(fe => string.Equals(fe.Model, "FORM_GUI1", StringComparison.OrdinalIgnoreCase))

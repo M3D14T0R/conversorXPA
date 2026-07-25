@@ -19,7 +19,7 @@ internal static partial class ProjectGenerator
 
         EmitTaskModelMembers(sb, t, dataObjects);
 
-        EmitTaskResourceMembers(sb, t, fieldModels);
+        EmitTaskResourceMembers(sb, t, dataObjects, fieldModels);
 
         EmitTaskPrintAndMergeMembers(sb, t);
 

@@ -70,6 +70,8 @@ internal static partial class ProjectGenerator
         next.ViewPrefixSymbolBindingMapCache = previous.ViewPrefixSymbolBindingMapCache;
         next.ControlHandlerExactControlMapCache = previous.ControlHandlerExactControlMapCache;
         next.AccessibleParentFunctionTargetsCache = previous.AccessibleParentFunctionTargetsCache;
+        next.TextIoLayoutClassOwners = previous.TextIoLayoutClassOwners;
+        next.TextIoLayoutClassOwnersInitialized = previous.TextIoLayoutClassOwnersInitialized;
         return next;
     }
 
@@ -151,6 +153,8 @@ internal static partial class ProjectGenerator
             ApplicationResourceBindingMap = source.ApplicationResourceBindingMap,
             TaskCommandMemberMapCache = source.TaskCommandMemberMapCache,
             ViewDotNetResourceByRootOrdinal = source.ViewDotNetResourceByRootOrdinal,
+            TextIoLayoutClassOwners = source.TextIoLayoutClassOwners,
+            TextIoLayoutClassOwnersInitialized = source.TextIoLayoutClassOwnersInitialized,
             ComponentFunctionSourceByName = source.ComponentFunctionSourceByName,
             ComponentFunctionReturnTypeByName = source.ComponentFunctionReturnTypeByName
         };

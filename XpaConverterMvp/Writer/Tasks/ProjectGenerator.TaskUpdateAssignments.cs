@@ -200,6 +200,12 @@ internal static partial class ProjectGenerator
     {
         var resource = ResolveTaskResourceForAssignment(task, update.Variable, target);
         var targetInfo = ResolveTargetValueInfo(task, update.Variable, target, resource);
+        if (resource is null &&
+            TryResolveDataViewMemberTargetValueInfo(task, target, out var declaredTargetInfo))
+        {
+            targetInfo = declaredTargetInfo;
+        }
+
         string? resolvedColumnType = null;
         if (resource is not null)
         {
@@ -210,9 +216,13 @@ internal static partial class ProjectGenerator
         }
         if (TryResolveDirectResourceReference(value, task, out var directReference))
             value = directReference;
-        if (TryEmitAssignmentValueFromKnownTypes(value, task, targetInfo, out var knownTypedValue))
+        if (TryEmitAssignmentValueFromKnownTypes(value, update, task, targetInfo, out var knownTypedValue))
             value = knownTypedValue;
         var topLevelCall = TryGetTopLevelFunctionName(value);
+
+        if (IsArrayAssignmentTarget(task, target, resource, resolvedColumnType, targetInfo) &&
+            IsSourceNullExpression(value))
+            return $"{target}.Value = null;";
 
         if (update.Incremental)
         {
@@ -233,6 +243,8 @@ internal static partial class ProjectGenerator
         if (target.StartsWith("_parent.", StringComparison.Ordinal) &&
             targetInfo.IsDotNet &&
             resource is not null)
+            return $"{target} = {EmitDotNetAssignmentExpression(value, resource.ObjectType)};";
+        if (resource is not null && targetInfo.IsDotNet)
             return $"{target} = {EmitDotNetAssignmentExpression(value, resource.ObjectType)};";
         if (resource is not null &&
             !string.IsNullOrWhiteSpace(resolvedColumnType) &&
@@ -286,8 +298,48 @@ internal static partial class ProjectGenerator
         return $"{target}.Value = {value};";
     }
 
+    private static bool IsArrayAssignmentTarget(
+        TaskSemantic task,
+        string target,
+        TaskResourceColumnDef? resolvedResource,
+        string? resolvedColumnType,
+        TargetValueInfo targetInfo)
+    {
+        if (targetInfo.IsArray ||
+            (!string.IsNullOrWhiteSpace(resolvedColumnType) &&
+             resolvedColumnType.StartsWith("ArrayColumn<", StringComparison.Ordinal)))
+        {
+            return true;
+        }
+
+        var targetOwner = ResolveTaskOwnerFromTargetPath(task, target) ?? task;
+        if (resolvedResource is not null &&
+            IsTaskResourceArrayLike(resolvedResource, targetOwner))
+            return true;
+
+        if (TryResolveDataViewMemberTargetValueInfo(task, target, out var declaredTargetInfo) &&
+            declaredTargetInfo.IsArray)
+            return true;
+
+        var declaredTargetResource = ResolveResourceByTargetPath(
+            task,
+            target,
+            _allTasks ?? Array.Empty<TaskSemantic>());
+        if (declaredTargetResource is not null &&
+            IsTaskResourceArrayLike(declaredTargetResource, targetOwner))
+            return true;
+
+        return task.ResourcesSemantic.Ordered.Any(candidate =>
+            string.Equals(
+                ResolveTaskResourceMemberName(task, candidate),
+                target,
+                StringComparison.Ordinal) &&
+            IsTaskResourceArrayLike(candidate, task));
+    }
+
     private static bool TryEmitAssignmentValueFromKnownTypes(
         string value,
+        TaskUpdateDef update,
         TaskSemantic task,
         TargetValueInfo targetInfo,
         out string emitted)
@@ -305,9 +357,21 @@ internal static partial class ProjectGenerator
             expectedReturnType = MapAttrObjToReturnType(attrObj);
         }
 
-        if (string.IsNullOrWhiteSpace(expectedReturnType) ||
-            !TryResolveKnownExpressionReturnTypeWithoutLegacy(task, value, out var sourceReturnType) ||
-            string.IsNullOrWhiteSpace(sourceReturnType))
+        var hasSourceReturnType =
+            TryResolveKnownExpressionReturnTypeWithoutLegacy(task, value, out var sourceReturnType) &&
+            !string.IsNullOrWhiteSpace(sourceReturnType);
+        if (!hasSourceReturnType &&
+            int.TryParse(update.WithValue, out var expressionOrdinal) &&
+            task.ExpressionsSemantic.EntriesByOrdinal.TryGetValue(expressionOrdinal, out var expression) &&
+            expression is not null)
+        {
+            sourceReturnType = ResolveSourceReturnTypeForExpressionEntry(expression, task, _dataObjectsByOrdinal.Values.ToArray());
+            if (string.IsNullOrWhiteSpace(sourceReturnType))
+                sourceReturnType = ResolveSimpleReturnTypeForExpressionAttribute(expression.Attribute);
+            hasSourceReturnType = !string.IsNullOrWhiteSpace(sourceReturnType);
+        }
+
+        if (string.IsNullOrWhiteSpace(expectedReturnType) || !hasSourceReturnType)
         {
             return false;
         }

@@ -65,7 +65,16 @@ internal static partial class ProjectGenerator
         WriteAsyncTaskWrappers(generatedTasks, outputLayout.OutputRoot, appNamespace);
         var mainTaskForTarget = generatedTasks.FirstOrDefault(t => t.MainProgram) ?? generatedTasks.FirstOrDefault();
         LogProgress($"Stage: views -> {appNamespace}");
-        WriteViews(parsed, generatedTasks, parsed.DataObjects, parsed.ControlButtonModels, outputLayout.ViewsDir, appNamespace, mainTaskForTarget, includeApplicationView: !scope.TaskScopedGeneration);
+        WriteViews(
+            parsed,
+            generatedTasks,
+            parsed.DataObjects,
+            parsed.ControlButtonModels,
+            outputLayout.ViewsDir,
+            appNamespace,
+            mainTaskForTarget,
+            includeApplicationView: !scope.TaskScopedGeneration,
+            includeMissingScopedViewPlaceholders: scope.TaskScopedGeneration);
         if (scope.TaskScopedGeneration)
         {
             LogProgress($"Stage: mdi/menu skipped for task scope -> {appNamespace}");

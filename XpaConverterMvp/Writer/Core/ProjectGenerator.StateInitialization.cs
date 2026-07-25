@@ -276,7 +276,10 @@ internal static partial class ProjectGenerator
         _controlHandlerExactControlMapCache = new Dictionary<int, Dictionary<string, TaskFormControlDef>>();
         _controlHandlerMethodNameCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         _accessibleParentFunctionTargetsCache = new Dictionary<int, Dictionary<string, string>>();
+        _state.TextIoLayoutClassOwners = new Dictionary<string, HashSet<int>>(StringComparer.Ordinal);
+        _state.TextIoLayoutClassOwnersInitialized = false;
         PrecomputeStructuralGenerationIndexes(request.Parsed.Tasks);
+        EnsureTextIoLayoutClassOwners(request.Parsed.Tasks);
         _viewDotNetResourceByRootOrdinal = BuildViewDotNetResourceIndex(request.Parsed.Tasks);
         _uniqueResourceReturnTypeByMemberName = BuildUniqueResourceReturnTypeByMemberNameIndex();
     }

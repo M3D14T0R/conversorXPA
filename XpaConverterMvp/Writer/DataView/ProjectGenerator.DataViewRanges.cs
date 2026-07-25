@@ -811,9 +811,12 @@ internal static partial class ProjectGenerator
             }
         }
 
+        var sourceReturnType = TryResolveTaskResourceStrictReturnType(rc, task, out var resolvedReturnType)
+            ? resolvedReturnType
+            : MapAttrObjToReturnType(rc.AttrObj);
         return EmitFromReliableTypeEvidence(
             conditionSource,
-            MapAttrObjToReturnType(rc.AttrObj),
+            sourceReturnType,
             "Bool",
             "data-view-range-condition");
     }

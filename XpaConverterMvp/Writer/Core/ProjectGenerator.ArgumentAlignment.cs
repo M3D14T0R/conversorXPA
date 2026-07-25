@@ -12,7 +12,8 @@ internal static partial class ProjectGenerator
     private static IReadOnlyList<string> AlignArgumentSequenceForParameters(
         IReadOnlyList<string> args,
         IReadOnlyList<(string ColumnMember, string ParameterType, string ParameterName, string ParameterDirection)> parameters,
-        TaskSemantic currentTask)
+        TaskSemantic currentTask,
+        IReadOnlyList<bool>? optionalNullArguments = null)
     {
         var argCount = args.Count;
         var paramCount = parameters.Count;
@@ -54,9 +55,13 @@ internal static partial class ProjectGenerator
                     }
                 }
 
-                if (i < argCount && ShouldDropOptionalArgument(args[i]))
+                if (i < argCount && ShouldDropOptionalArgument(args[i], optionalNullArguments, i))
                 {
-                    var skipArgCost = current + GetDroppedArgumentCost(args[i]);
+                    var skipArgCost = current + GetDroppedArgumentCost(
+                        args[i],
+                        optionalNullArguments is not null &&
+                        i < optionalNullArguments.Count &&
+                        optionalNullArguments[i]);
                     if (skipArgCost < costs[i + 1, j])
                     {
                         costs[i + 1, j] = skipArgCost;
@@ -132,7 +137,8 @@ internal static partial class ProjectGenerator
     private static IReadOnlyList<string> AlignOptionalArgumentSuffix(
         IReadOnlyList<string> args,
         IReadOnlyList<(string ColumnMember, string ParameterType, string ParameterName, string ParameterDirection)> parameters,
-        TaskSemantic currentTask)
+        TaskSemantic currentTask,
+        IReadOnlyList<bool>? optionalNullArguments = null)
     {
         var argCount = args.Count;
         var paramCount = parameters.Count;
@@ -174,9 +180,13 @@ internal static partial class ProjectGenerator
                     }
                 }
 
-                if (i < argCount && ShouldDropOptionalArgument(args[i]))
+                if (i < argCount && ShouldDropOptionalArgument(args[i], optionalNullArguments, i))
                 {
-                    var skipArgCost = current + GetDroppedArgumentCost(args[i]);
+                    var skipArgCost = current + GetDroppedArgumentCost(
+                        args[i],
+                        optionalNullArguments is not null &&
+                        i < optionalNullArguments.Count &&
+                        optionalNullArguments[i]);
                     if (skipArgCost < costs[i + 1, j])
                     {
                         costs[i + 1, j] = skipArgCost;
@@ -265,8 +275,17 @@ internal static partial class ProjectGenerator
         return 3;
     }
 
-    private static bool ShouldDropOptionalArgument(string argument)
+    private static bool ShouldDropOptionalArgument(
+        string argument,
+        IReadOnlyList<bool>? optionalNullArguments = null,
+        int argumentIndex = -1)
     {
+        if (optionalNullArguments is not null &&
+            argumentIndex >= 0 &&
+            argumentIndex < optionalNullArguments.Count &&
+            optionalNullArguments[argumentIndex])
+            return true;
+
         var trimmed = argument?.Trim() ?? "";
         if (string.Equals(trimmed, "null", StringComparison.OrdinalIgnoreCase))
             return true;
@@ -277,8 +296,11 @@ internal static partial class ProjectGenerator
         return false;
     }
 
-    private static int GetDroppedArgumentCost(string argument)
+    private static int GetDroppedArgumentCost(string argument, bool sourceOptionalNull = false)
     {
+        if (sourceOptionalNull)
+            return 0;
+
         var trimmed = argument?.Trim() ?? "";
         if (string.Equals(trimmed, "null", StringComparison.OrdinalIgnoreCase))
             return 0;

@@ -28,7 +28,11 @@ internal static partial class ProjectGenerator
         var readRowIos = GetTextIoReadRowIos(t);
         var hasRowActions = t.Logic.SavingRowLogics.Count > 0;
         var hasStandaloneTabCalls = GetStandaloneTabCalls(t).Count > 0;
-        return hasRowActions || rowIos.Count > 0 || readRowIos.Count > 0 || hasStandaloneTabCalls;
+        return hasRowActions ||
+               rowIos.Count > 0 ||
+               readRowIos.Count > 0 ||
+               hasStandaloneTabCalls ||
+               t.FlowValidations.Count > 0;
     }
 
     private static void EmitBusinessProcessLeaveRowBody(
@@ -46,6 +50,24 @@ internal static partial class ProjectGenerator
         var standaloneTabCalls = GetStandaloneTabCalls(t);
         var writeCallMap = TimeSection(() => BuildFormIoWriteCallMap(t), "LEAVEROW", className, "build-write-call-map");
         var readCallMap = TimeSection(() => BuildFormIoReadCallMap(t), "LEAVEROW", className, "build-read-call-map");
+
+        foreach (var validation in t.FlowValidations)
+        {
+            var condition = ResolveExpressionCode(
+                validation.ConditionExpressionId?.ToString(),
+                t,
+                dataObjects,
+                CreateBooleanConditionEmissionContext());
+            var message = ResolveExpressionCode(
+                validation.MessageExpressionId?.ToString(),
+                t,
+                dataObjects,
+                CreateMessageTextEmissionContext());
+            if (string.IsNullOrWhiteSpace(condition) || string.IsNullOrWhiteSpace(message))
+                continue;
+            sb.AppendLine($"{pad}if ({condition})");
+            sb.AppendLine($"{pad}    ENV.Message.ShowError({message});");
+        }
 
         if (standaloneTabCalls.Count == 0 &&
             CanEmitStructuredLeaveRows(t, rowIos, readRowIos))

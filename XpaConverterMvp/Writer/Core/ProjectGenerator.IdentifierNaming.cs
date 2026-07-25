@@ -38,10 +38,13 @@ internal static partial class ProjectGenerator
             var ownerTaskName = ToTaskClassName(ResolveViewOwnerTask(t, allTasks).Description);
             var formName = ToPascalIdentifier(formEntry.Form.FormName);
             var candidate = ownerTaskName + formName;
-            if (HasMultiFormViewClassNameCollision(t, formEntry, candidate, allTasks))
+            if (HasMultiFormViewClassNameCollision(t, formEntry, candidate, allTasks) ||
+                _reservedViewClassNames.Contains(candidate))
                 candidate = ownerTaskName +
                             ResolveTaskClassName(t, allTasks) +
                             formName +
+                            "_F" +
+                            formEntry.Index.ToString(System.Globalization.CultureInfo.InvariantCulture) +
                             "_T" +
                             t.Ordinal.ToString(System.Globalization.CultureInfo.InvariantCulture);
             return EnsureUniqueMultiFormViewClassName(t, candidate, allTasks);

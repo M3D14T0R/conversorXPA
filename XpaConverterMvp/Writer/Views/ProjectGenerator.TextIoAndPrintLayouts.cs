@@ -117,7 +117,19 @@ internal static partial class ProjectGenerator
     private static bool ShouldDeclareTaskTextIoStreams(TaskSemantic task)
     {
         if (HasTextIoLayout(task))
-            return true;
+        {
+            var textFormIndexes = task.Layout.TextForms
+                .Select(form => form.Index)
+                .ToHashSet();
+            var textFormIos = task.FormIos
+                .Where(io =>
+                    io.FormEntryIndex.HasValue &&
+                    textFormIndexes.Contains(io.FormEntryIndex.Value))
+                .ToArray();
+            if (textFormIos.Length == 0 ||
+                textFormIos.Any(io => io.IoDeviceParent.GetValueOrDefault() == 0))
+                return true;
+        }
 
         var ios = task.Ios.Count > 0
             ? task.Ios
@@ -149,7 +161,8 @@ internal static partial class ProjectGenerator
             .Select(form => form.Index)
             .ToHashSet();
         return task.FormIos.Any(io =>
-            string.Equals(io.OperationType, "O", StringComparison.OrdinalIgnoreCase) &&
+            (string.Equals(io.OperationType, "O", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(io.OperationType, "I", StringComparison.OrdinalIgnoreCase)) &&
             io.FormEntryIndex.HasValue &&
             textFormIndexes.Contains(io.FormEntryIndex.Value) &&
             io.IoDeviceParent.GetValueOrDefault() == depth);
@@ -178,14 +191,40 @@ internal static partial class ProjectGenerator
     {
         io ??= t.Io;
         if (string.Equals(io?.Media, "P", StringComparison.OrdinalIgnoreCase))
+        {
+            // Text sections accept a printer writer, but merge templates require
+            // ITemplateEnabled. FileWriter implements both contracts, so a task
+            // that mixes the two kinds of output must use the common writer type.
+            if (HasMergeLayout(t) || ResolveOwnedMergeIoDefinition(t) is not null)
+                return "FileWriter";
             return "TextPrinterWriter";
+        }
         if (string.Equals(io?.Media, "R", StringComparison.OrdinalIgnoreCase))
             return "WebWriter";
+        var ioDeviceIndex = 1;
+        if (io is not null && t.Ios.Count > 1)
+        {
+            for (var i = 0; i < t.Ios.Count; i++)
+            {
+                if (ReferenceEquals(t.Ios[i], io) || Equals(t.Ios[i], io))
+                {
+                    ioDeviceIndex = i + 1;
+                    break;
+                }
+            }
+        }
+        var textFormIndexes = t.Layout.TextForms.Select(form => form.Index).ToHashSet();
+        var isInputDevice = t.FormIos.Any(formIo =>
+            string.Equals(formIo.OperationType, "I", StringComparison.OrdinalIgnoreCase) &&
+            formIo.IoDeviceParent.GetValueOrDefault() == 0 &&
+            formIo.IoDeviceIndex.GetValueOrDefault(1) == ioDeviceIndex &&
+            formIo.FormEntryIndex.HasValue &&
+            textFormIndexes.Contains(formIo.FormEntryIndex.Value));
         if (!IsByteArrayTextIo(t, io))
-            return string.Equals(io?.Access, "R", StringComparison.OrdinalIgnoreCase)
+            return isInputDevice || string.Equals(io?.Access, "R", StringComparison.OrdinalIgnoreCase)
                 ? "FileReader"
                 : "FileWriter";
-        return string.Equals(io?.Access, "R", StringComparison.OrdinalIgnoreCase)
+        return isInputDevice || string.Equals(io?.Access, "R", StringComparison.OrdinalIgnoreCase)
             ? "ByteArrayReader"
             : "ByteArrayWriter";
     }
@@ -663,9 +702,7 @@ internal static partial class ProjectGenerator
         if (resolvedWriteCall.Contains("_ioPrint", StringComparison.Ordinal))
             resolvedWriteCall = resolvedWriteCall.Replace("_ioPrint", ResolvePrintStreamVariableForIo(t, io), StringComparison.Ordinal);
         if (HasMergeLayout(t) &&
-            resolvedWriteCall.Contains(".WriteTo(", StringComparison.Ordinal) &&
-            !resolvedWriteCall.Contains("_ioPrint", StringComparison.Ordinal) &&
-            !resolvedWriteCall.Contains("_ioReport", StringComparison.Ordinal))
+            resolvedWriteCall.Contains(".WriteTo(", StringComparison.Ordinal))
         {
             var idx = resolvedWriteCall.IndexOf(".WriteTo(", StringComparison.Ordinal);
             if (idx > 0)
@@ -819,6 +856,51 @@ internal static partial class ProjectGenerator
     {
         if (!string.IsNullOrWhiteSpace(t.Layout.TextIoLayoutClassName) && preferredTextForm is null)
             return t.Layout.TextIoLayoutClassName!;
+        var candidate = BuildTextIoLayoutClassNameCore(t, allTasks, preferredTextForm);
+        EnsureTextIoLayoutClassOwners(allTasks);
+        var collidesWithAnotherController =
+            _state.TextIoLayoutClassOwners.TryGetValue(candidate, out var owners) &&
+            owners.Count > 1;
+        return collidesWithAnotherController
+            ? $"{candidate}_T{t.Ordinal}"
+            : candidate;
+    }
+
+    private static void EnsureTextIoLayoutClassOwners(IReadOnlyList<TaskSemantic> allTasks)
+    {
+        if (_state.TextIoLayoutClassOwnersInitialized)
+            return;
+
+        lock (_state.TextIoLayoutClassOwnersLock)
+        {
+            if (_state.TextIoLayoutClassOwnersInitialized)
+                return;
+
+            var ownersByClassName = new Dictionary<string, HashSet<int>>(StringComparer.Ordinal);
+            foreach (var task in allTasks)
+            {
+                foreach (var form in task.Layout.TextForms)
+                {
+                    var className = BuildTextIoLayoutClassNameCore(task, allTasks, form);
+                    if (!ownersByClassName.TryGetValue(className, out var owners))
+                    {
+                        owners = new HashSet<int>();
+                        ownersByClassName[className] = owners;
+                    }
+                    owners.Add(task.Ordinal);
+                }
+            }
+
+            _state.TextIoLayoutClassOwners = ownersByClassName;
+            _state.TextIoLayoutClassOwnersInitialized = true;
+        }
+    }
+
+    private static string BuildTextIoLayoutClassNameCore(
+        TaskSemantic t,
+        IReadOnlyList<TaskSemantic> allTasks,
+        TaskFormEntryDef? preferredTextForm)
+    {
         var textForms = t.Layout.TextForms;
         var referencedFormIndexes = t.Layout.ReferencedFormIndexes;
         var textForm = preferredTextForm
@@ -1027,7 +1109,9 @@ internal static partial class ProjectGenerator
                         designer.AppendLine($"        {varName}.Text = {ToCSharpLiteral(c.Text)};");
                     }
 
-                    if (IsPrintDataBindableControl(c))
+                    if (IsPrintDataBindableControl(c) &&
+                        (c.DataExpressionId.HasValue ||
+                         string.IsNullOrWhiteSpace(c.Text)))
                     {
                         var dataExpr = ResolveControlDataExpression(c, task, tasks, dataObjects);
                         if (!string.IsNullOrWhiteSpace(dataExpr))

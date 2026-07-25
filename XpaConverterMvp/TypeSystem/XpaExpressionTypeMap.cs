@@ -301,7 +301,7 @@ internal static class XpaExpressionTypeMap
         return code.Length > 0;
     }
 
-    private static string TypeName(XpaType type)
+    internal static string TypeName(XpaType type)
         => type switch
         {
             XpaType.Text => "Text",

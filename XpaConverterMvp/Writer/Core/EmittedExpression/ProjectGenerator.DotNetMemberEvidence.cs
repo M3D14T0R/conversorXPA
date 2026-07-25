@@ -3,6 +3,7 @@ using System.Collections.Immutable;
 using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
+using XpaConverterMvp.TypeSystem;
 
 namespace XpaConverterMvp;
 
@@ -64,11 +65,15 @@ internal static partial class ProjectGenerator
         if (string.IsNullOrWhiteSpace(ownerPath) || string.IsNullOrWhiteSpace(methodName))
             return false;
 
-        var resource = ResolveResourceByTargetPath(task, ownerPath, _allTasks ?? Array.Empty<TaskSemantic>());
-        if (resource is null || !IsDotNetTaskResource(resource))
+        var receiverIsString =
+            ownerPath.EndsWith(".ToString()", StringComparison.Ordinal);
+        var objectType = "";
+        if (!receiverIsString &&
+            !TryResolveDotNetReceiverObjectType(ownerPath, task, out objectType))
             return false;
+        if (receiverIsString)
+            objectType = "System.String";
 
-        var objectType = NormalizeDotNetObjectType(resource.ObjectType ?? "");
         return TryReadDotNetMethodReturnType(objectType, methodName, args.Count, out returnType);
     }
 
@@ -94,17 +99,271 @@ internal static partial class ProjectGenerator
         if (string.IsNullOrWhiteSpace(ownerPath) || string.IsNullOrWhiteSpace(methodName))
             return false;
 
-        var resource = ResolveResourceByTargetPath(task, ownerPath, _allTasks ?? Array.Empty<TaskSemantic>());
-        if (resource is null || !IsDotNetTaskResource(resource))
+        var receiverIsString =
+            ownerPath.EndsWith(".ToString()", StringComparison.Ordinal);
+        var objectType = "";
+        if (!receiverIsString &&
+            !TryResolveDotNetReceiverObjectType(ownerPath, task, out objectType))
             return false;
+        if (receiverIsString)
+            objectType = "System.String";
 
-        var objectType = NormalizeDotNetObjectType(resource.ObjectType ?? "");
         return TryReadDotNetMethodParameterType(
             objectType,
             methodName,
             argumentCount,
             argumentIndex,
             out returnType);
+    }
+
+    private static bool TryResolveDotNetReceiverObjectType(
+        string receiverExpression,
+        TaskSemantic task,
+        out string objectType)
+    {
+        objectType = "";
+        var receiver = StripRedundantOuterParentheses(receiverExpression?.Trim() ?? "");
+        if (string.IsNullOrWhiteSpace(receiver))
+            return false;
+
+        var resource = ResolveResourceByTargetPath(
+            task,
+            receiver,
+            _allTasks ?? Array.Empty<TaskSemantic>());
+        if (resource is not null && IsDotNetTaskResource(resource))
+        {
+            objectType = NormalizeDotNetObjectType(resource.ObjectType ?? "");
+            return !string.IsNullOrWhiteSpace(objectType);
+        }
+
+        if (!TryParseFunctionCall(receiver, out var functionName, out var arguments))
+            return false;
+
+        var dot = functionName.LastIndexOf('.');
+        if (dot <= 0 || dot + 1 >= functionName.Length)
+            return false;
+
+        var owner = functionName[..dot].Trim();
+        var method = functionName[(dot + 1)..].Trim();
+        if (string.Equals(method, "ToString", StringComparison.OrdinalIgnoreCase))
+        {
+            objectType = "System.String";
+            return true;
+        }
+
+        if (!TryResolveDotNetReceiverObjectType(owner, task, out var ownerType) ||
+            !TryReadDotNetMethodReturnType(ownerType, method, arguments.Count, out var methodReturnType))
+            return false;
+
+        objectType = NormalizeReturnTypeToken(methodReturnType) switch
+        {
+            "Text" => "System.String",
+            "Bool" => "System.Boolean",
+            "Date" => "XPARuntimeCore.Box.Date",
+            "Time" => "XPARuntimeCore.Box.Time",
+            _ => NormalizeDotNetObjectType(methodReturnType)
+        };
+        return !string.IsNullOrWhiteSpace(objectType);
+    }
+
+    private static bool TryApplyDotNetConstructorArgumentEvidence(
+        string target,
+        IReadOnlyList<XpaTypedExpression> arguments,
+        int argumentIndex,
+        out XpaTypedExpression converted)
+    {
+        converted = default;
+        const string constructorPrefix = "new global::";
+        if (string.IsNullOrWhiteSpace(target) ||
+            !target.StartsWith(constructorPrefix, StringComparison.Ordinal) ||
+            argumentIndex < 0 ||
+            argumentIndex >= arguments.Count)
+            return false;
+
+        var objectType = target[constructorPrefix.Length..].Trim();
+        string parameterTypeName;
+        var parameterIsEnum = false;
+        if (TryLoadClrTypeFromMappedReference(objectType, out var clrType) && clrType is not null)
+        {
+            var candidates = clrType
+                .GetConstructors(BindingFlags.Public | BindingFlags.Instance)
+                .Where(ctor => ctor.GetParameters().Length == arguments.Count)
+                .Select(ctor => new
+                {
+                    Constructor = ctor,
+                    Score = ScoreDotNetConstructorCandidate(ctor.GetParameters(), arguments)
+                })
+                .Where(candidate => candidate.Score >= 0)
+                .OrderByDescending(candidate => candidate.Score)
+                .ToArray();
+            if (candidates.Length == 0 ||
+                (candidates.Length > 1 && candidates[0].Score == candidates[1].Score))
+                return false;
+
+            var parameterType = candidates[0].Constructor.GetParameters()[argumentIndex].ParameterType;
+            parameterTypeName = parameterType.FullName ?? parameterType.Name;
+            parameterIsEnum = parameterType.IsEnum;
+        }
+        else if (TryResolveDotNetConstructorParameterTypesFromMetadata(
+                     objectType,
+                     arguments,
+                     out var metadataParameterTypes))
+        {
+            parameterTypeName = metadataParameterTypes[argumentIndex];
+        }
+        else
+        {
+            return false;
+        }
+
+        var argument = arguments[argumentIndex];
+        var code = parameterTypeName switch
+        {
+            "System.Single" => $"(float)({argument.Code})",
+            "System.Double" => $"(double)({argument.Code})",
+            "System.Decimal" => $"(decimal)({argument.Code})",
+            "System.Int32" => $"(int)({argument.Code})",
+            "System.Int64" => $"(long)({argument.Code})",
+            "System.Int16" => $"(short)({argument.Code})",
+            "System.Byte" => $"(byte)({argument.Code})",
+            "System.Char" when argument.LiteralValue is { Length: 1 } literal =>
+                ToCSharpCharLiteral(literal[0]),
+            _ when parameterIsEnum && argument.Type == XpaType.Number =>
+                $"({parameterTypeName})(int)({argument.Code})",
+            _ => argument.Code
+        };
+        converted = new XpaTypedExpression(
+            code,
+            parameterTypeName,
+            argument.Type,
+            argument.LiteralValue);
+        return true;
+    }
+
+    private static bool TryResolveDotNetConstructorParameterTypesFromMetadata(
+        string objectType,
+        IReadOnlyList<XpaTypedExpression> arguments,
+        out string[] parameterTypes)
+    {
+        parameterTypes = Array.Empty<string>();
+        var assemblyPath = FindMappedAssemblyPathForDotNetType(objectType);
+        if (string.IsNullOrWhiteSpace(assemblyPath) || !File.Exists(assemblyPath))
+            return false;
+
+        try
+        {
+            using var stream = File.OpenRead(assemblyPath);
+            using var peReader = new PEReader(stream);
+            if (!peReader.HasMetadata)
+                return false;
+
+            var reader = peReader.GetMetadataReader();
+            var provider = new DotNetMetadataTypeNameProvider();
+            foreach (var typeHandle in reader.TypeDefinitions)
+            {
+                var type = reader.GetTypeDefinition(typeHandle);
+                if (!MetadataTypeMatches(reader, typeHandle, type, objectType))
+                    continue;
+
+                var candidates = type.GetMethods()
+                    .Select(reader.GetMethodDefinition)
+                    .Where(method =>
+                        string.Equals(reader.GetString(method.Name), ".ctor", StringComparison.Ordinal))
+                    .Select(method => method.DecodeSignature(provider, null).ParameterTypes.ToArray())
+                    .Where(types => types.Length == arguments.Count)
+                    .Select(types => new
+                    {
+                        ParameterTypes = types,
+                        Score = ScoreDotNetConstructorCandidate(types, arguments)
+                    })
+                    .Where(candidate => candidate.Score >= 0)
+                    .OrderByDescending(candidate => candidate.Score)
+                    .ToArray();
+                if (candidates.Length == 0 ||
+                    (candidates.Length > 1 && candidates[0].Score == candidates[1].Score))
+                    return false;
+
+                parameterTypes = candidates[0].ParameterTypes;
+                return true;
+            }
+        }
+        catch
+        {
+            return false;
+        }
+
+        return false;
+    }
+
+    private static int ScoreDotNetConstructorCandidate(
+        IReadOnlyList<string> parameterTypes,
+        IReadOnlyList<XpaTypedExpression> arguments)
+    {
+        var score = 0;
+        for (var i = 0; i < parameterTypes.Count; i++)
+        {
+            var parameterType = parameterTypes[i];
+            var argument = arguments[i];
+            var compatible = parameterType switch
+            {
+                "System.String" => argument.Type == XpaType.Text,
+                "System.Boolean" => argument.Type == XpaType.Bool,
+                "System.Char" => argument.Type == XpaType.Text &&
+                                 argument.LiteralValue is { Length: 1 },
+                _ when IsClrNumericTypeName(parameterType) => argument.Type == XpaType.Number,
+                _ => string.Equals(
+                    NormalizeDotNetObjectType(argument.ReturnType),
+                    parameterType,
+                    StringComparison.Ordinal)
+            };
+            if (!compatible)
+                return -1;
+
+            score += string.Equals(parameterType, "System.Object", StringComparison.Ordinal)
+                ? 1
+                : 10;
+        }
+
+        return score;
+    }
+
+    private static int ScoreDotNetConstructorCandidate(
+        IReadOnlyList<ParameterInfo> parameters,
+        IReadOnlyList<XpaTypedExpression> arguments)
+    {
+        var score = 0;
+        for (var i = 0; i < parameters.Count; i++)
+        {
+            var parameterType = parameters[i].ParameterType;
+            var argument = arguments[i];
+            var compatible = parameterType switch
+            {
+                var type when type == typeof(string) => argument.Type == XpaType.Text,
+                var type when type == typeof(bool) => argument.Type == XpaType.Bool,
+                var type when type == typeof(char) =>
+                    argument.Type == XpaType.Text &&
+                    argument.LiteralValue is { Length: 1 },
+                var type when type.IsPrimitive || type == typeof(decimal) =>
+                    argument.Type == XpaType.Number,
+                var type when type.IsEnum =>
+                    argument.Type == XpaType.Number ||
+                    string.Equals(
+                        NormalizeDotNetObjectType(argument.ReturnType),
+                        type.FullName,
+                        StringComparison.Ordinal),
+                _ => string.Equals(
+                         NormalizeDotNetObjectType(argument.ReturnType),
+                         parameterType.FullName,
+                         StringComparison.Ordinal) ||
+                     (argument.Type == XpaType.Object &&
+                      string.Equals(parameterType.FullName, "System.Object", StringComparison.Ordinal))
+            };
+            if (!compatible)
+                return -1;
+            score += parameterType == typeof(object) ? 1 : 10;
+        }
+
+        return score;
     }
 
     private static bool TryReadDotNetMemberEvidence(
@@ -616,6 +875,33 @@ internal static partial class ProjectGenerator
         if (clrType is not null)
             return true;
 
+        clrType = AppDomain.CurrentDomain
+            .GetAssemblies()
+            .Select(assembly => assembly.GetType(
+                objectType,
+                throwOnError: false,
+                ignoreCase: false))
+            .FirstOrDefault(type => type is not null);
+        if (clrType is not null)
+            return true;
+
+        if (objectType.StartsWith("System.Drawing.", StringComparison.Ordinal))
+        {
+            try
+            {
+                clrType = Assembly.Load("System.Drawing").GetType(
+                    objectType,
+                    throwOnError: false,
+                    ignoreCase: false);
+                if (clrType is not null)
+                    return true;
+            }
+            catch
+            {
+                clrType = null;
+            }
+        }
+
         var assemblyPath = FindMappedAssemblyPathForDotNetType(objectType);
         if (string.IsNullOrWhiteSpace(assemblyPath) || !File.Exists(assemblyPath))
             return false;
@@ -850,10 +1136,68 @@ internal static partial class ProjectGenerator
             }
         }
 
-        if (!string.IsNullOrWhiteSpace(bestPath))
+        if (!string.IsNullOrWhiteSpace(bestPath) &&
+            AssemblyMetadataContainsType(bestPath, objectType))
             return bestPath;
 
-        return FindMappedAssemblyPathByMetadataType(objectType);
+        var mappedByMetadata = FindMappedAssemblyPathByMetadataType(objectType);
+        if (!string.IsNullOrWhiteSpace(mappedByMetadata))
+            return mappedByMetadata;
+
+        return FindFrameworkReferenceAssemblyPathForType(objectType);
+    }
+
+    private static bool AssemblyMetadataContainsType(string assemblyPath, string objectType)
+    {
+        if (string.IsNullOrWhiteSpace(assemblyPath) || !File.Exists(assemblyPath))
+            return false;
+
+        try
+        {
+            using var stream = File.OpenRead(assemblyPath);
+            using var peReader = new PEReader(stream);
+            if (!peReader.HasMetadata)
+                return false;
+
+            var reader = peReader.GetMetadataReader();
+            foreach (var typeHandle in reader.TypeDefinitions)
+            {
+                var type = reader.GetTypeDefinition(typeHandle);
+                if (MetadataTypeMatches(reader, typeHandle, type, objectType))
+                    return true;
+            }
+        }
+        catch
+        {
+            return false;
+        }
+
+        return false;
+    }
+
+    private static string FindFrameworkReferenceAssemblyPathForType(string objectType)
+    {
+        var assemblyName = objectType.StartsWith("System.Drawing.", StringComparison.Ordinal)
+            ? "System.Drawing"
+            : objectType.StartsWith("System.Windows.Forms.", StringComparison.Ordinal)
+                ? "System.Windows.Forms"
+                : "";
+        if (string.IsNullOrWhiteSpace(assemblyName))
+            return "";
+
+        var programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+        if (string.IsNullOrWhiteSpace(programFilesX86))
+            return "";
+
+        var path = Path.Combine(
+            programFilesX86,
+            "Reference Assemblies",
+            "Microsoft",
+            "Framework",
+            ".NETFramework",
+            "v4.7.2",
+            assemblyName + ".dll");
+        return AssemblyMetadataContainsType(path, objectType) ? path : "";
     }
 
     private static string BuildDotNetTypeAssemblyEvidenceCacheKey(string objectType)

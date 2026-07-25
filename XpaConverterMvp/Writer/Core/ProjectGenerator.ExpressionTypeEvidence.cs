@@ -484,6 +484,12 @@ internal static partial class ProjectGenerator
             return TryResolveSimpleSourceReturnTypeByUniqueMemberName(expression, out returnType);
 
         var ownerTask = ResolveOwningTaskForResource(resource) ?? task;
+        if (IsDotNetTaskResource(resource))
+        {
+            returnType = "object";
+            return true;
+        }
+
         var resolvedType = ResolveTaskResourceColumnType(resource, _allFieldModels, ownerTask);
         var attrObj = ResolveAttrObjForColumnType(resolvedType, _allFieldModels, ownerTask);
         if (string.IsNullOrWhiteSpace(attrObj))

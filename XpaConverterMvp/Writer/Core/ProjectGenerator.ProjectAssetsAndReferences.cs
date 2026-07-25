@@ -243,7 +243,10 @@ internal static partial class ProjectGenerator
         // Large XPA applications can exceed the CLR user-string heap limit in
         // a single generated assembly. Roslyn's data-section string literal
         // mode keeps those projects compilable without changing source values.
-        sb.AppendLine("    <Features>experimental-data-section-string-literals</Features>");
+        // The default threshold only moves literals with at least 100 characters.
+        // Large XPA projects also contain enough short literals to overflow #US,
+        // so make every non-empty literal eligible for the data section.
+        sb.AppendLine("    <Features>experimental-data-section-string-literals=0</Features>");
         sb.AppendLine("    <Nullable>disable</Nullable>");
         sb.AppendLine("    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>");
         sb.AppendLine("    <NoWarn>1587;1570;1591;1573</NoWarn>");

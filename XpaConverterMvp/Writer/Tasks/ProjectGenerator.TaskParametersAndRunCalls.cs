@@ -162,10 +162,16 @@ internal static partial class ProjectGenerator
     {
         resourceByMember.TryGetValue(parameter.ColumnMember, out var resource);
 
+        if (resource is not null && IsDotNetTaskResource(resource))
+        {
+            yield return $"        this.{parameter.ColumnMember} = {parameter.ParameterName};";
+            yield break;
+        }
+
         if (resource is not null &&
             parameter.ParameterType.StartsWith("ArrayParameter<", StringComparison.Ordinal))
         {
-            yield return $"        BindParameter({parameter.ColumnMember}, {parameter.ParameterName});";
+            yield return $"        BindParameter(this.{parameter.ColumnMember}, {parameter.ParameterName});";
             yield break;
         }
 
@@ -180,19 +186,19 @@ internal static partial class ProjectGenerator
             var itemType = ResolveArrayColumnItemType(resource, _allFieldModels, task);
             yield return $"        var {bridgeName} = new ByteArrayColumn();";
             yield return $"        BindParameter({bridgeName}, {parameter.ParameterName});";
-            yield return $"        BindParameter({parameter.ColumnMember}, (ArrayParameter<{itemType}>){bridgeName});";
+            yield return $"        BindParameter(this.{parameter.ColumnMember}, (ArrayParameter<{itemType}>){bridgeName});";
             yield break;
         }
 
     DefaultBind:
-        yield return $"        BindParameter({parameter.ColumnMember}, {parameter.ParameterName});";
+        yield return $"        BindParameter(this.{parameter.ColumnMember}, {parameter.ParameterName});";
     }
 
     private static string[] BuildRunParameterSignatureParts(
         IReadOnlyList<(string ColumnMember, string ParameterType, string ParameterName, string ParameterDirection)> parameters)
     {
         return parameters
-            .Select(p => $"{p.ParameterType} {p.ParameterName} = null")
+            .Select(p => $"{p.ParameterType} {p.ParameterName} = default")
             .ToArray();
     }
 
@@ -253,7 +259,13 @@ internal static partial class ProjectGenerator
         IReadOnlyList<DataObjectDef> dataObjects)
     {
         var telemetryOwner = ResolveTaskClassName(currentTask, allTasks);
-        var trimmedRunArgs = PrepareRunArgumentsForTarget(runArgs, currentTask, targetTask, allTasks, telemetryOwner);
+        var trimmedRunArgs = PrepareRunArgumentsForTarget(
+            runArgs,
+            currentTask,
+            targetTask,
+            allTasks,
+            telemetryOwner,
+            call);
 
         string BuildRunCallCore(string targetExpression)
         {
@@ -311,13 +323,23 @@ internal static partial class ProjectGenerator
         TaskSemantic currentTask,
         TaskSemantic targetTask,
         IReadOnlyList<TaskSemantic> allTasks,
-        string telemetryOwner)
+        string telemetryOwner,
+        TaskCallDef? sourceCall = null)
     {
         var targetName = ResolveTaskClassName(targetTask, allTasks);
+        var sourceOptionalNullArguments = ResolveSourceOptionalNullArguments(
+            sourceCall,
+            currentTask,
+            SplitTopLevelArguments(runArgs).Count);
+        var hasExplicitSourceArgumentPositions = sourceCall?.ArgumentDefs.Count > 0;
         var cacheKey = string.Join("|",
             currentTask.Ordinal.ToString(),
             targetTask.Ordinal.ToString(),
-            runArgs ?? "");
+            runArgs ?? "",
+            hasExplicitSourceArgumentPositions ? "positional" : "inferred",
+            sourceOptionalNullArguments.Count == 0
+                ? "-"
+                : string.Concat(sourceOptionalNullArguments.Select(value => value ? '1' : '0')));
         if (_preparedRunArgumentsCache.TryGetValue(cacheKey, out var cached))
         {
             ConversionTelemetry.LogDuration("CALLPIPE", telemetryOwner, TimeSpan.Zero, $"section=\"align-run-args\" target={QuoteTelemetry(targetName)}");
@@ -328,11 +350,19 @@ internal static partial class ProjectGenerator
         }
 
         var alignStopwatch = Stopwatch.StartNew();
-        var trimmedRunArgs = AlignRunArgumentsForTarget(runArgs, currentTask, targetTask, allTasks);
+        var trimmedRunArgs = hasExplicitSourceArgumentPositions
+            ? runArgs
+            : AlignRunArgumentsForTarget(
+                runArgs,
+                currentTask,
+                targetTask,
+                allTasks,
+                sourceOptionalNullArguments);
         ConversionTelemetry.LogDuration("CALLPIPE", telemetryOwner, alignStopwatch.Elapsed, $"section=\"align-run-args\" target={QuoteTelemetry(targetName)}");
 
         var repairStopwatch = Stopwatch.StartNew();
-        trimmedRunArgs = RepairRunArgumentsForTarget(trimmedRunArgs, currentTask, targetTask, allTasks);
+        if (!hasExplicitSourceArgumentPositions)
+            trimmedRunArgs = RepairRunArgumentsForTarget(trimmedRunArgs, currentTask, targetTask, allTasks);
         ConversionTelemetry.LogDuration("CALLPIPE", telemetryOwner, repairStopwatch.Elapsed, $"section=\"repair-run-args\" target={QuoteTelemetry(targetName)}");
 
         var trimStopwatch = Stopwatch.StartNew();
@@ -353,7 +383,12 @@ internal static partial class ProjectGenerator
         return trimmedRunArgs;
     }
 
-    private static string AlignRunArgumentsForTarget(string runArgs, TaskSemantic currentTask, TaskSemantic targetTask, IReadOnlyList<TaskSemantic> allTasks)
+    private static string AlignRunArgumentsForTarget(
+        string runArgs,
+        TaskSemantic currentTask,
+        TaskSemantic targetTask,
+        IReadOnlyList<TaskSemantic> allTasks,
+        IReadOnlyList<bool>? sourceOptionalNullArguments = null)
     {
         if (string.IsNullOrWhiteSpace(runArgs))
             return runArgs;
@@ -375,8 +410,16 @@ internal static partial class ProjectGenerator
             var alignedPrefix = new List<string>(args.Take(optionalStartIndex).Select(a => a.Trim()));
             var suffixArgs = args.Skip(optionalStartIndex).Select(a => a.Trim()).ToList();
             var suffixParameters = parameters.Skip(optionalStartIndex).ToList();
+            var suffixOptionalNullArguments = sourceOptionalNullArguments?
+                .Skip(optionalStartIndex)
+                .Take(suffixArgs.Count)
+                .ToList();
             if (suffixArgs.Count > 0 && suffixParameters.Count > 0)
-                alignedPrefix.AddRange(AlignOptionalArgumentSuffix(suffixArgs, suffixParameters, currentTask));
+                alignedPrefix.AddRange(AlignOptionalArgumentSuffix(
+                    suffixArgs,
+                    suffixParameters,
+                    currentTask,
+                    suffixOptionalNullArguments));
             return string.Join(", ", alignedPrefix);
         }
 
@@ -388,8 +431,50 @@ internal static partial class ProjectGenerator
         if (ShouldUseCheapRunAlignment(args.Count, parameters.Count) && !hasAmbiguity)
             return AlignRunArgumentsWithCheapFallback(args, parameters, currentTask, targetTask, allTasks);
 
-        var aligned = AlignArgumentSequenceForParameters(args.Select(a => a.Trim()).ToList(), parameters, currentTask);
+        var aligned = AlignArgumentSequenceForParameters(
+            args.Select(a => a.Trim()).ToList(),
+            parameters,
+            currentTask,
+            sourceOptionalNullArguments);
         return string.Join(", ", aligned);
+    }
+
+    private static IReadOnlyList<bool> ResolveSourceOptionalNullArguments(
+        TaskCallDef? sourceCall,
+        TaskSemantic currentTask,
+        int resolvedArgumentCount)
+    {
+        if (sourceCall is null ||
+            sourceCall.ArgumentDefs.Count == 0 ||
+            resolvedArgumentCount <= 0)
+            return Array.Empty<bool>();
+
+        var argumentDefs = sourceCall.ArgumentDefs;
+        var result = new bool[resolvedArgumentCount];
+        var limit = Math.Min(result.Length, argumentDefs.Count);
+        for (var i = 0; i < limit; i++)
+        {
+            var argument = argumentDefs[i];
+            if (argument.Skip == true)
+            {
+                result[i] = true;
+                continue;
+            }
+
+            var expressionOrdinal = argument.ExpressionId ?? argument.Exp;
+            if (!expressionOrdinal.HasValue ||
+                !currentTask.ExpressionsSemantic.EntriesByOrdinal.TryGetValue(
+                    expressionOrdinal.Value,
+                    out var expression) ||
+                expression is null)
+                continue;
+
+            var sourceSyntax = StripRedundantOuterParentheses(
+                ResolveExpressionEntrySourceSyntax(expression).Trim());
+            result[i] = IsSourceNullExpression(sourceSyntax);
+        }
+
+        return result;
     }
 
     private static bool LeadingRunArgumentsMatchParameters(
@@ -584,13 +669,17 @@ internal static partial class ProjectGenerator
             .Where(s =>
                 s.IsParameter &&
                 !s.IsFunctionSelect &&
-                !string.Equals(s.OriginLevel, "H", StringComparison.OrdinalIgnoreCase) &&
+                IsTaskRunParameterSelectOrigin(s) &&
                 !handlerParameterIds.Contains(s.ColumnId))
             .Select(s => s.ColumnId)
             .Distinct()
             .ToHashSet();
+        var hasExplicitVirtualSelectDecision = t.SelectsSemantic.Items.Any(s =>
+            string.Equals(s.Type, "V", StringComparison.OrdinalIgnoreCase) &&
+            !s.IsFunctionSelect &&
+            IsTaskRunParameterSelectOrigin(s));
         var inferredParameterCount = 0;
-        if (paramIds.Count == 0)
+        if (paramIds.Count == 0 && !hasExplicitVirtualSelectDecision)
             inferredParameterCount = InferIncomingParameterCount(t);
 
         var maxParams = t.DeclaredParameterCount.GetValueOrDefault(0);
@@ -599,16 +688,17 @@ internal static partial class ProjectGenerator
 
         var desiredParameterCount = Math.Max(paramIds.Count, inferredParameterCount);
 
-        if (maxParams > 0)
+        if (maxParams > 0 && !(hasExplicitVirtualSelectDecision && paramIds.Count == 0))
             desiredParameterCount = desiredParameterCount > 0
                 ? Math.Min(desiredParameterCount, maxParams)
                 : maxParams;
 
         IReadOnlyList<Dictionary<string, int>> observedEvidence = Array.Empty<Dictionary<string, int>>();
         var needObservedEvidence =
-            desiredParameterCount == 0 ||
-            paramIds.Count == 0 ||
-            (maxParams > 0 && desiredParameterCount < maxParams);
+            !(hasExplicitVirtualSelectDecision && paramIds.Count == 0) &&
+            (desiredParameterCount == 0 ||
+             paramIds.Count == 0 ||
+             (maxParams > 0 && desiredParameterCount < maxParams));
         if (needObservedEvidence)
         {
             observedEvidence = BuildObservedTaskParameterEvidence(t);
@@ -634,6 +724,10 @@ internal static partial class ProjectGenerator
         _taskParametersCache[t.Ordinal] = result;
         return result;
     }
+
+    private static bool IsTaskRunParameterSelectOrigin(TaskLogicSelectDef select)
+        => string.IsNullOrWhiteSpace(select.OriginLevel) ||
+           string.Equals(select.OriginLevel, "R", StringComparison.OrdinalIgnoreCase);
 
 }
 

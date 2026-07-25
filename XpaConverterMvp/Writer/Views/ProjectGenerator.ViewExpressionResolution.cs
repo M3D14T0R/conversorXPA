@@ -176,8 +176,12 @@ internal static partial class ProjectGenerator
         while (currentTask is not null)
         {
             if (currentTask.SelectsSemantic.ItemsByName.TryGetValue(token, out var select) &&
-                select is not null)
+                select is not null &&
+                string.Equals(select.Type, "V", StringComparison.OrdinalIgnoreCase))
             {
+                // Type="R" identifies a DataView/model column. Its ColumnId
+                // belongs to that model and may coincide with a local resource
+                // id (including a .NET resource), but it is not that resource.
                 var resource = ResolveTaskResourceColumn(currentTask, select.ColumnId);
                 if (resource is not null)
                     return resource;
