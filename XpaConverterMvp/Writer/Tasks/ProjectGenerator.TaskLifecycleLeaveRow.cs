@@ -75,7 +75,19 @@ internal static partial class ProjectGenerator
             foreach (var row in t.Logic.SavingRowLogics)
             {
                 var rowFormIos = SelectStructuredRowFormIos(row, rowIos, readRowIos);
-                EmitStructuredActionBody(sb, row.Actions, row.Blocks, row.EndBlocks, t, dataObjects, allTasks, pad, rowFormIos, writeCallMap, readCallMap);
+                EmitStructuredActionBody(
+                    sb,
+                    row.Actions,
+                    row.Blocks,
+                    row.EndBlocks,
+                    t,
+                    dataObjects,
+                    allTasks,
+                    pad,
+                    rowFormIos,
+                    writeCallMap,
+                    readCallMap,
+                    row.Raises);
             }
 
             var section = rowIos.Count == 0 && readRowIos.Count == 0
@@ -99,24 +111,29 @@ internal static partial class ProjectGenerator
                     actionList.Add(new TaskRowActionDef("Call", c, null, null, null, null, null, c.ConditionExpressionId, null, null, c.XmlTrace, null));
             }
         }, "LEAVEROW", className, "merge-tabcalls");
-        var ordered = new List<(int Order, TaskRowActionDef? Action, TaskFormIoDef? Io)>();
+        var ordered = new List<(int Order, TaskRowActionDef? Action, TaskFormIoDef? Io, TaskRaiseEventDef? Raise)>();
         var nextSyntheticOrder = 1_000_000;
         TimeSection(() =>
         {
             foreach (var action in actionList)
             {
                 var order = ExtractLogicLineOrder(action.XmlTrace) ?? nextSyntheticOrder++;
-                ordered.Add((order, action, null));
+                ordered.Add((order, action, null, null));
             }
             foreach (var io in rowIos)
             {
                 var order = ExtractLogicLineOrder(io.XmlTrace) ?? nextSyntheticOrder++;
-                ordered.Add((order, null, io));
+                ordered.Add((order, null, io, null));
             }
             foreach (var io in readRowIos)
             {
                 var order = ExtractLogicLineOrder(io.XmlTrace) ?? nextSyntheticOrder++;
-                ordered.Add((order, null, io));
+                ordered.Add((order, null, io, null));
+            }
+            foreach (var raise in t.Logic.SavingRowLogics.SelectMany(row => row.Raises))
+            {
+                var order = ExtractLogicLineOrder(raise.XmlTrace) ?? nextSyntheticOrder++;
+                ordered.Add((order, null, null, raise));
             }
         }, "LEAVEROW", className, "build-ordered-items");
 
@@ -174,6 +191,11 @@ internal static partial class ProjectGenerator
                 }
                 continue;
             }
+            if (item.Raise is not null)
+            {
+                EmitRaiseStatements(sb, new[] { item.Raise }, t, dataObjects, pad);
+                continue;
+            }
             if (item.Io is null || !item.Io.FormEntryIndex.HasValue)
                 continue;
             if (item.Io.OperationType == "O" && writeCallMap.TryGetValue(item.Io.FormEntryIndex.Value, out var writeCall))
@@ -216,17 +238,19 @@ internal static partial class ProjectGenerator
         ConversionTelemetry.LogDuration("LEAVEROW", className, totalStopwatch.Elapsed, "section=\"total\"");
     }
 
-    private static string ResolveLeaveRowItemKind((int Order, TaskRowActionDef? Action, TaskFormIoDef? Io) item)
+    private static string ResolveLeaveRowItemKind((int Order, TaskRowActionDef? Action, TaskFormIoDef? Io, TaskRaiseEventDef? Raise) item)
     {
         if (item.Action is not null)
             return $"Action:{item.Action.Kind}";
         if (item.Io is not null)
             return $"FormIo:{item.Io.OperationType}";
+        if (item.Raise is not null)
+            return $"Raise:{item.Raise.EventType}:{item.Raise.EventInternalEventId?.ToString() ?? item.Raise.EventPublicObject ?? "?"}";
         return "Unknown";
     }
 
-    private static string? ResolveLeaveRowItemXmlTrace((int Order, TaskRowActionDef? Action, TaskFormIoDef? Io) item)
-        => item.Action?.XmlTrace ?? item.Io?.XmlTrace;
+    private static string? ResolveLeaveRowItemXmlTrace((int Order, TaskRowActionDef? Action, TaskFormIoDef? Io, TaskRaiseEventDef? Raise) item)
+        => item.Action?.XmlTrace ?? item.Io?.XmlTrace ?? item.Raise?.XmlTrace;
 
     private static bool CanEmitStructuredLeaveRows(
         TaskSemantic task,
@@ -264,6 +288,7 @@ internal static partial class ProjectGenerator
             return false;
 
         return row.Actions.Any(action => ExtractLogicUnitIndex(action.XmlTrace) == ioLogicUnit) ||
+               row.Raises.Any(raise => ExtractLogicUnitIndex(raise.XmlTrace) == ioLogicUnit) ||
                row.Blocks.Any(block => ExtractLogicUnitIndex(block.XmlTrace) == ioLogicUnit) ||
                row.EndBlocks.Any(endBlock => ExtractLogicUnitIndex(endBlock.XmlTrace) == ioLogicUnit);
     }

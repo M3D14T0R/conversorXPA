@@ -156,11 +156,24 @@ internal static partial class ProjectGenerator
         var parameters = GetTaskParameters(targetTask);
         for (var i = 0; i < arguments.Count && i < parameters.Count; i++)
         {
+            var preserveBinding = !IsInputParameterDirection(parameters[i].ParameterDirection);
+            if (preserveBinding)
+            {
+                var actual = ResolveExpectedTypeFromExpressionEvidence(
+                    currentTask,
+                    arguments[i].Trim());
+                var expected = ExpectedTypeForParameterType(parameters[i].ParameterType);
+                preserveBinding =
+                    actual.HasExpectation &&
+                    expected.HasExpectation &&
+                    ExpectedTypesMatch(actual, expected);
+            }
+
             arguments[i] = EmitCallArgumentForParameter(
                 arguments[i].Trim(),
                 parameters[i].ParameterType,
                 currentTask,
-                preserveBinding: !IsInputParameterDirection(parameters[i].ParameterDirection));
+                preserveBinding);
         }
         return string.Join(", ", arguments);
     }

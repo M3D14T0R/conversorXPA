@@ -136,6 +136,13 @@ internal static partial class ProjectGenerator
         if (!string.IsNullOrWhiteSpace(call.ReturnVariable) || call.ReturnValue is not null)
             return false;
 
+        // During an incremental task conversion the reduced XML does not contain
+        // the other top-level programs. The existing full-project manifest does,
+        // so a same-project call resolved through it is a real call, not an
+        // external compatibility fallback.
+        if (ResolveCurrentProjectProgramDetail(call) is not null)
+            return false;
+
         if (!string.IsNullOrWhiteSpace(call.TargetComponentName) &&
             string.IsNullOrWhiteSpace(call.TargetPublicName) &&
             call.TargetObjectId.HasValue)
@@ -160,10 +167,15 @@ internal static partial class ProjectGenerator
 
     private static ProjectManifestProgram? ResolveExternalProgramDetail(TaskCallDef call)
     {
-        if (string.IsNullOrWhiteSpace(call.TargetComponentName))
+        var currentProjectDetail = ResolveCurrentProjectProgramDetail(call);
+        if (currentProjectDetail is not null)
+            return currentProjectDetail;
+
+        if (string.IsNullOrWhiteSpace(call.TargetComponentName) ||
+            !_projectReferenceManifests.TryGetValue(call.TargetComponentName, out var manifest))
+        {
             return null;
-        if (!_projectReferenceManifests.TryGetValue(call.TargetComponentName, out var manifest))
-            return null;
+        }
 
         ProjectManifestProgram? detail = null;
         if (!string.IsNullOrWhiteSpace(call.TargetPublicName))
@@ -189,6 +201,31 @@ internal static partial class ProjectGenerator
         }
 
         return detail;
+    }
+
+    private static ProjectManifestProgram? ResolveCurrentProjectProgramDetail(TaskCallDef call)
+    {
+        if (_currentProjectManifest is null ||
+            !string.IsNullOrWhiteSpace(call.TargetComponentName) ||
+            !string.Equals(call.OperationType, "P", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(call.TargetPublicName))
+        {
+            var byPublicName = _currentProjectManifest.ProgramDetails.FirstOrDefault(p =>
+                string.Equals(p.PublicName, call.TargetPublicName, StringComparison.OrdinalIgnoreCase));
+            if (byPublicName is not null)
+                return byPublicName;
+        }
+
+        var objectIndex = call.TargetObjectId ?? call.TaskId;
+        if (!objectIndex.HasValue)
+            return null;
+
+        return _currentProjectManifest.ProgramDetails.FirstOrDefault(p =>
+            p.ObjectIndex.HasValue && p.ObjectIndex.Value == objectIndex.Value);
     }
 
     private static IReadOnlyList<string>? ResolveExternalProgramParameterTypes(TaskCallDef call)

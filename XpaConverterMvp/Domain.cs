@@ -5,9 +5,16 @@ namespace XpaConverterMvp;
 
 internal sealed record FieldModelDef(
     int Ordinal,
+    int LocalObjectIndex,
     string Name,
     string AttrObj,
     string Picture,
+    string? InputRange,
+    string? NullDisplayText,
+    string? DefaultValue,
+    string? RaiseEventType,
+    int? RaiseEventInternalEventId,
+    int? RaiseEventKeyCombinationId,
     string? Dec,
     string? Whole,
     bool? Negative,
@@ -44,7 +51,8 @@ internal sealed record DataColumnDef(
     string? Translate,
     string? DbColumnName,
     string? DbType,
-    string? ModelRefObj
+    string? ModelRefObj,
+    string? InputRange
 );
 
 internal sealed record IndexSegmentDef(int ColumnId, string Order);
@@ -88,11 +96,16 @@ internal sealed record TaskVarRangeInfoDef(
     int VarRangeVeeIsn
 );
 
+internal sealed record TaskSqlFormInputArgumentDef(
+    int? ExpressionId,
+    string? Variable
+);
+
 internal sealed record TaskSqlFormDef(
     string? DatabaseName,
     string? Restab,
     string Statement,
-    IReadOnlyList<int> InputExpressionIds,
+    IReadOnlyList<TaskSqlFormInputArgumentDef> InputArguments,
     IReadOnlyList<string> OutputVariables
 );
 
@@ -206,6 +219,7 @@ internal sealed record TaskDataViewSourceDef(
 internal sealed record TaskBlockDef(
     string Type,
     int? ConditionExpressionId,
+    bool? ConditionLiteral,
     int? LogicLineIndex,
     int? EndBlockLine,
     int? EndBlockSegmentLine,
@@ -287,6 +301,7 @@ internal sealed record TaskFormDef(
     int? HorizontalFactor,
     string? WindowType,
     string? StartupMode,
+    string? StartupPosition,
     string? PersistentFormState,
     string? Placement,
     int? PlacementTop,
@@ -363,6 +378,7 @@ internal sealed record TaskFormControlDef(
     int? GridX,
     int? GridY,
     bool? Modifiable,
+    int? ModifiableExpressionId,
     bool? ModifyInQuery,
     bool? MultiLineEdit,
     bool? AllowCrInData,
@@ -397,6 +413,9 @@ internal sealed record TaskFormControlDef(
     bool? Sortable,
     string? DataColumn,
     int? DataExpressionId,
+    int? SelectProgramObj,
+    int? SelectProgramComponentId,
+    string? SelectMode,
     string? ToolTipText,
     int? ToolTipExpressionId,
     int? SourceTableObj,
@@ -485,6 +504,9 @@ internal sealed record TaskResourceColumnDef(
     bool? AllowNull,
     string? NullDisplayText,
     string? DefaultValue,
+    string? RaiseEventType,
+    int? RaiseEventInternalEventId,
+    int? RaiseEventKeyCombinationId,
     bool HasControlModelOverride,
     bool ClearsInheritedExpandEvent,
     int? DefinitionId,
@@ -561,6 +583,7 @@ internal sealed record TaskHandlerDef(
     IReadOnlyList<TaskRowActionDef> Actions,
     IReadOnlyList<TaskBlockDef> Blocks,
     IReadOnlyList<TaskEndBlockDef> EndBlocks,
+    bool IsRmCompatibleControlHandler,
     string? XmlTrace
 );
 
@@ -623,6 +646,7 @@ internal sealed record TaskStopDef(
 );
 internal sealed record TaskRowLogicDef(
     IReadOnlyList<TaskRowActionDef> Actions,
+    IReadOnlyList<TaskRaiseEventDef> Raises,
     IReadOnlyList<TaskBlockDef> Blocks,
     IReadOnlyList<TaskEndBlockDef> EndBlocks
 );
@@ -701,7 +725,8 @@ internal sealed record TaskRaiseEventDef(
     bool? WaitForCompletion,
     bool Disabled,
     IReadOnlyList<string> ArgumentExpressionIds,
-    IReadOnlyList<TaskArgumentDef> ArgumentDefs
+    IReadOnlyList<TaskArgumentDef> ArgumentDefs,
+    string? XmlTrace
 );
 
 internal sealed record TaskValidationDef(
@@ -1179,6 +1204,7 @@ internal sealed record ViewSemantic(
     IReadOnlyDictionary<int, IReadOnlyList<int>> TableChildIdsByTable,
     IReadOnlyList<int> RootControlIds,
     IReadOnlyDictionary<int, int> GroupBoxBindingByControlId,
+    IReadOnlyDictionary<int, (int TabControlId, int TabIndex)> TabBindingByControlId,
     IReadOnlyDictionary<int, IReadOnlyDictionary<int, int>> TableColumnStartXByTableId,
     IReadOnlyList<int> BindingExpressionIds,
     IReadOnlyList<int> FormTextExpressionIds,

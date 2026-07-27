@@ -20,7 +20,8 @@ internal static partial class ProjectGenerator
             }
         }
 
-        if (t.HandlersSemantic.Items.Count == 0)
+        var controlSelectPrograms = ResolveControlSelectPrograms(t, dataObjects, allTasks);
+        if (t.HandlersSemantic.Items.Count == 0 && controlSelectPrograms.Count == 0)
         {
             sb.AppendLine("    }");
             return;
@@ -170,8 +171,194 @@ internal static partial class ProjectGenerator
                 sb.AppendLine($"        // Raw: {Escape($"EventType={h.EventType}; Level={h.Level}; Type={h.Type}; XML={h.XmlTrace ?? "?"}")}");
             }
         }
+        EmitControlSelectProgramHandlers(sb, t, dataObjects, allTasks, controlSelectPrograms);
         sb.AppendLine("    }");
     }
+
+    private sealed record ControlSelectProgramBinding(
+        TaskFormControlDef Control,
+        TaskSemantic TargetTask,
+        string Reference,
+        string DataExpression);
+
+    private static IReadOnlyList<ControlSelectProgramBinding> ResolveControlSelectPrograms(
+        TaskSemantic task,
+        IReadOnlyList<DataObjectDef> dataObjects,
+        IReadOnlyList<TaskSemantic> allTasks)
+    {
+        if (task.Form?.Controls is null)
+            return Array.Empty<ControlSelectProgramBinding>();
+
+        var result = new List<ControlSelectProgramBinding>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var control in task.Form.Controls)
+        {
+            if (!control.SelectProgramObj.HasValue)
+                continue;
+
+            // A SelectProgram sem componente referencia um programa do projeto
+            // atual. Referencias de componentes externos exigem o tipo publico
+            // resolvido pelo repositorio e nao podem ser confundidas com um
+            // ordinal local com o mesmo numero.
+            if (control.SelectProgramComponentId.GetValueOrDefault() > 0)
+                continue;
+
+            var targetTask = allTasks.FirstOrDefault(candidate =>
+                                 !candidate.ParentOrdinal.HasValue &&
+                                 candidate.TopLevelProgramIndex == control.SelectProgramObj.Value);
+            if (targetTask is null)
+                continue;
+
+            var reference = !string.IsNullOrWhiteSpace(control.ControlName)
+                ? control.ControlName!
+                : !string.IsNullOrWhiteSpace(control.DataColumn)
+                    ? control.DataColumn!
+                    : "";
+            var dataExpression = ResolveControlDataExpression(control, task, allTasks, dataObjects);
+            if (string.IsNullOrWhiteSpace(reference) || string.IsNullOrWhiteSpace(dataExpression))
+                continue;
+
+            var duplicateKey = $"{reference}|{control.SelectProgramObj.Value}|{dataExpression}";
+            if (!seen.Add(duplicateKey) || HasExplicitExpandHandlerForControl(task, control, dataObjects, allTasks))
+                continue;
+
+            result.Add(new ControlSelectProgramBinding(control, targetTask, reference, dataExpression));
+        }
+
+        return result;
+    }
+
+    private static bool HasExplicitExpandHandlerForControl(
+        TaskSemantic task,
+        TaskFormControlDef control,
+        IReadOnlyList<DataObjectDef> dataObjects,
+        IReadOnlyList<TaskSemantic> allTasks)
+    {
+        foreach (var handler in task.HandlersSemantic.Items)
+        {
+            if (!string.Equals(handler.EventType, "I", StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(ResolveInternalHandlerCommand(handler, task), "Command.Expand", StringComparison.Ordinal))
+                continue;
+
+            if (DoesControlMatchHandlerReference(handler, control, task, allTasks, dataObjects))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static void EmitControlSelectProgramHandlers(
+        StringBuilder sb,
+        TaskSemantic task,
+        IReadOnlyList<DataObjectDef> dataObjects,
+        IReadOnlyList<TaskSemantic> allTasks,
+        IReadOnlyList<ControlSelectProgramBinding> bindings)
+    {
+        for (var i = 0; i < bindings.Count; i++)
+        {
+            var binding = bindings[i];
+            var handlerVar = $"hControlSelect{i + 1}";
+            var targetClass = ResolveTaskTypeReference(binding.TargetTask, allTasks);
+            // SelectProgram has a positional contract of its own: the value of
+            // the control is the first parameter of the selected program.
+            // Do not pass this through the heuristic call aligner, because a
+            // lookup with many optional parameters of the same XPA type can
+            // incorrectly move that value to a later compatible position.
+            var parameters = GetTaskParameters(binding.TargetTask);
+
+            sb.AppendLine($"        // SelectProgram do controle #{binding.Control.Id} (XML).");
+            sb.AppendLine($"        var {handlerVar} = Handlers.Add(Command.Expand, \"{Escape(binding.Reference)}\", HandlerScope.CurrentTaskOnly);");
+            sb.AppendLine($"        {handlerVar}.Invokes += e =>");
+            sb.AppendLine("        {");
+            if (parameters.Count == 0)
+            {
+                sb.AppendLine($"            new {targetClass}().Run();");
+            }
+            else
+            {
+                EmitSelectProgramRun(
+                    sb,
+                    task,
+                    binding,
+                    parameters[0],
+                    targetClass,
+                    i + 1);
+            }
+            sb.AppendLine("            e.Handled = true;");
+            sb.AppendLine("        };");
+        }
+    }
+
+    private static void EmitSelectProgramRun(
+        StringBuilder sb,
+        TaskSemantic currentTask,
+        ControlSelectProgramBinding binding,
+        (string ColumnMember, string ParameterType, string ParameterName, string ParameterDirection) parameter,
+        string targetClass,
+        int bindingIndex)
+    {
+        var sourceExpression = binding.DataExpression.Trim();
+        var actualType = ResolveRunArgumentExpectedType(currentTask, sourceExpression);
+        var expectedType = ExpectedTypeForParameterType(parameter.ParameterType);
+        var typesDiffer =
+            actualType.HasExpectation &&
+            expectedType.HasExpectation &&
+            !ExpectedTypesMatch(actualType, expectedType);
+        var preservesBinding = !IsInputParameterDirection(parameter.ParameterDirection);
+        var bridgeColumnType = ResolveSelectProgramBridgeColumnType(parameter.ParameterType);
+        var canWriteBack = IsSimpleIdentifierPath(sourceExpression);
+
+        if (!typesDiffer || !preservesBinding || string.IsNullOrWhiteSpace(bridgeColumnType) || !canWriteBack)
+        {
+            var argument = EmitCallArgumentForParameter(
+                sourceExpression,
+                parameter.ParameterType,
+                currentTask,
+                preserveBinding: preservesBinding && !typesDiffer);
+            sb.AppendLine($"            new {targetClass}().Run({argument});");
+            return;
+        }
+
+        // XPA VAR parameters are input/output bindings. When the selected
+        // program declares a different XPA scalar type, use a typed column as
+        // the bridge so the value can travel in both directions.
+        var bridgeName = $"__selectProgramValue{bindingIndex}";
+        var expectedReturnType = ResolveReturnTypeForExpectedContext(expectedType);
+        var actualReturnType = ResolveReturnTypeForExpectedContext(actualType);
+        var inputValue = EmitFromReliableTypeEvidence(
+            sourceExpression,
+            actualReturnType,
+            expectedReturnType,
+            "select-program-input");
+        var outputValue = EmitFromReliableTypeEvidence(
+            bridgeName,
+            expectedReturnType,
+            actualReturnType,
+            "select-program-output");
+        var writeBack = BuildReturnAssignmentExpression(
+            sourceExpression,
+            sourceExpression,
+            outputValue,
+            currentTask,
+            xmlTrace: null);
+
+        sb.AppendLine($"            var {bridgeName} = new {bridgeColumnType}();");
+        sb.AppendLine($"            {bridgeName}.Value = {inputValue};");
+        sb.AppendLine($"            new {targetClass}().Run({bridgeName});");
+        sb.AppendLine($"            {writeBack}");
+    }
+
+    private static string ResolveSelectProgramBridgeColumnType(string parameterType)
+        => NormalizeReturnTypeToken(parameterType) switch
+        {
+            "Text" => "TextColumn",
+            "Number" => "NumberColumn",
+            "Date" => "DateColumn",
+            "Time" => "TimeColumn",
+            "Bool" => "BoolColumn",
+            "byte[]" => "ByteArrayColumn",
+            _ => ""
+        };
 
     private static string ResolveAncestorCommandTarget(string commandName, TaskSemantic task, IReadOnlyList<TaskSemantic> allTasks)
     {

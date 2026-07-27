@@ -58,6 +58,7 @@ internal static class XpaParser
         public string XmlPath { get; set; } = "";
         public Dictionary<int, string> ModelById { get; } = new();
         public List<string> ModelsByOrder { get; } = new();
+        public Dictionary<string, ProjectManifestFieldModel> FieldModelsByPublicName { get; } = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<int, string> DataObjectById { get; } = new();
         public List<string> DataObjectsByOrder { get; } = new();
         public Dictionary<int, string> ProgramById { get; } = new();
@@ -79,6 +80,8 @@ internal static class XpaParser
         public ComponentMetadata? Metadata { get; init; }
         public Dictionary<int, int> ModelLocalToGlobal { get; } = new();
         public Dictionary<int, int> DataObjectLocalToGlobal { get; } = new();
+        public Dictionary<int, FieldModelDef> FieldModelByLocalIndex { get; } = new();
+        public Dictionary<string, FieldModelDef> FieldModelByPublicName { get; } = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<int, int> ProgramLocalTopLevelToGlobal { get; } = new();
         public Dictionary<string, int> ModelPublicToGlobal { get; } = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, int> DataObjectPublicToGlobal { get; } = new(StringComparer.OrdinalIgnoreCase);
@@ -422,6 +425,33 @@ internal static class XpaParser
                 metadata.RightsByOrder.Add(right);
         }
 
+        if (manifest.RightMembersByAlias.Count > 0)
+        {
+            foreach (var rightId in metadata.RightById.Keys.ToList())
+            {
+                var alias = metadata.RightById[rightId];
+                if (manifest.RightMembersByAlias.TryGetValue(alias, out var memberName) &&
+                    !string.IsNullOrWhiteSpace(memberName))
+                {
+                    metadata.RightById[rightId] = memberName;
+                }
+            }
+        }
+
+        foreach (var fieldModel in manifest.FieldModels.OrderBy(x => x.ObjectIndex))
+        {
+            if (fieldModel.ObjectIndex <= 0 || string.IsNullOrWhiteSpace(fieldModel.PublicName))
+                continue;
+
+            metadata.ModelById[fieldModel.ObjectIndex] = fieldModel.PublicName;
+            if (!metadata.ModelsByOrder.Any(existing =>
+                    string.Equals(existing, fieldModel.PublicName, StringComparison.OrdinalIgnoreCase)))
+            {
+                metadata.ModelsByOrder.Add(fieldModel.PublicName);
+            }
+            metadata.FieldModelsByPublicName[fieldModel.PublicName] = fieldModel;
+        }
+
         foreach (var functionName in manifest.Functions.Keys.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
         {
             if (!metadata.FunctionsByOrder.Any(existing => string.Equals(existing, functionName, StringComparison.OrdinalIgnoreCase)))
@@ -745,6 +775,24 @@ internal static class XpaParser
 
             var model = propertyList.Element("Model");
             var picture = propertyList.Element("Picture");
+            var inputRange = XmlHelpers.NormalizeText(
+                propertyList.Element("Range")?.Attribute("valUnicode")?.Value
+                ?? propertyList.Element("Range")?.Attribute("val")?.Value);
+            var nullDisplayText = XmlHelpers.NormalizeText(
+                propertyList.Element("NullDisplay")?.Attribute("valUnicode")?.Value
+                ?? propertyList.Element("NullDisplay")?.Attribute("val")?.Value);
+            var defaultValue = XmlHelpers.NormalizeText(
+                propertyList.Element("DefaultValue")?.Attribute("valUnicode")?.Value
+                ?? propertyList.Element("DefaultValue")?.Attribute("val")?.Value);
+            var inheritedRaise = propertyList.Element("GuiDisplay")?.Element("PropertyList")?.Element("RaiseEvent");
+            var raiseEventType = inheritedRaise?.Element("Event")?.Element("EventType")?.Attribute("val")?.Value
+                                 ?? inheritedRaise?.Element("EventType")?.Attribute("val")?.Value;
+            var raiseEventInternalEventId = ParseInt(
+                inheritedRaise?.Element("Event")?.Element("InternalEventID")?.Attribute("val")?.Value
+                ?? inheritedRaise?.Element("InternalEventID")?.Attribute("val")?.Value);
+            var raiseEventKeyCombinationId = ParseInt(
+                inheritedRaise?.Element("Event")?.Element("KeyCombinationID")?.Attribute("val")?.Value
+                ?? inheritedRaise?.Element("KeyCombinationID")?.Attribute("val")?.Value);
             var selectProgram = propertyList.Element("SelectProgram");
             var dec = propertyList.Element("_Dec")?.Attribute("val")?.Value;
             var whole = propertyList.Element("_Whole")?.Attribute("val")?.Value;
@@ -765,11 +813,18 @@ internal static class XpaParser
             if (!string.IsNullOrWhiteSpace(publicName))
                 ctx.ModelPublicToGlobal[publicName] = modelOrdinal;
 
-            parsed.FieldModels.Add(new FieldModelDef(
+            var fieldModel = new FieldModelDef(
                 Ordinal: modelOrdinal,
+                LocalObjectIndex: localIndex,
                 Name: XmlHelpers.Attr(obj, "name"),
                 AttrObj: XmlHelpers.Attr(model, "attr_obj"),
                 Picture: XmlHelpers.Attr(picture ?? new XElement("x"), "valUnicode"),
+                InputRange: inputRange,
+                NullDisplayText: nullDisplayText,
+                DefaultValue: defaultValue,
+                RaiseEventType: raiseEventType,
+                RaiseEventInternalEventId: raiseEventInternalEventId,
+                RaiseEventKeyCombinationId: raiseEventKeyCombinationId,
                 Dec: dec,
                 Whole: whole,
                 Negative: negative,
@@ -780,8 +835,84 @@ internal static class XpaParser
                 SelectProgramObj: selectProgram?.Attribute("obj")?.Value,
                 PublicName: publicName,
                 SourceComponent: ctx.IsMain ? null : ctx.Name
-            ));
+            );
+            parsed.FieldModels.Add(fieldModel);
+            ctx.FieldModelByLocalIndex[localIndex] = fieldModel;
+            if (!string.IsNullOrWhiteSpace(publicName))
+                ctx.FieldModelByPublicName[publicName] = fieldModel;
         }
+    }
+
+    private sealed record InheritedFieldModelProperties(
+        string? Picture,
+        string? InputRange,
+        string? NullDisplayText,
+        string? DefaultValue,
+        string? RaiseEventType,
+        int? RaiseEventInternalEventId,
+        int? RaiseEventKeyCombinationId);
+
+    private static InheritedFieldModelProperties? ResolveInheritedFieldModelProperties(
+        ParseContext current,
+        IReadOnlyList<ParseContext> contexts,
+        XElement? model)
+    {
+        if (model is null ||
+            !int.TryParse(model.Attribute("obj")?.Value, out var objectIndex) ||
+            objectIndex <= 0)
+        {
+            return null;
+        }
+
+        var componentId = ParseInt(model.Attribute("comp")?.Value);
+        var target = !componentId.HasValue ||
+                     componentId.Value == 0 ||
+                     componentId.Value == current.ComponentId
+            ? current
+            : contexts.FirstOrDefault(x => x.ComponentId == componentId.Value);
+        if (target is null)
+            return null;
+
+        FieldModelDef? parsedModel = null;
+        if (ReferenceEquals(target, current))
+        {
+            target.FieldModelByLocalIndex.TryGetValue(objectIndex, out parsedModel);
+        }
+        else if (target.Metadata is not null)
+        {
+            var publicName = ResolvePublicName(
+                target.Metadata,
+                objectIndex,
+                target.Metadata.ModelById,
+                target.Metadata.ModelsByOrder);
+            if (!string.IsNullOrWhiteSpace(publicName))
+            {
+                target.FieldModelByPublicName.TryGetValue(publicName, out parsedModel);
+                if (parsedModel is null &&
+                    target.Metadata.FieldModelsByPublicName.TryGetValue(publicName, out var manifestModel))
+                {
+                    return new InheritedFieldModelProperties(
+                        manifestModel.Picture,
+                        manifestModel.InputRange,
+                        manifestModel.NullDisplayText,
+                        manifestModel.DefaultValue,
+                        manifestModel.RaiseEventType,
+                        manifestModel.RaiseEventInternalEventId,
+                        manifestModel.RaiseEventKeyCombinationId);
+                }
+            }
+        }
+
+        return parsedModel is null
+            ? null
+            : new InheritedFieldModelProperties(
+                parsedModel.Picture,
+                parsedModel.InputRange,
+                parsedModel.NullDisplayText,
+                parsedModel.DefaultValue,
+                parsedModel.RaiseEventType,
+                parsedModel.RaiseEventInternalEventId,
+                parsedModel.RaiseEventKeyCombinationId);
     }
 
     private static void ParseControlButtonModels(XDocument doc, ParsedXpa parsed, ref int controlButtonObj)
@@ -905,7 +1036,8 @@ internal static class XpaParser
                         Translate: c.Translate,
                         DbColumnName: c.DbColumnName,
                         DbType: c.DbType,
-                        ModelRefObj: c.ModelRefObj
+                        ModelRefObj: c.ModelRefObj,
+                        InputRange: c.InputRange
                     )).ToList(),
                     Indexes: item.Indexes.Select(i => new DataIndexDef(
                         Id: i.Id,
@@ -942,6 +1074,7 @@ internal static class XpaParser
             TouchKnownXmlAttributes(plist);
             var model = plist.Element("Model");
             var picture = plist.Element("Picture");
+            var range = plist.Element("Range");
             var dbColName = plist.Element("DbColumnName");
             var dbType = plist.Element("Type");
             var fieldPhysical = plist.Element("_FieldPhysical");
@@ -963,7 +1096,10 @@ internal static class XpaParser
                 Translate: fieldPhysical?.Attribute("translate")?.Value,
                 DbColumnName: dbColName?.Attribute("val")?.Value,
                 DbType: dbType?.Attribute("val")?.Value,
-                ModelRefObj: ResolveModelRef(ctx, null, model)
+                ModelRefObj: ResolveModelRef(ctx, null, model),
+                InputRange: XmlHelpers.NormalizeText(
+                    range?.Attribute("valUnicode")?.Value
+                    ?? range?.Attribute("val")?.Value)
             ));
         }
 
@@ -1457,6 +1593,7 @@ internal static class XpaParser
             var plist = c.Element("PropertyList");
             var model = plist?.Element("Model");
             var picture = plist?.Element("Picture");
+            var inheritedModel = ResolveInheritedFieldModelProperties(ctx, contexts, model);
             var nullAllowedEl = plist?.Element("NullAllowed");
             bool? allowNull = null;
             if (nullAllowedEl is not null)
@@ -1464,13 +1601,40 @@ internal static class XpaParser
                 var nullAllowedVal = nullAllowedEl.Attribute("val")?.Value;
                 allowNull = string.Equals(nullAllowedVal, "Y", StringComparison.OrdinalIgnoreCase);
             }
-            var nullDisplayText = XmlHelpers.NormalizeText(
-                plist?.Element("NullDisplay")?.Attribute("valUnicode")?.Value
-                ?? plist?.Element("NullDisplay")?.Attribute("val")?.Value);
-            var defaultValue = plist?.Element("DefaultValue")?.Attribute("val")?.Value;
-            var inputRange = XmlHelpers.NormalizeText(
-                plist?.Element("Range")?.Attribute("valUnicode")?.Value
-                ?? plist?.Element("Range")?.Attribute("val")?.Value);
+            var nullDisplayElement = plist?.Element("NullDisplay");
+            var nullDisplayText = nullDisplayElement is null
+                ? inheritedModel?.NullDisplayText
+                : XmlHelpers.NormalizeText(
+                    nullDisplayElement.Attribute("valUnicode")?.Value
+                    ?? nullDisplayElement.Attribute("val")?.Value);
+            var defaultValueElement = plist?.Element("DefaultValue");
+            var defaultValue = defaultValueElement is null
+                ? inheritedModel?.DefaultValue
+                : XmlHelpers.NormalizeText(
+                    defaultValueElement.Attribute("valUnicode")?.Value
+                    ?? defaultValueElement.Attribute("val")?.Value);
+            var rangeElement = plist?.Element("Range");
+            var inputRange = rangeElement is null
+                ? inheritedModel?.InputRange
+                : XmlHelpers.NormalizeText(
+                    rangeElement.Attribute("valUnicode")?.Value
+                    ?? rangeElement.Attribute("val")?.Value);
+            var guiDisplay = plist?.Element("GuiDisplay");
+            var resourceRaise = guiDisplay?.Element("PropertyList")?.Element("RaiseEvent");
+            var raiseEventType = guiDisplay is null
+                ? inheritedModel?.RaiseEventType
+                : resourceRaise?.Element("Event")?.Element("EventType")?.Attribute("val")?.Value
+                  ?? resourceRaise?.Element("EventType")?.Attribute("val")?.Value;
+            var raiseEventInternalEventId = guiDisplay is null
+                ? inheritedModel?.RaiseEventInternalEventId
+                : ParseInt(
+                    resourceRaise?.Element("Event")?.Element("InternalEventID")?.Attribute("val")?.Value
+                    ?? resourceRaise?.Element("InternalEventID")?.Attribute("val")?.Value);
+            var raiseEventKeyCombinationId = guiDisplay is null
+                ? inheritedModel?.RaiseEventKeyCombinationId
+                : ParseInt(
+                    resourceRaise?.Element("Event")?.Element("KeyCombinationID")?.Attribute("val")?.Value
+                    ?? resourceRaise?.Element("KeyCombinationID")?.Attribute("val")?.Value);
             var definitionId = ParseInt(plist?.Element("Definition")?.Attribute("val")?.Value);
             var selectProgram = plist?.Element("SelectProgram");
             var cellModel = plist?.Element("CellModel");
@@ -1499,11 +1663,17 @@ internal static class XpaParser
                 AttrObj: XmlHelpers.Attr(model ?? new XElement("x"), "attr_obj"),
                 ModelRefObj: ResolveModelRef(ctx, contexts, model),
                 ObjectType: XmlHelpers.Attr(plist?.Element("ObjectType") ?? new XElement("x"), "val"),
-                Picture: XmlHelpers.Attr(picture ?? new XElement("x"), "valUnicode"),
+                Picture: XmlHelpers.NormalizeText(
+                    picture?.Attribute("valUnicode")?.Value
+                    ?? picture?.Attribute("val")?.Value
+                    ?? inheritedModel?.Picture),
                 InputRange: inputRange,
                 AllowNull: allowNull,
                 NullDisplayText: nullDisplayText,
                 DefaultValue: defaultValue,
+                RaiseEventType: raiseEventType,
+                RaiseEventInternalEventId: raiseEventInternalEventId,
+                RaiseEventKeyCombinationId: raiseEventKeyCombinationId,
                 HasControlModelOverride: hasControlModelOverride,
                 ClearsInheritedExpandEvent: clearsInheritedExpandEvent,
                 DefinitionId: definitionId,
@@ -1599,6 +1769,7 @@ internal static class XpaParser
             var horizontalFactor = ParseInt(plist?.Element("HorizontalFactor")?.Attribute("val")?.Value);
             var windowType = XmlHelpers.Attr(plist?.Element("WindowType") ?? new XElement("x"), "val");
             var startupMode = XmlHelpers.Attr(plist?.Element("StartupMode") ?? new XElement("x"), "val");
+            var startupPosition = XmlHelpers.Attr(plist?.Element("StartupPosition") ?? new XElement("x"), "val");
             var persistentFormState = XmlHelpers.Attr(plist?.Element("PersistentFormState") ?? new XElement("x"), "val");
             var placement = plist?.Element("Placement");
             var placementValue = XmlHelpers.Attr(placement ?? new XElement("x"), "val");
@@ -1705,7 +1876,10 @@ internal static class XpaParser
                     ?? cp.Element("ItemsList")?.Attribute("val")?.Value);
                 var gridX = ParseInt(cp.Element("GridX")?.Attribute("val")?.Value);
                 var gridY = ParseInt(cp.Element("GridY")?.Attribute("val")?.Value);
-                var modifiable = ParseBool(cp.Element("Modifiable")?.Attribute("val")?.Value) ?? (cp.Element("Modifiable") is not null ? false : null);
+                var modifiableElement = cp.Element("Modifiable");
+                var modifiableExpressionId = ParseInt(modifiableElement?.Attribute("Exp")?.Value);
+                var modifiable = ParseBool(modifiableElement?.Attribute("val")?.Value)
+                                 ?? (modifiableElement is not null && !modifiableExpressionId.HasValue ? false : null);
                 var modifyInQuery = ParseBool(cp.Element("ModifyInQuery")?.Attribute("val")?.Value);
                 var multiLineEdit = ParseBool(cp.Element("MultiLineEdit")?.Attribute("val")?.Value) ?? ParseBool(cp.Element("MultiLine")?.Attribute("val")?.Value);
                 var allowCrInData = ParseBool(cp.Element("AllowCRInData")?.Attribute("val")?.Value);
@@ -1745,6 +1919,10 @@ internal static class XpaParser
                 var data = cp.Element("Data");
                 var dataColumn = data?.Attribute("Column")?.Value;
                 var dataExp = ParseInt(data?.Attribute("Exp")?.Value);
+                var selectProgram = cp.Element("SelectProgram");
+                var selectProgramObj = ParseInt(selectProgram?.Attribute("obj")?.Value);
+                var selectProgramComponentId = ParseInt(selectProgram?.Attribute("comp")?.Value);
+                var selectMode = cp.Element("SelectMode")?.Attribute("val")?.Value;
                 var toolTipNode = cp.Element("ToolTip") ?? cp.Element("Tooltip");
                 var toolTipText = XmlHelpers.NormalizeText(
                     toolTipNode?.Attribute("valUnicode")?.Value
@@ -1851,6 +2029,7 @@ internal static class XpaParser
                     GridX: gridX,
                     GridY: gridY,
                     Modifiable: modifiable,
+                    ModifiableExpressionId: modifiableExpressionId,
                     ModifyInQuery: modifyInQuery,
                     MultiLineEdit: multiLineEdit,
                     AllowCrInData: allowCrInData,
@@ -1885,6 +2064,9 @@ internal static class XpaParser
                     Sortable: sortable,
                     DataColumn: dataColumn,
                     DataExpressionId: dataExp,
+                    SelectProgramObj: selectProgramObj,
+                    SelectProgramComponentId: selectProgramComponentId,
+                    SelectMode: string.IsNullOrWhiteSpace(selectMode) ? null : selectMode,
                     ToolTipText: toolTipText,
                     ToolTipExpressionId: toolTipExp,
                     SourceTableObj: sourceTableObj,
@@ -1925,7 +2107,7 @@ internal static class XpaParser
                 ));
             }
 
-            var form = new TaskFormDef(width, height, formX, formY, formName, formText, formTextExpressionId, xExpressionId, yExpressionId, formColorSchemeId, formFontSchemeId, pulldownMenuObj, systemMenu, minimizeButton, maximizeButton, formUnits, verticalFactor, horizontalFactor, windowType, startupMode, persistentFormState, placementValue, placementTop, placementBottom, placementLeft, placementRight, titleBar, controls, mergeFileName, mergeFileNameExpressionId, mergeTags);
+            var form = new TaskFormDef(width, height, formX, formY, formName, formText, formTextExpressionId, xExpressionId, yExpressionId, formColorSchemeId, formFontSchemeId, pulldownMenuObj, systemMenu, minimizeButton, maximizeButton, formUnits, verticalFactor, horizontalFactor, windowType, startupMode, startupPosition, persistentFormState, placementValue, placementTop, placementBottom, placementLeft, placementRight, titleBar, controls, mergeFileName, mergeFileNameExpressionId, mergeTags);
             var classIndex = ParseInt(formEntry.Attribute("CLSS")?.Value);
             result.Add(new TaskFormEntryDef(i + 1, classIndex, formModel, form));
         }
@@ -2234,6 +2416,16 @@ internal static class XpaParser
             return $"Task=\"{taskDescription}\" LogicUnit[{luIndex}]/{statementNode.Name.LocalName} LogicLine[{lineIndex}] ({luPart}, {llPart}, {stPart})";
         }
 
+        static int? LogicLineIndexFromTrace(string? trace)
+        {
+            if (string.IsNullOrWhiteSpace(trace))
+                return null;
+            var match = Regex.Match(trace, @"\bLogicLine\[(?<index>\d+)\]");
+            return match.Success && int.TryParse(match.Groups["index"].Value, out var index)
+                ? index
+                : null;
+        }
+
         var logicUnits = (task.Element("TaskLogic")?.Elements("LogicUnit") ?? Enumerable.Empty<XElement>()).ToList();
         for (var luIdx = 0; luIdx < logicUnits.Count; luIdx++)
         {
@@ -2243,7 +2435,17 @@ internal static class XpaParser
             var level = XmlHelpers.Attr(lu.Element("Level") ?? new XElement("x"), "val");
             var type = XmlHelpers.Attr(lu.Element("Type") ?? new XElement("x"), "val");
             var scope = XmlHelpers.Attr(lu.Element("Scope") ?? new XElement("x"), "val");
-            var luConditionExp = lu.Element("Condition")?.Attribute("Exp")?.Value;
+            var luConditionNode = lu.Element("Condition");
+            var luConditionExp = luConditionNode?.Attribute("Exp")?.Value;
+            if (string.IsNullOrWhiteSpace(luConditionExp) &&
+                int.TryParse(luConditionNode?.Attribute("val")?.Value, out var encodedLuCondition) &&
+                encodedLuCondition < 0)
+            {
+                // XPA stores a LogicUnit condition reference as a negative value
+                // (for example val="-16" means expression 16). Values such as
+                // 89 are boolean constants and must not be treated as ordinals.
+                luConditionExp = Math.Abs(encodedLuCondition).ToString();
+            }
             int? luConditionExpressionId = null;
             if (int.TryParse(luConditionExp, out var luCondRaw))
             {
@@ -2298,6 +2500,20 @@ internal static class XpaParser
                 string.Equals(level, "V", StringComparison.OrdinalIgnoreCase) ||
                 (string.Equals(level, "H", StringComparison.OrdinalIgnoreCase) &&
                  string.Equals(type, "U", StringComparison.OrdinalIgnoreCase));
+            var isRmCompatible =
+                string.Equals(level, "R", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(type, "M", StringComparison.OrdinalIgnoreCase);
+            // In an RM Compatible unit the statements that follow each Select
+            // belong to that control's old Record Main interaction.  They are
+            // collected here and split into individual control handlers after
+            // the complete unit has been parsed.
+            var collectHandlerActions = isHandlerLogic || isRmCompatible;
+            var rmCompatibleSelects = new List<(
+                TaskLogicSelectDef Select,
+                int LineIndex,
+                int? ControlIsn,
+                string Modifier,
+                string Direction)>();
             var isFunctionLogic = string.Equals(level, "F", StringComparison.OrdinalIgnoreCase);
             if (level == "T" && type == "P")
                 hasStartLogicUnit = true;
@@ -2381,7 +2597,14 @@ internal static class XpaParser
                             sourceEnabled,
                             sourceConditionExpressionId,
                             xmlTrace));
-                        if (idx.HasValue)
+                        // Only the main DataView source defines the controller's
+                        // primary entity. Type="D" entries delimit/close resource
+                        // sources and must not replace the Information/Type="M"
+                        // source with the last resource in the task.
+                        var definesMainDataViewSource =
+                            string.IsNullOrWhiteSpace(dataViewSourceType) ||
+                            string.Equals(dataViewSourceType, "M", StringComparison.OrdinalIgnoreCase);
+                        if (definesMainDataViewSource && idx.HasValue)
                         {
                             if (idx.Value > 0 && idx.Value <= resourceDataObjects.Count)
                             {
@@ -2459,7 +2682,10 @@ internal static class XpaParser
                                 .Where(v => v.HasValue)
                                 .Select(v => v!.Value)
                                 .ToList()) ?? new List<int>();
-                            selects.Add(new TaskLogicSelectDef(
+                            var selectModifier = XmlHelpers.Attr(first.Element("Modifier") ?? new XElement("x"), "val");
+                            var selectDirection = XmlHelpers.Attr(first.Element("Direction") ?? new XElement("x"), "val");
+                            var controlIsn = ParseInt(first.Element("_DitIndexForToolkit")?.Attribute("val")?.Value);
+                            var selectDef = new TaskLogicSelectDef(
                                 Name: name,
                                 ColumnId: resolvedColumnId,
                                 Type: typeVal,
@@ -2484,7 +2710,10 @@ internal static class XpaParser
                                 InternalCompareInfo: internalCompareInfo,
                                 InternalDitInfo: internalDitInfo,
                                 XmlTrace: xmlTrace
-                            ));
+                            );
+                            selects.Add(selectDef);
+                            if (isRmCompatible)
+                                rmCompatibleSelects.Add((selectDef, lineIndex, controlIsn, selectModifier, selectDirection));
                             if (string.Equals(level, "F", StringComparison.OrdinalIgnoreCase) && isParam)
                             {
                                 functionParameters.Add(new TaskFunctionParameterDef(
@@ -2569,7 +2798,8 @@ internal static class XpaParser
                                 rowActions.Add(new TaskRowActionDef("Call", call, null, null, null, null, null, conditionExpId, lineConditionLiteral, CurrentLoopConditionExpressionId(), xmlTrace, null));
                             if (isFunctionLogic && (modifier == "B" || modifier == "S" || string.IsNullOrWhiteSpace(modifier)))
                                 functionActions.Add(new TaskRowActionDef("Call", call, null, null, null, null, null, conditionExpId, lineConditionLiteral, CurrentLoopConditionExpressionId(), xmlTrace, null));
-                            if (isHandlerLogic && (modifier == "B" || modifier == "S" || string.IsNullOrWhiteSpace(modifier)))
+                            if ((isHandlerLogic && (modifier == "B" || modifier == "S" || string.IsNullOrWhiteSpace(modifier))) ||
+                                isRmCompatible)
                                 handlerActions.Add(new TaskRowActionDef("Call", call, null, null, null, null, null, conditionExpId, lineConditionLiteral, CurrentLoopConditionExpressionId(), xmlTrace, null));
                         break;
                     }
@@ -2596,7 +2826,8 @@ internal static class XpaParser
                         }
                         if (isFunctionLogic && (modifier == "B" || modifier == "S" || string.IsNullOrWhiteSpace(modifier)))
                             functionActions.Add(new TaskRowActionDef("Update", null, update, null, null, null, null, effectiveCondition, lineConditionLiteral, CurrentLoopConditionExpressionId(), xmlTrace, null));
-                        if (isHandlerLogic && (modifier == "B" || modifier == "S" || string.IsNullOrWhiteSpace(modifier)))
+                        if ((isHandlerLogic && (modifier == "B" || modifier == "S" || string.IsNullOrWhiteSpace(modifier))) ||
+                            isRmCompatible)
                             handlerActions.Add(new TaskRowActionDef("Update", null, update, null, null, null, null, effectiveCondition, lineConditionLiteral, CurrentLoopConditionExpressionId(), xmlTrace, null));
                         break;
                     }
@@ -2626,10 +2857,9 @@ internal static class XpaParser
                             rowActions.Add(new TaskRowActionDef("Stop", null, null, stop, null, null, null, condExpId, lineConditionLiteral, CurrentLoopConditionExpressionId(), xmlTrace, null));
                         if (isFunctionLogic && (modifier == "B" || modifier == "S" || string.IsNullOrWhiteSpace(modifier)))
                             functionActions.Add(new TaskRowActionDef("Stop", null, null, stop, null, null, null, condExpId, lineConditionLiteral, CurrentLoopConditionExpressionId(), xmlTrace, null));
-                        if (isHandlerLogic && (modifier == "B" || modifier == "S" || string.IsNullOrWhiteSpace(modifier)))
+                        if ((isHandlerLogic && (modifier == "B" || modifier == "S" || string.IsNullOrWhiteSpace(modifier))) ||
+                            isRmCompatible)
                             handlerActions.Add(new TaskRowActionDef("Stop", null, null, stop, null, null, null, condExpId, lineConditionLiteral, CurrentLoopConditionExpressionId(), xmlTrace, null));
-                        if (level == "R" && type == "M")
-                            flowValidations.Add(new TaskValidationDef(condExpId, expId));
                         break;
                     }
                     case "Evaluate":
@@ -2648,7 +2878,9 @@ internal static class XpaParser
                                     rowActions.Add(new TaskRowActionDef("Evaluate", null, null, null, null, exprId, returnValue, effectiveConditionExpId, lineConditionLiteral, CurrentLoopConditionExpressionId(), xmlTrace, null));
                                 if (exprId.HasValue && isFunctionLogic && (modifier == "B" || modifier == "S" || string.IsNullOrWhiteSpace(modifier)))
                                     functionActions.Add(new TaskRowActionDef("Evaluate", null, null, null, null, exprId, returnValue, effectiveConditionExpId, lineConditionLiteral, CurrentLoopConditionExpressionId(), xmlTrace, null));
-                                if (exprId.HasValue && isHandlerLogic && (modifier == "B" || modifier == "S" || string.IsNullOrWhiteSpace(modifier)))
+                                if (exprId.HasValue &&
+                                    ((isHandlerLogic && (modifier == "B" || modifier == "S" || string.IsNullOrWhiteSpace(modifier))) ||
+                                     isRmCompatible))
                                     handlerActions.Add(new TaskRowActionDef("Evaluate", null, null, null, null, exprId, returnValue, effectiveConditionExpId, lineConditionLiteral, CurrentLoopConditionExpressionId(), xmlTrace, null));
                             }
                             else
@@ -2657,7 +2889,9 @@ internal static class XpaParser
                                     rowActions.Add(new TaskRowActionDef("Evaluate", null, null, null, null, exprId, null, effectiveConditionExpId, lineConditionLiteral, CurrentLoopConditionExpressionId(), xmlTrace, null));
                                 if (exprId.HasValue && isFunctionLogic && (modifier == "B" || modifier == "S" || string.IsNullOrWhiteSpace(modifier)))
                                     functionActions.Add(new TaskRowActionDef("Evaluate", null, null, null, null, exprId, null, effectiveConditionExpId, lineConditionLiteral, CurrentLoopConditionExpressionId(), xmlTrace, null));
-                                if (exprId.HasValue && isHandlerLogic && (modifier == "B" || modifier == "S" || string.IsNullOrWhiteSpace(modifier)))
+                                if (exprId.HasValue &&
+                                    ((isHandlerLogic && (modifier == "B" || modifier == "S" || string.IsNullOrWhiteSpace(modifier))) ||
+                                     isRmCompatible))
                                     handlerActions.Add(new TaskRowActionDef("Evaluate", null, null, null, null, exprId, null, effectiveConditionExpId, lineConditionLiteral, CurrentLoopConditionExpressionId(), xmlTrace, null));
                             }
                         break;
@@ -2748,7 +2982,9 @@ internal static class XpaParser
                             rowActions.Add(new TaskRowActionDef("Invoke", null, null, null, invoke, null, null, invokeCondExpId, lineConditionLiteral, CurrentLoopConditionExpressionId(), xmlTrace, null));
                         if (lineConditionLiteral != false && isFunctionLogic && (modifier == "B" || modifier == "S" || string.IsNullOrWhiteSpace(modifier)))
                             functionActions.Add(new TaskRowActionDef("Invoke", null, null, null, invoke, null, null, invokeCondExpId, lineConditionLiteral, CurrentLoopConditionExpressionId(), xmlTrace, null));
-                        if (lineConditionLiteral != false && isHandlerLogic && (modifier == "B" || modifier == "S" || string.IsNullOrWhiteSpace(modifier)))
+                        if (lineConditionLiteral != false &&
+                            ((isHandlerLogic && (modifier == "B" || modifier == "S" || string.IsNullOrWhiteSpace(modifier))) ||
+                             isRmCompatible))
                             handlerActions.Add(new TaskRowActionDef("Invoke", null, null, null, invoke, null, null, invokeCondExpId, lineConditionLiteral, CurrentLoopConditionExpressionId(), xmlTrace, null));
                         break;
                     }
@@ -2778,8 +3014,9 @@ internal static class XpaParser
                             {
                                 functionActions.Add(new TaskRowActionDef("Remark", null, null, null, null, null, null, activeBlockConditionExpId, null, CurrentLoopConditionExpressionId(), xmlTrace, text));
                             }
-                            if (isHandlerLogic &&
-                                (modifier == "B" || modifier == "S" || string.IsNullOrWhiteSpace(modifier)))
+                            if ((isHandlerLogic &&
+                                 (modifier == "B" || modifier == "S" || string.IsNullOrWhiteSpace(modifier))) ||
+                                isRmCompatible)
                             {
                                 handlerActions.Add(new TaskRowActionDef("Remark", null, null, null, null, null, null, activeBlockConditionExpId, null, CurrentLoopConditionExpressionId(), xmlTrace, text));
                             }
@@ -2789,16 +3026,18 @@ internal static class XpaParser
                     case "BLOCK":
                     {
                         var blockType = XmlHelpers.Attr(first, "Type");
-                        var blockConditionExpId = ParseInt(first.Element("Condition")?.Attribute("Exp")?.Value);
+                        var blockCondition = first.Element("Condition");
+                        var blockConditionExpId = ParseInt(blockCondition?.Attribute("Exp")?.Value);
+                        var blockConditionLiteral = ParseBool(blockCondition?.Attribute("val")?.Value);
                         var endBlockLine = ParseInt(first.Attribute("EndBlock")?.Value);
                         var endBlockSegmentLine = ParseInt(first.Attribute("EndBlockSegment")?.Value);
-                        var blockDef = new TaskBlockDef(blockType, blockConditionExpId, lineIndex, endBlockLine, endBlockSegmentLine, xmlTrace);
+                        var blockDef = new TaskBlockDef(blockType, blockConditionExpId, blockConditionLiteral, lineIndex, endBlockLine, endBlockSegmentLine, xmlTrace);
                         blocks.Add(blockDef);
                         if ((level == "R" || level == "T") && (type == "P" || type == "S"))
                             rowBlocks.Add(blockDef);
                         if (isFunctionLogic)
                             functionBlocks.Add(blockDef);
-                        if (isHandlerLogic)
+                        if (collectHandlerActions)
                             handlerBlocks.Add(blockDef);
                         if (string.Equals(blockType, "E", StringComparison.OrdinalIgnoreCase))
                         {
@@ -2840,7 +3079,7 @@ internal static class XpaParser
                             rowEndBlocks.Add(endBlockDef);
                         if (isFunctionLogic)
                             functionEndBlocks.Add(endBlockDef);
-                        if (isHandlerLogic)
+                        if (collectHandlerActions)
                             handlerEndBlocks.Add(endBlockDef);
                         if (blockStack.Count > 0)
                         {
@@ -2886,7 +3125,7 @@ internal static class XpaParser
                                 argExprIds.Add("EXP:" + expId.Value);
                         }
                         var raiseArgumentDefs = ParseArgumentDefs(raiseArgsRoot);
-                        var raise = new TaskRaiseEventDef(raiseType, raiseInternalEventId, raiseKeyCombinationId, raiseParent, raiseComp, raiseObj, destinationContext, conditionExpId, modifier, direction, waitForCompletion, disabled, argExprIds, raiseArgumentDefs);
+                        var raise = new TaskRaiseEventDef(raiseType, raiseInternalEventId, raiseKeyCombinationId, raiseParent, raiseComp, raiseObj, destinationContext, conditionExpId, modifier, direction, waitForCompletion, disabled, argExprIds, raiseArgumentDefs, xmlTrace);
                         raises.Add(raise);
                         var allowedInRow = modifier == "B" || modifier == "S" || string.IsNullOrWhiteSpace(modifier);
                         if (allowedInRow && level == "T" && type == "P")
@@ -2910,7 +3149,7 @@ internal static class XpaParser
                         var direction = XmlHelpers.Attr(first.Element("Direction") ?? new XElement("x"), "val");
                         var formIo = new TaskFormIoDef(level, type, reference, op, formEntryIndex, page, delimiter, delimiterChar, ioDeviceIndex, conditionExpId, CurrentLoopConditionExpressionId(), modifier, direction, ioDeviceParent, xmlTrace);
                         formIos.Add(formIo);
-                        if (isHandlerLogic)
+                        if (collectHandlerActions)
                             handlerFormIos.Add(formIo);
                         break;
                     }
@@ -2926,14 +3165,232 @@ internal static class XpaParser
                 }
             }
 
-            if (level == "R" && type == "P" && rowActions.Count > 0)
-                rowLogics.Add(new TaskRowLogicDef(rowActions, rowBlocks.ToList(), rowEndBlocks.ToList()));
-            if (level == "R" && type == "S" && rowActions.Count > 0)
-                savingRowLogics.Add(new TaskRowLogicDef(rowActions, rowBlocks.ToList(), rowEndBlocks.ToList()));
-            if (level == "T" && type == "P" && rowActions.Count > 0)
-                startLogics.Add(new TaskRowLogicDef(rowActions, rowBlocks.ToList(), rowEndBlocks.ToList()));
-            if (level == "T" && type == "S" && rowActions.Count > 0)
-                endLogics.Add(new TaskRowLogicDef(rowActions, rowBlocks.ToList(), rowEndBlocks.ToList()));
+            if (isRmCompatible)
+            {
+                var segmentedStopTraces = new HashSet<string>(StringComparer.Ordinal);
+                var resourceColumnNames = (task.Element("Resource")?.Element("Columns")?.Elements("Column")
+                                           ?? Enumerable.Empty<XElement>())
+                    .Select(column => new
+                    {
+                        Id = ParseInt(column.Attribute("id")?.Value),
+                        Name = column.Attribute("name")?.Value
+                    })
+                    .Where(column => column.Id.HasValue && !string.IsNullOrWhiteSpace(column.Name))
+                    .ToDictionary(column => column.Id!.Value, column => column.Name!, EqualityComparer<int>.Default);
+                var formEntries = task.Elements("TaskForms")
+                    .SelectMany(forms => forms.Elements("FormEntry"))
+                    .ToList();
+
+                bool BelongsToRmSegment(string? trace, int startLine, int endLine)
+                {
+                    var actionLine = LogicLineIndexFromTrace(trace);
+                    return actionLine.HasValue &&
+                           actionLine.Value > startLine &&
+                           actionLine.Value < endLine;
+                }
+
+                for (var rmIndex = 0; rmIndex < rmCompatibleSelects.Count; rmIndex++)
+                {
+                    var rmSelect = rmCompatibleSelects[rmIndex];
+                    var nextSelectLine = rmIndex + 1 < rmCompatibleSelects.Count
+                        ? rmCompatibleSelects[rmIndex + 1].LineIndex
+                        : int.MaxValue;
+
+                    var segmentActions = handlerActions
+                        .Where(action => BelongsToRmSegment(action.XmlTrace, rmSelect.LineIndex, nextSelectLine))
+                        .ToList();
+                    var segmentRaises = raises
+                        .Where(raise => BelongsToRmSegment(raise.XmlTrace, rmSelect.LineIndex, nextSelectLine))
+                        .ToList();
+                    var segmentFormIos = handlerFormIos
+                        .Where(io => BelongsToRmSegment(io.XmlTrace, rmSelect.LineIndex, nextSelectLine))
+                        .ToList();
+                    if (segmentActions.Count == 0 &&
+                        segmentRaises.Count == 0 &&
+                        segmentFormIos.Count == 0)
+                    {
+                        continue;
+                    }
+
+                    var segmentCalls = calls
+                        .Where(call => BelongsToRmSegment(call.XmlTrace, rmSelect.LineIndex, nextSelectLine))
+                        .ToList();
+                    var segmentUpdates = updates
+                        .Where(update => BelongsToRmSegment(update.XmlTrace, rmSelect.LineIndex, nextSelectLine))
+                        .ToList();
+                    var segmentStops = stops
+                        .Where(stop => BelongsToRmSegment(stop.XmlTrace, rmSelect.LineIndex, nextSelectLine))
+                        .ToList();
+                    var segmentInvokes = invokes
+                        .Where(invoke => BelongsToRmSegment(invoke.XmlTrace, rmSelect.LineIndex, nextSelectLine))
+                        .ToList();
+                    var segmentRemarks = remarks
+                        .Where(remark => BelongsToRmSegment(remark.XmlTrace, rmSelect.LineIndex, nextSelectLine))
+                        .ToList();
+                    var segmentBlocks = handlerBlocks
+                        .Where(block => BelongsToRmSegment(block.XmlTrace, rmSelect.LineIndex, nextSelectLine))
+                        .ToList();
+                    var segmentEndBlocks = handlerEndBlocks
+                        .Where(block => BelongsToRmSegment(block.XmlTrace, rmSelect.LineIndex, nextSelectLine))
+                        .ToList();
+
+                    foreach (var stop in segmentStops)
+                    {
+                        if (!string.IsNullOrWhiteSpace(stop.XmlTrace))
+                            segmentedStopTraces.Add(stop.XmlTrace!);
+                    }
+
+                    XElement? matchedControl = null;
+                    if (rmSelect.ControlIsn is > 0)
+                    {
+                        var candidates = formEntries
+                            .Select(form => form.Elements("Control").ElementAtOrDefault(rmSelect.ControlIsn.Value - 1))
+                            .Where(control => control is not null)
+                            .Cast<XElement>()
+                            .ToList();
+                        resourceColumnNames.TryGetValue(rmSelect.Select.ColumnId, out var selectedResourceName);
+                        matchedControl = candidates.FirstOrDefault(control =>
+                        {
+                            var properties = control.Element("PropertyList");
+                            var controlName = properties?.Element("ControlName")?.Attribute("val")?.Value;
+                            var dataColumn = properties?.Element("Data")?.Attribute("Column")?.Value;
+                            return string.Equals(controlName, selectedResourceName, StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(controlName, rmSelect.Select.Name, StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(dataColumn, rmSelect.Select.ColumnId.ToString(), StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(dataColumn, rmSelect.Select.Name, StringComparison.OrdinalIgnoreCase);
+                        }) ?? candidates.FirstOrDefault();
+                    }
+
+                    var controlProperties = matchedControl?.Element("PropertyList");
+                    resourceColumnNames.TryGetValue(rmSelect.Select.ColumnId, out var resourceColumnName);
+                    var controlName = controlProperties?.Element("ControlName")?.Attribute("val")?.Value;
+                    var handlerReference = !string.IsNullOrWhiteSpace(controlName)
+                        ? controlName
+                        : !string.IsNullOrWhiteSpace(resourceColumnName)
+                            ? resourceColumnName
+                            : rmSelect.Select.Name;
+                    if (string.IsNullOrWhiteSpace(handlerReference))
+                    {
+                        gaps.Add(new TaskGapDef(
+                            Scope: "RMCompatible",
+                            Message: "RM Compatible segment has no resolvable control reference",
+                            XmlTrace: rmSelect.Select.XmlTrace));
+                        continue;
+                    }
+
+                    var controlModel = controlProperties?.Attribute("model")?.Value ?? string.Empty;
+                    var isPushButton = controlModel.Contains("PUSH_BUTTON", StringComparison.OrdinalIgnoreCase);
+                    var hasExpandAfter = logicLines
+                        .Skip(rmSelect.LineIndex)
+                        .Take(nextSelectLine == int.MaxValue
+                            ? logicLines.Count - rmSelect.LineIndex
+                            : Math.Max(0, nextSelectLine - rmSelect.LineIndex - 1))
+                        .Select(line => line.Elements().FirstOrDefault())
+                        .Where(statement => statement is not null)
+                        .Any(statement =>
+                            string.Equals(
+                                statement!.Element("Modifier")?.Attribute("val")?.Value,
+                                "J",
+                                StringComparison.OrdinalIgnoreCase) &&
+                            string.Equals(
+                                statement.Element("Direction")?.Attribute("val")?.Value,
+                                "C",
+                                StringComparison.OrdinalIgnoreCase));
+
+                    var handlerLevel = isPushButton || hasExpandAfter ? "H" : "C";
+                    var handlerType = isPushButton || hasExpandAfter ? "U" : "S";
+                    var handlerEventType = isPushButton || hasExpandAfter ? "I" : "S";
+                    int? handlerInternalEventId = isPushButton || hasExpandAfter ? 34 : null;
+                    int? handlerKeyCombinationId = null;
+                    int? handlerEventParent = null;
+                    int? handlerEventComponent = null;
+                    string? handlerEventObject = null;
+
+                    if (isPushButton)
+                    {
+                        var controlRaise = controlProperties?.Element("RaiseEvent");
+                        var controlEvent = controlRaise?.Element("Event") ?? controlRaise;
+                        var configuredEventType = controlEvent?.Element("EventType")?.Attribute("val")?.Value;
+                        var configuredInternalEventId =
+                            ParseInt(controlEvent?.Element("InternalEventID")?.Attribute("val")?.Value);
+                        var configuredAsSelect =
+                            string.Equals(configuredEventType, "I", StringComparison.OrdinalIgnoreCase) &&
+                            configuredInternalEventId == 42;
+
+                        // RM Compatible push buttons are activated through Expand.  A
+                        // configured Select is the legacy command used by the segment
+                        // itself to finish the filter task (often through KBPut).  If
+                        // Select is also used as the trigger, that KBPut re-enters the
+                        // same handler indefinitely.
+                        if (!configuredAsSelect)
+                        {
+                            if (!string.IsNullOrWhiteSpace(configuredEventType))
+                                handlerEventType = configuredEventType;
+                            handlerInternalEventId = configuredInternalEventId ?? handlerInternalEventId;
+                        }
+                        handlerKeyCombinationId =
+                            ParseInt(controlEvent?.Element("KeyCombinationID")?.Attribute("val")?.Value);
+                        handlerEventParent =
+                            ParseInt(controlEvent?.Element("Parent")?.Attribute("val")?.Value);
+                        handlerEventComponent =
+                            ParseInt(controlEvent?.Element("PublicObject")?.Attribute("comp")?.Value);
+                        handlerEventObject =
+                            controlEvent?.Element("PublicObject")?.Attribute("obj")?.Value;
+                    }
+
+                    handlers.Add(new TaskHandlerDef(
+                        Level: handlerLevel,
+                        Type: handlerType,
+                        Scope: scope,
+                        Propagate: propagate,
+                        Reference: handlerReference,
+                        ConditionExpressionId: luConditionExpressionId,
+                        EventType: handlerEventType,
+                        EventTime: null,
+                        EventInternalEventId: handlerInternalEventId,
+                        EventKeyCombinationId: handlerKeyCombinationId,
+                        EventParent: handlerEventParent,
+                        EventPublicComponentId: handlerEventComponent,
+                        EventPublicObject: handlerEventObject,
+                        EventExpression: null,
+                        ParameterColumnIds: Array.Empty<int>(),
+                        Raises: segmentRaises,
+                        Invokes: segmentInvokes,
+                        Calls: segmentCalls,
+                        Updates: segmentUpdates,
+                        Stops: segmentStops,
+                        Remarks: segmentRemarks,
+                        FormIos: segmentFormIos,
+                        Actions: segmentActions,
+                        Blocks: segmentBlocks,
+                        EndBlocks: segmentEndBlocks,
+                        IsRmCompatibleControlHandler: true,
+                        XmlTrace:
+                            $"Task=\"{taskDescription}\" LogicUnit[{luIndex}] RMCompatible Select={rmSelect.Select.Name} Control={handlerReference}"
+                    ));
+                }
+
+                // A malformed/legacy RM can contain a message before any Select.
+                // Preserve that rare task-level validation rather than dropping it.
+                foreach (var stop in stops.Where(stop =>
+                             string.IsNullOrWhiteSpace(stop.XmlTrace) ||
+                             !segmentedStopTraces.Contains(stop.XmlTrace!)))
+                {
+                    flowValidations.Add(new TaskValidationDef(stop.ConditionExpressionId, stop.ExpressionId));
+                }
+            }
+
+            var lifecycleRaises = raises
+                .Where(r => r.Modifier == "B" || r.Modifier == "S" || string.IsNullOrWhiteSpace(r.Modifier))
+                .ToList();
+            if (level == "R" && type == "P" && (rowActions.Count > 0 || lifecycleRaises.Count > 0))
+                rowLogics.Add(new TaskRowLogicDef(rowActions, lifecycleRaises, rowBlocks.ToList(), rowEndBlocks.ToList()));
+            if (level == "R" && type == "S" && (rowActions.Count > 0 || lifecycleRaises.Count > 0))
+                savingRowLogics.Add(new TaskRowLogicDef(rowActions, lifecycleRaises, rowBlocks.ToList(), rowEndBlocks.ToList()));
+            if (level == "T" && type == "P" && (rowActions.Count > 0 || lifecycleRaises.Count > 0))
+                startLogics.Add(new TaskRowLogicDef(rowActions, lifecycleRaises, rowBlocks.ToList(), rowEndBlocks.ToList()));
+            if (level == "T" && type == "S" && (rowActions.Count > 0 || lifecycleRaises.Count > 0))
+                endLogics.Add(new TaskRowLogicDef(rowActions, lifecycleRaises, rowBlocks.ToList(), rowEndBlocks.ToList()));
             if (level == "G" && (type == "P" || type == "S") && rowActions.Count > 0)
                 groupLogics.Add(new TaskGroupLogicDef(reference, type, rowActions));
 
@@ -2983,6 +3440,7 @@ internal static class XpaParser
                     Actions: handlerActions,
                     Blocks: handlerBlocks.ToList(),
                     EndBlocks: handlerEndBlocks.ToList(),
+                    IsRmCompatibleControlHandler: false,
                     XmlTrace: $"Task=\"{taskDescription}\" LogicUnit[{luIndex}] EventType={eventType} Level={level} Type={type}"
                 ));
             }
@@ -3076,10 +3534,10 @@ internal static class XpaParser
         if (string.IsNullOrWhiteSpace(statement))
             return null;
 
-        var inputExpressionIds = (sqlForm.Element("INARG")?.Descendants("Argument") ?? Enumerable.Empty<XElement>())
-            .Select(a => ParseInt(a.Element("Exp")?.Attribute("val")?.Value))
-            .Where(x => x.HasValue && x.Value > 0)
-            .Select(x => x!.Value)
+        var inputArguments = (sqlForm.Element("INARG")?.Descendants("Argument") ?? Enumerable.Empty<XElement>())
+            .Select(a => new TaskSqlFormInputArgumentDef(
+                ExpressionId: ParseInt(a.Element("Exp")?.Attribute("val")?.Value),
+                Variable: a.Attribute("Var")?.Value))
             .ToList();
 
         var outputVariables = (sqlForm.Element("OUTARG")?.Descendants("Argument") ?? Enumerable.Empty<XElement>())
@@ -3091,7 +3549,7 @@ internal static class XpaParser
             DatabaseName: sqlForm.Attribute("DB")?.Value,
             Restab: sqlForm.Attribute("RESTAB")?.Value,
             Statement: statement,
-            InputExpressionIds: inputExpressionIds,
+            InputArguments: inputArguments,
             OutputVariables: outputVariables);
     }
 

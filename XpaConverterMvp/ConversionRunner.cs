@@ -83,7 +83,11 @@ public static class ConversionRunner
             var sourceRoot = Path.GetDirectoryName(xmlPath) ?? "";
             string? reducedXmlPath = null;
             var parseXmlPath = xmlPath;
-            var taskScopedReduction = partialTaskScope;
+            // Incremental output must resolve calls, task ordinals, views and
+            // TextIO layouts against the complete project. A reduced XML is
+            // appropriate for an isolated diagnostic project, but it changes
+            // those identities and can corrupt an existing full conversion.
+            var taskScopedReduction = partialTaskScope && !useIncrementalOutput;
             var taskScopedDependencyReduction = taskScopedReduction && withDependencies;
             var folderScopedReduction = !withDependencies && taskRanges.Count == 0 && !string.IsNullOrWhiteSpace(folderFilter);
             var useImplicitComponentXmlResolution =
@@ -99,6 +103,10 @@ public static class ConversionRunner
                     var dependencyMode = taskScopedDependencyReduction ? " with dependency closure" : "";
                     Log(stdOut, "SESSION", $"Using reduced XML for scoped conversion{dependencyMode}: {Path.GetFileName(reducedXmlPath)}");
                 }
+            }
+            else if (useIncrementalOutput)
+            {
+                Log(stdOut, "SESSION", "Incremental output uses the complete XML context; only the requested generated files will be overwritten.");
             }
 
             ParsedXpa parsed;
@@ -173,18 +181,22 @@ public static class ConversionRunner
             }
             var solutionRoot = fullSolution && string.IsNullOrWhiteSpace(folderFilter) ? outputDir : (string?)null;
             if (solutionRoot is not null)
-                RemoveLegacyRuntimeLayout(solutionRoot);
+                RunMeasuredPhase(stdOut, "remove legacy runtime layout", () => RemoveLegacyRuntimeLayout(solutionRoot));
             if (solutionRoot is not null)
-                MaterializeBundledRuntime(solutionRoot, options.RuntimeCoreReferenceMode, options.RuntimeCoreDllPath);
-            MaterializeExternalDllReferences(solutionRoot ?? outputDir, dllReferenceMap);
+                RunMeasuredPhase(stdOut, "materialize runtime references", () => MaterializeBundledRuntime(solutionRoot, options.RuntimeCoreReferenceMode, options.RuntimeCoreDllPath));
+            RunMeasuredPhase(stdOut, "materialize external references", () => MaterializeExternalDllReferences(solutionRoot ?? outputDir, dllReferenceMap));
 
-            var manifestNamespaces = manifestReferenceMap
-                .Select(kv => new { kv.Key, Manifest = ProjectManifest.LoadForSource(kv.Value) })
-                .Where(x => x.Manifest is not null)
-                .ToDictionary(
-                    x => x.Key,
-                    x => string.IsNullOrWhiteSpace(x.Manifest!.Namespace) ? x.Key : x.Manifest.Namespace,
-                    StringComparer.OrdinalIgnoreCase);
+            Dictionary<string, string>? manifestNamespaces = null;
+            RunMeasuredPhase(stdOut, "load reference manifests", () =>
+            {
+                manifestNamespaces = manifestReferenceMap
+                    .Select(kv => new { kv.Key, Manifest = ProjectManifest.LoadForSource(kv.Value) })
+                    .Where(x => x.Manifest is not null)
+                    .ToDictionary(
+                        x => x.Key,
+                        x => string.IsNullOrWhiteSpace(x.Manifest!.Namespace) ? x.Key : x.Manifest.Namespace,
+                        StringComparer.OrdinalIgnoreCase);
+            });
 
             string mainProjectOutputDir;
             if (semantic.Components.Count == 0)
@@ -199,7 +211,7 @@ public static class ConversionRunner
                     SourceRoot = sourceRoot,
                     SharedAssetsSemantic = sharedAssetsSemantic,
                     SolutionRoot = solutionRoot,
-                    ComponentNamespaces = manifestNamespaces,
+                    ComponentNamespaces = manifestNamespaces!,
                     ProjectReferenceMap = projectReferenceMap,
                     DllReferenceMap = dllReferenceMap,
                     OutputType = options.OutputType,
@@ -218,7 +230,7 @@ public static class ConversionRunner
                 var componentNamespaces = semantic.Components
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToDictionary(c => c, c => c, StringComparer.OrdinalIgnoreCase);
-                foreach (var kv in manifestNamespaces)
+                foreach (var kv in manifestNamespaces!)
                     componentNamespaces[kv.Key] = kv.Value;
 
                 var mainFolder = Path.Combine(outputDir, appNamespace.Split('.').First());
@@ -1536,6 +1548,8 @@ public static class ConversionRunner
         var secondInfo = new FileInfo(secondPath);
         if (firstInfo.Length != secondInfo.Length)
             return false;
+        if (firstInfo.LastWriteTimeUtc == secondInfo.LastWriteTimeUtc)
+            return true;
 
         const int bufferSize = 81920;
         using var first = new FileStream(firstPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, bufferSize, FileOptions.SequentialScan);

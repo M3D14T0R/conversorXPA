@@ -221,7 +221,8 @@ internal static partial class ProjectGenerator
     private static string BuildPushButtonDirectDataAssignmentExpression(
         string valueExpression,
         TaskSemantic task,
-        IReadOnlyList<TaskSemantic> allTasks)
+        IReadOnlyList<TaskSemantic> allTasks,
+        string? fallbackText = null)
     {
         if (string.IsNullOrWhiteSpace(valueExpression))
             return valueExpression;
@@ -234,6 +235,16 @@ internal static partial class ProjectGenerator
         if (trimmed.StartsWith("new XPARuntimeCore.Box.UI.Advanced.ButtonData(", StringComparison.Ordinal) ||
             trimmed.StartsWith("(XPARuntimeCore.Box.UI.Advanced.ButtonData)", StringComparison.Ordinal))
             return trimmed;
+
+        if (!string.IsNullOrWhiteSpace(fallbackText) &&
+            IsTextViewDataExpression(unscoped, task, allTasks))
+        {
+            var fallbackLiteral = ToCSharpLiteral(fallbackText);
+            return
+                "new XPARuntimeCore.Box.UI.Advanced.ButtonData(() => " +
+                $"global::XPARuntimeCore.Box.Text.IsNullOrEmpty({trimmed}.Value) " +
+                $"? (global::XPARuntimeCore.Box.Text){fallbackLiteral} : {trimmed}.Value)";
+        }
 
         // Button.Data is not a scalar binding.  XPA permits columns of
         // several scalar types here and the runtime exposes the corresponding
@@ -405,6 +416,22 @@ internal static partial class ProjectGenerator
 
         result = PrefixBareModelLikeControllerReferences(result);
         return result;
+    }
+
+    private static string ScopeViewDataExpressionToController(
+        string dataExpression,
+        TaskSemantic task,
+        IReadOnlyList<DataObjectDef> dataObjects)
+    {
+        if (string.IsNullOrWhiteSpace(dataExpression))
+            return dataExpression;
+
+        var scoped = PrefixControllerReferencesForView(dataExpression.Trim(), task, dataObjects);
+        if (scoped.StartsWith("_controller.", StringComparison.Ordinal))
+            return scoped;
+        if (scoped.StartsWith("_parent.", StringComparison.Ordinal))
+            return "_controller." + scoped;
+        return "_controller." + scoped;
     }
 
     private static Dictionary<string, string> GetViewPrefixSymbolBindings(TaskSemantic task, IReadOnlyList<DataObjectDef> dataObjects)
@@ -656,9 +683,35 @@ internal static partial class ProjectGenerator
 
     private static string ResolveViewControlRaiseExpression(TaskFormControlDef c, TaskSemantic task, IReadOnlyList<ControlButtonModelDef> buttonModels)
     {
-        var raiseType = c.RaiseEventType?.Trim().ToUpperInvariant();
+        var inheritedResource = string.IsNullOrWhiteSpace(c.RaiseEventType)
+            ? ResolveViewHostResource(c, task)
+            : null;
+        var raiseType = (c.RaiseEventType ?? inheritedResource?.RaiseEventType)?.Trim().ToUpperInvariant();
+        var raiseInternalEventId = c.RaiseEventInternalEventId ?? inheritedResource?.RaiseEventInternalEventId;
         if (string.IsNullOrWhiteSpace(raiseType))
             return "";
+
+        var rmReferenceCandidates = new[]
+        {
+            c.ControlName?.Trim(),
+            c.Text?.Trim(),
+            c.DataColumn?.Trim(),
+            inheritedResource?.Name?.Trim()
+        }
+        .Where(x => !string.IsNullOrWhiteSpace(x))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToList();
+        var rmCompatibleHandler = task.HandlersSemantic.Items.FirstOrDefault(h =>
+            h.IsRmCompatibleControlHandler &&
+            !string.IsNullOrWhiteSpace(h.Reference) &&
+            rmReferenceCandidates.Any(reference =>
+                string.Equals(h.Reference, reference, StringComparison.OrdinalIgnoreCase)));
+        if (rmCompatibleHandler is not null)
+        {
+            var rmCommand = ResolveInternalHandlerCommand(rmCompatibleHandler, task);
+            if (!string.IsNullOrWhiteSpace(rmCommand))
+                return rmCommand;
+        }
 
         if (c.ModelRefObj.HasValue)
         {
@@ -711,7 +764,7 @@ internal static partial class ProjectGenerator
                 if (IsApplicationEventReference(matchedByReference.EventParent, matchedByReference.EventPublicComponentId))
                     return $"Application.{matchedCommand}";
                 if (matchedByReference.EventParent.HasValue && task.ParentOrdinal.HasValue)
-                    return $"_controller._parent.{matchedCommand}";
+                    return $"_controller.{matchedCommand}";
                 return $"_controller.{matchedCommand}";
             }
 
@@ -728,10 +781,6 @@ internal static partial class ProjectGenerator
                         return applicationCommandName;
                 }
 
-                var parentCommandName = ResolveParentCommandNameByEventObject(c.RaiseEventObject!, task);
-                if (!string.IsNullOrWhiteSpace(parentCommandName))
-                    return $"_controller._parent.{parentCommandName}";
-
                 var commandName = ResolveCommandNameByEventObject(
                     c.RaiseEventObject!,
                     c.RaiseEventPublicComponentId,
@@ -742,6 +791,10 @@ internal static partial class ProjectGenerator
                         ? commandName
                         : $"_controller.{commandName}";
 
+                var parentCommandName = ResolveParentCommandNameByEventObject(c.RaiseEventObject!, task);
+                if (!string.IsNullOrWhiteSpace(parentCommandName))
+                    return $"_controller._parent.{parentCommandName}";
+
                 var handlerByObj = task.HandlersSemantic.Items.FirstOrDefault(h =>
                     h.EventType == "U" &&
                     string.Equals(h.EventPublicObject, c.RaiseEventObject, StringComparison.OrdinalIgnoreCase));
@@ -751,7 +804,7 @@ internal static partial class ProjectGenerator
                     if (IsApplicationEventReference(handlerByObj.EventParent, handlerByObj.EventPublicComponentId))
                         return $"Application.{handlerCommand}";
                     if (handlerByObj.EventParent.HasValue && task.ParentOrdinal.HasValue)
-                        return $"_controller._parent.{handlerCommand}";
+                        return $"_controller.{handlerCommand}";
                     return $"_controller.{handlerCommand}";
                 }
             }
@@ -763,12 +816,12 @@ internal static partial class ProjectGenerator
                 if (IsApplicationEventReference(uHandlers[0].EventParent, uHandlers[0].EventPublicComponentId))
                     return $"Application.{handlerCommand}";
                 if (uHandlers[0].EventParent.HasValue && task.ParentOrdinal.HasValue)
-                    return $"_controller._parent.{handlerCommand}";
+                    return $"_controller.{handlerCommand}";
                 return $"_controller.{handlerCommand}";
             }
         }
 
-        if (raiseType == "I" && c.RaiseEventInternalEventId is int raiseInternalId)
+        if (raiseType == "I" && raiseInternalEventId is int raiseInternalId)
         {
             var mapped = ResolveCommandByInternalEventId(raiseInternalId);
             if (!string.IsNullOrWhiteSpace(mapped))

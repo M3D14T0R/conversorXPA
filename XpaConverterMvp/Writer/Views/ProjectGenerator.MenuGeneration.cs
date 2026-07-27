@@ -33,9 +33,50 @@ internal static partial class ProjectGenerator
             if (names.Count > 0)
                 sb.AppendLine($"        Add({string.Join(", ", names)});");
         }
+        else
+        {
+            EmitFallbackApplicationNavigationMenu(sb);
+        }
         sb.AppendLine("    }");
         sb.AppendLine("}");
         File.WriteAllText(Path.Combine(viewsDir, "ApplicationMdiMenu.cs"), sb.ToString());
+    }
+
+    private static bool WriteFallbackApplicationMdiMenuIfEmpty(
+        string viewsDir,
+        string appNamespace,
+        IReadOnlyList<TaskSemantic> allTasks)
+    {
+        var path = Path.Combine(viewsDir, "ApplicationMdiMenu.cs");
+        if (File.Exists(path))
+        {
+            var current = File.ReadAllText(path);
+            if (current.Contains("Add(", System.StringComparison.Ordinal))
+                return false;
+        }
+
+        WriteApplicationMdiMenu(null, viewsDir, appNamespace, allTasks);
+        return true;
+    }
+
+    private static void EmitFallbackApplicationNavigationMenu(StringBuilder sb)
+    {
+        sb.AppendLine("        var activityTools = GetToolBarGroup(1);");
+        sb.AppendLine("        var navigationTools = GetToolBarGroup(2);");
+        sb.AppendLine("        var records = new MenuEntry(\"&Registros\");");
+        sb.AppendLine("        records.Add(new ManagedCommand(\"&Consultar\", Command.SwitchToBrowseActivity) { ToolBarGroup = activityTools });");
+        sb.AppendLine("        records.Add(new ManagedCommand(\"&Incluir\", Command.SwitchToInsertActivity) { ToolBarGroup = activityTools });");
+        sb.AppendLine("        records.Add(new ManagedCommand(\"&Alterar\", Command.SwitchToUpdateActivity) { ToolBarGroup = activityTools });");
+        sb.AppendLine("        records.Add(new ManagedCommand(\"&Excluir\", Command.DeleteRow));");
+        sb.AppendLine("        records.Add(new Separator());");
+        sb.AppendLine("        records.Add(new ManagedCommand(\"&Primeiro\", Command.GoToFirstRow) { ToolBarGroup = navigationTools });");
+        sb.AppendLine("        records.Add(new ManagedCommand(\"&Anterior\", Command.GoToPreviousRow) { ToolBarGroup = navigationTools });");
+        sb.AppendLine("        records.Add(new ManagedCommand(\"Pró&ximo\", Command.GoToNextRow) { ToolBarGroup = navigationTools });");
+        sb.AppendLine("        records.Add(new ManagedCommand(\"&Último\", Command.GoToLastRow) { ToolBarGroup = navigationTools });");
+        sb.AppendLine("        records.Add(new Separator());");
+        sb.AppendLine("        records.Add(new ManagedCommand(\"&Salvar\", Command.SaveCurrentRow));");
+        sb.AppendLine("        records.Add(new ManagedCommand(\"&Fechar\", Command.Exit));");
+        sb.AppendLine("        Add(records);");
     }
 
     private static void WriteDefaultPulldownMenu(string viewsDir, string appNamespace, string appRoot)

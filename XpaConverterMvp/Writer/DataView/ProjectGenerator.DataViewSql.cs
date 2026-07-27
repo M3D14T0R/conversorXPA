@@ -44,11 +44,19 @@ internal static partial class ProjectGenerator
 
         var dataSourceName = ToPascalIdentifier(task.SqlForm.DatabaseName ?? "DynamicSql");
         sb.AppendLine($"        var sqlEntity = new DynamicSQLEntity(Shared.DataSources.{dataSourceName}, {ToCSharpLiteral(task.SqlForm.Statement)});");
-        foreach (var expId in task.SqlForm.InputExpressionIds)
+        for (var argumentIndex = 0; argumentIndex < task.SqlForm.InputArguments.Count; argumentIndex++)
         {
-            var expr = ResolveExpressionCode(expId.ToString(), task, dataObjects, CreateSqlExpressionEmissionContext());
+            var argument = task.SqlForm.InputArguments[argumentIndex];
+            var expr = argument.ExpressionId is > 0
+                ? ResolveExpressionCode(argument.ExpressionId.Value.ToString(), task, dataObjects, CreateSqlExpressionEmissionContext())
+                : ResolveSelectExpressionByName(argument.Variable ?? "", task, dataObjects);
             if (string.IsNullOrWhiteSpace(expr))
-                continue;
+            {
+                ConversionTelemetry.Log(
+                    "SQL_FORM_ARGUMENT_UNRESOLVED",
+                    $"task={task.Ordinal} argument={argumentIndex + 1} exp={argument.ExpressionId?.ToString() ?? ""} var={argument.Variable ?? ""}");
+                expr = "u.Null()";
+            }
             sb.AppendLine($"        sqlEntity.AddParameter(() => {expr});");
         }
 

@@ -101,7 +101,16 @@ internal static class SemanticBuilder
             semantic.ParentSelectMapByTaskOrdinal[task.Ordinal] = BuildParentSelectMap(task, semanticTasksByOrdinal, semantic.ApplicationSelectMap);
         ConversionTelemetry.Log("SEMANTIC", $"parent select maps done count={semantic.ParentSelectMapByTaskOrdinal.Count}");
         foreach (var rr in parsed.ComponentRightRefs)
-            semantic.ComponentRightsByLiteral[$"{rr.ComponentId},{rr.RightId}"] = new ComponentRightSemantic(rr.ComponentName, ToRoleMemberIdentifier(rr.RightName));
+        {
+            // XPA serializes a RIGHT literal as "<right id>,<component id>".
+            // Keep that source contract in the semantic map so the typed
+            // expression emitter can resolve, for example, 409,1 directly to
+            // CGData.Roles.ES_MOVIMENTO_PESQUISAR.
+            semantic.ComponentRightsByLiteral[$"{rr.RightId},{rr.ComponentId}"] =
+                new ComponentRightSemantic(
+                    rr.ComponentName,
+                    ToRoleMemberIdentifier(rr.RightName));
+        }
         ConversionTelemetry.Log("SEMANTIC", "build done");
         return semantic;
     }
@@ -1187,6 +1196,60 @@ internal static class SemanticBuilder
             if (best is not null)
                 groupBoxBindingByControlId[c.Id] = best.Id;
         }
+
+        var tabBindingByControlId =
+            new Dictionary<int, (int TabControlId, int TabIndex)>();
+        var tabControls = selectedSupportedControls
+            .Where(c => string.Equals(c.Model, "CTRL_GUI0_TAB", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (tabControls.Count > 0)
+        {
+            var tableStructuralControlIds = tableColumnControlIds
+                .Concat(tableAttachmentByLeaf.Keys)
+                .Concat(columnAttachmentByLeaf.Keys)
+                .ToHashSet();
+
+            foreach (var control in selectedSupportedControls)
+            {
+                if (!control.ControlLayer.HasValue ||
+                    control.ControlLayer.Value <= 0 ||
+                    string.Equals(control.Model, "CTRL_GUI0_TAB", StringComparison.OrdinalIgnoreCase) ||
+                    tableStructuralControlIds.Contains(control.Id) ||
+                    groupBoxBindingByControlId.ContainsKey(control.Id))
+                {
+                    continue;
+                }
+
+                TaskFormControlDef? containingTab = null;
+                var centerX = control.X + Math.Max(1, control.Width) / 2;
+                var centerY = control.Y + Math.Max(1, control.Height) / 2;
+                foreach (var tab in tabControls)
+                {
+                    var tabRight = tab.X + Math.Max(1, tab.Width);
+                    var tabBottom = tab.Y + Math.Max(1, tab.Height);
+                    if (centerX < tab.X || centerX > tabRight ||
+                        centerY < tab.Y || centerY > tabBottom)
+                    {
+                        continue;
+                    }
+
+                    if (containingTab is null ||
+                        Math.Max(1, tab.Width) * Math.Max(1, tab.Height) <
+                        Math.Max(1, containingTab.Width) * Math.Max(1, containingTab.Height))
+                    {
+                        containingTab = tab;
+                    }
+                }
+
+                if (containingTab is not null)
+                {
+                    // XPA numbers ControlLayer from one. ControlBinding uses the
+                    // zero-based selected index exposed by the runtime TabControl.
+                    tabBindingByControlId[control.Id] =
+                        (containingTab.Id, control.ControlLayer.Value - 1);
+                }
+            }
+        }
         var bindingExpressionIds = task.FormEntries
             .SelectMany(fe => fe.Form.Controls)
             .SelectMany(c =>
@@ -1261,6 +1324,7 @@ internal static class SemanticBuilder
             tableChildIdsByTable,
             rootControlIds,
             groupBoxBindingByControlId,
+            tabBindingByControlId,
             tableColumnStartXByTableId,
             bindingExpressionIds,
             formTextExpressionIds,
@@ -2456,6 +2520,8 @@ internal static class SemanticBuilder
                 result.Add(new ViewBooleanBinding(c.Id, c.VisibleExpressionId.Value));
             if (c.EnabledExpressionId.HasValue)
                 result.Add(new ViewBooleanBinding(c.Id, c.EnabledExpressionId.Value));
+            if (c.ModifiableExpressionId.HasValue)
+                result.Add(new ViewBooleanBinding(c.Id, c.ModifiableExpressionId.Value));
         }
         return result
             .DistinctBy(x => (x.ControlId, x.ExpressionId))
@@ -2563,10 +2629,12 @@ internal static class SemanticBuilder
         if (byProgramIndex is not null)
             return byProgramIndex;
 
-        var byOrdinal = GetTaskByOrdinal(xpaId);
-        if (byOrdinal is not null)
-            return byOrdinal;
-
+        // A subform task number is local to its owner unless it identifies a
+        // public program.  Treating it as a global parser ordinal can bind the
+        // control to an unrelated nested task that only happens to have the
+        // same number (for example, a transport tab to an order cleanup task).
+        // Local children are resolved by GetChildTaskBySubtaskIndex before this
+        // method is called; the remaining safe fallback is a top-level program.
         if (xpaId > 0 && xpaId <= _topLevelTaskDefsByOrdinal.Count)
             return _topLevelTaskDefsByOrdinal[xpaId - 1];
 
@@ -2618,9 +2686,36 @@ internal static class SemanticBuilder
 
     private static string ResolveViewControlRaiseExpression(TaskFormControlDef c, TaskDef task, IReadOnlyList<ControlButtonModelDef> buttonModels)
     {
-        var raiseType = c.RaiseEventType?.Trim().ToUpperInvariant();
+        var inheritedResource = string.IsNullOrWhiteSpace(c.RaiseEventType)
+            ? ResolveViewHostResource(c, task)
+            : null;
+        var raiseType = (c.RaiseEventType ?? inheritedResource?.RaiseEventType)?.Trim().ToUpperInvariant();
+        var raiseInternalEventId = c.RaiseEventInternalEventId ?? inheritedResource?.RaiseEventInternalEventId;
+        var raiseKeyCombinationId = c.RaiseEventKeyCombinationId ?? inheritedResource?.RaiseEventKeyCombinationId;
         if (string.IsNullOrWhiteSpace(raiseType))
             return "";
+
+        var rmReferenceCandidates = new[]
+        {
+            c.ControlName?.Trim(),
+            c.Text?.Trim(),
+            c.DataColumn?.Trim(),
+            inheritedResource?.Name?.Trim()
+        }
+        .Where(x => !string.IsNullOrWhiteSpace(x))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToList();
+        var rmCompatibleHandler = task.Handlers.FirstOrDefault(h =>
+            h.IsRmCompatibleControlHandler &&
+            !string.IsNullOrWhiteSpace(h.Reference) &&
+            rmReferenceCandidates.Any(reference =>
+                string.Equals(h.Reference, reference, StringComparison.OrdinalIgnoreCase)));
+        if (rmCompatibleHandler is not null)
+        {
+            var rmCommand = ResolveInternalHandlerCommand(rmCompatibleHandler, task);
+            if (!string.IsNullOrWhiteSpace(rmCommand))
+                return rmCommand;
+        }
 
         if (c.ModelRefObj.HasValue)
         {
@@ -2712,7 +2807,7 @@ internal static class SemanticBuilder
 
         if (raiseType == "I")
         {
-            if (c.RaiseEventInternalEventId is int raiseInternalId)
+            if (raiseInternalEventId is int raiseInternalId)
             {
                 var mapped = ResolveCommandByInternalEventId(raiseInternalId);
                 if (!string.IsNullOrWhiteSpace(mapped))
@@ -2742,7 +2837,7 @@ internal static class SemanticBuilder
 
         if (raiseType == "S")
         {
-            if (c.RaiseEventKeyCombinationId is int raiseKeyId)
+            if (raiseKeyCombinationId is int raiseKeyId)
             {
                 var keys = ResolveKeyCombination(raiseKeyId);
                 if (!string.IsNullOrWhiteSpace(keys))
@@ -2977,6 +3072,9 @@ internal static class SemanticBuilder
 
     private static string? ResolveCommandByInternalEventId(int internalEventId)
     {
+        if (internalEventId is >= 219 and <= 238)
+            return $"ENV.Commands.CustomCommand_{internalEventId - 218}";
+
         return internalEventId switch
         {
             13 => "Command.CloseForm",

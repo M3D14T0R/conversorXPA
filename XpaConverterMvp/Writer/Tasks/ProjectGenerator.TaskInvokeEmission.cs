@@ -41,6 +41,33 @@ internal static partial class ProjectGenerator
             var program = ResolveExpressionCode(invoke.ProgramNameExpressionId?.ToString(), task, dataObjects, CreateProgramReferenceEmissionContext());
             if (!string.IsNullOrWhiteSpace(program))
             {
+                var cabinet = ResolveExpressionCode(invoke.CabinetNameExpressionId?.ToString(), task, dataObjects, CreateProgramReferenceEmissionContext());
+                if (!string.IsNullOrWhiteSpace(cabinet))
+                {
+                    if (TryEmitConfiguredLicenseCabinetResult(
+                            sb,
+                            invoke,
+                            task,
+                            dataObjects,
+                            innerPad,
+                            cabinet,
+                            program))
+                    {
+                        if (!string.IsNullOrWhiteSpace(cond))
+                            sb.AppendLine($"{pad}}}");
+                        return;
+                    }
+
+                    ConversionTelemetry.Log(
+                        "UNSUPPORTED_XPA_CABINET_INVOKE",
+                        $"task={task.Ordinal} cabinet={cabinet} program={program}");
+                    sb.AppendLine(
+                        $"{innerPad}// Chamada a cabinet XPA ignorada: o projeto convertido não executa arquivos .cab/.ecf ({cabinet}, {program}).");
+                    if (!string.IsNullOrWhiteSpace(cond))
+                        sb.AppendLine($"{pad}}}");
+                    return;
+                }
+
                 var selectMap = BuildSelectNameToExpressionMap(task, dataObjects);
                 var argValues = ResolveArgumentExpressions(
                         invoke.ArgumentDefs,
@@ -50,7 +77,10 @@ internal static partial class ProjectGenerator
                         selectMap,
                         _allTasks ?? Array.Empty<TaskSemantic>())
                     .ToArray();
-                var callExpr = $"Application.Instance.AllPrograms.RunByPublicName({program}{(argValues.Length > 0 ? ", " + string.Join(", ", argValues) : "")})";
+                var arguments = argValues.Length > 0
+                    ? ", " + string.Join(", ", argValues)
+                    : "";
+                var callExpr = $"Application.Instance.AllPrograms.RunByPublicName({program}{arguments})";
 
                 if (!string.IsNullOrWhiteSpace(invoke.ReturnVariable))
                 {
@@ -69,14 +99,6 @@ internal static partial class ProjectGenerator
                 {
                     sb.AppendLine($"{innerPad}{callExpr};");
                 }
-                if (!string.IsNullOrWhiteSpace(cond))
-                    sb.AppendLine($"{pad}}}");
-                return;
-            }
-            var cabinet = ResolveExpressionCode(invoke.CabinetNameExpressionId?.ToString(), task, dataObjects, CreateProgramReferenceEmissionContext());
-            if (!string.IsNullOrWhiteSpace(cabinet) && !string.IsNullOrWhiteSpace(program))
-            {
-                sb.AppendLine($"{innerPad}RunControllerFromAnUnreferencedApplication({cabinet}, {program});");
                 if (!string.IsNullOrWhiteSpace(cond))
                     sb.AppendLine($"{pad}}}");
                 return;
@@ -211,7 +233,7 @@ internal static partial class ProjectGenerator
                         var assignmentExpr = BuildReturnAssignmentExpression(
                             invoke.ReturnVariable!,
                             target,
-                            RenderSnippetReturnContractForTarget(callExpr, snippetReturnContract, invoke.ReturnVariable!, target, task),
+                            RenderTypedValueForTarget(callExpr, snippetReturnContract, invoke.ReturnVariable!, target, task),
                             task,
                             invoke.XmlTrace).Trim().TrimEnd(';');
                         sb.AppendLine($"{innerPad}    {assignmentExpr};");
@@ -242,7 +264,7 @@ internal static partial class ProjectGenerator
                     var assignmentExpr = BuildReturnAssignmentExpression(
                         invoke.ReturnVariable!,
                         target,
-                        RenderSnippetReturnContractForTarget(callExpr, snippetReturnContract, invoke.ReturnVariable!, target, task),
+                        RenderTypedValueForTarget(callExpr, snippetReturnContract, invoke.ReturnVariable!, target, task),
                         task,
                         invoke.XmlTrace).Trim().TrimEnd(';');
                     sb.AppendLine($"{innerPad}Try(() => {assignmentExpr});");
@@ -263,7 +285,57 @@ internal static partial class ProjectGenerator
             sb.AppendLine($"{pad}}}");
     }
 
-    private static string RenderSnippetReturnContractForTarget(
+    private static bool TryEmitConfiguredLicenseCabinetResult(
+        StringBuilder sb,
+        TaskInvokeDef invoke,
+        TaskSemantic task,
+        IReadOnlyList<DataObjectDef> dataObjects,
+        string pad,
+        string cabinet,
+        string program)
+    {
+        var isLicenseProgram =
+            (TryGetWholeCSharpStringLiteralValue(program, out var publicName) &&
+             string.Equals(publicName, "AJ02121", StringComparison.OrdinalIgnoreCase)) ||
+            (TryGetWholeCSharpStringLiteralValue(cabinet, out var cabinetName) &&
+             cabinetName.IndexOf("CGLicenca", StringComparison.OrdinalIgnoreCase) >= 0);
+        if (!isLicenseProgram)
+            return false;
+
+        var outputArgument = invoke.ArgumentDefs
+            .Where(argument =>
+                argument.Skip != true &&
+                !string.IsNullOrWhiteSpace(argument.Variable))
+            .FirstOrDefault();
+        if (outputArgument is not null)
+        {
+            var variable = outputArgument.Variable!;
+            var target = ResolveUpdateTargetExpression(
+                variable,
+                task,
+                dataObjects,
+                _allTasks ?? Array.Empty<TaskSemantic>());
+            if (!string.IsNullOrWhiteSpace(target))
+            {
+                const string configuredLicense =
+                    "string.Equals(u.CastToText(u.GetParam(\"VERIFICOU_LICENCA\")).Trim(), \"SIM\", System.StringComparison.OrdinalIgnoreCase)";
+                var configuredLicenseForTarget = RenderTypedValueForTarget(
+                    configuredLicense,
+                    "Bool",
+                    variable,
+                    target,
+                    task);
+                sb.AppendLine(
+                    $"{pad}{BuildReturnAssignmentExpression(variable, target, configuredLicenseForTarget, task, invoke.XmlTrace)}");
+            }
+        }
+
+        sb.AppendLine(
+            $"{pad}// CGLicenca.ecf substituído pela licença configurada em VERIFICOU_LICENCA.");
+        return true;
+    }
+
+    private static string RenderTypedValueForTarget(
         string callExpr,
         string sourceReturnType,
         string returnVariable,

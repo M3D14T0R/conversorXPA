@@ -561,6 +561,8 @@ internal static partial class ProjectGenerator
             "DIFDATETIME" when argumentIndex is 0 or 2 => "Date",
             "DIFDATETIME" when argumentIndex is 1 or 3 => "Time",
             "DIFDATETIME" when argumentIndex is 4 or 5 => "Number",
+            "ADDDATE" when argumentIndex == 0 => "Date",
+            "ADDDATE" when argumentIndex is 1 or 2 or 3 => "Number",
             "CDOW" or "CMONTH" when argumentIndex == 0 => "Date",
             "CTRLGOTO" when argumentIndex == 0 => "Text",
             "CTRLGOTO" when argumentIndex is 1 or 2 => "Number",
@@ -641,8 +643,7 @@ internal static partial class ProjectGenerator
             "MTSTR" when argumentIndex == 1 => "Text",
             "HSTR" when argumentIndex == 0 => "Number",
             "COMHANDLEGET" when argumentIndex == 0 => "XPARuntimeCore.Box.Data.Advanced.ColumnBase",
-            "REPSTR" when usage == XpaFunctionArgumentContractUsage.SourceAnalysis &&
-                          argumentIndex >= 0 && argumentIndex <= 2 => "Text",
+            "REPSTR" when argumentIndex >= 0 && argumentIndex <= 2 => "Text",
             "DATAVIEWTODNDATATABLE" when usage == XpaFunctionArgumentContractUsage.SourceAnalysis &&
                                        argumentIndex == 0 => "Number",
             "DATAVIEWTODNDATATABLE" when usage == XpaFunctionArgumentContractUsage.SourceAnalysis &&

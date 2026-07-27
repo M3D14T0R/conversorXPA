@@ -32,6 +32,12 @@ internal static partial class ProjectGenerator
             var initParts = new List<string>();
             if (!string.IsNullOrWhiteSpace(c.DbType) && SupportsDbTypeInitializer(c))
                 initParts.Add($"DbType = \"{Escape(c.DbType!)}\"");
+            var inputRange = ResolveDataColumnInputRange(c, fieldModels);
+            if (!string.IsNullOrWhiteSpace(inputRange))
+                initParts.Add($"InputRange = \"{Escape(inputRange)}\"");
+            var sqlStorageInitializer = ResolveSqlStorageInitializer(c, appNamespace);
+            if (!string.IsNullOrWhiteSpace(sqlStorageInitializer))
+                initParts.Add(sqlStorageInitializer);
             if (c.AllowedNull.HasValue)
                 initParts.Add($"AllowNull = {(c.AllowedNull.Value ? "true" : "false")}");
             var initSuffix = initParts.Count > 0 ? $" {{ {string.Join(", ", initParts)} }}" : "";
@@ -86,6 +92,41 @@ internal static partial class ProjectGenerator
         File.WriteAllText(Path.Combine(modelsDir, $"{className}.cs"), sb.ToString());
     }
 
+    private static string ResolveDataColumnInputRange(
+        DataColumnDef column,
+        IReadOnlyList<FieldModelDef> fieldModels)
+    {
+        if (!string.IsNullOrWhiteSpace(column.InputRange))
+            return column.InputRange!;
+
+        if (!string.IsNullOrWhiteSpace(column.ModelRefObj) &&
+            int.TryParse(column.ModelRefObj, out var modelOrdinal))
+        {
+            var fieldModel = fieldModels.FirstOrDefault(model => model.Ordinal == modelOrdinal);
+            if (!string.IsNullOrWhiteSpace(fieldModel?.InputRange))
+                return fieldModel!.InputRange!;
+        }
+
+        return "";
+    }
+
+    private static string ResolveSqlStorageInitializer(DataColumnDef column, string appNamespace)
+    {
+        if (string.Equals(column.Attribute, "D", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(column.Storage, "19", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"Storage = new global::{appNamespace}.Shared.XpaSqlDateStorage()";
+        }
+
+        if (string.Equals(column.Attribute, "T", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(column.Storage, "24", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Storage = new ENV.Data.Storage.TimeSpanTimeStorage()";
+        }
+
+        return "";
+    }
+
     private static bool IsSqliteDataObject(DataObjectDef d, IReadOnlyDictionary<string, string> databaseKinds)
         => !string.IsNullOrWhiteSpace(d.DataSource) &&
            databaseKinds.TryGetValue(d.DataSource, out var databaseKind) &&
@@ -124,7 +165,12 @@ internal static partial class ProjectGenerator
     {
         foreach (var index in d.Indexes
                      .Where(x => x.Unique && x.Segments.Count > 0)
-                     .OrderBy(x => x.Segments.Count)
+                     .OrderBy(x => x.Segments.Any(segment =>
+                     {
+                         var column = d.Columns.FirstOrDefault(c => c.Id == segment.ColumnId);
+                         return column?.AllowedNull == true;
+                     }))
+                     .ThenBy(x => x.Segments.Count)
                      .ThenBy(x => x.Id))
         {
             var result = new string[index.Segments.Count];
@@ -135,7 +181,6 @@ internal static partial class ProjectGenerator
                 var columnId = index.Segments[i].ColumnId;
                 var column = d.Columns.FirstOrDefault(c => c.Id == columnId);
                 if (column is null ||
-                    column.AllowedNull == true ||
                     !seenColumns.Add(columnId) ||
                     !columnMemberNames.TryGetValue(columnId, out var memberName))
                 {

@@ -73,17 +73,87 @@ internal static class XpaTypedExpressionEmitter
         private XpaTypedExpression ParseExpression(int minimumPrecedence)
         {
             var left = ParsePrefix();
-            while (TryGetBinaryOperator(out var op, out var precedence) &&
-                   precedence >= minimumPrecedence)
+            while (true)
             {
-                Advance();
-                if (op == "NOT LIKE")
+                var concatenatedOperator = TryGetConcatenatedBinaryOperator(
+                    out var op,
+                    out var precedence,
+                    out var rightOperand);
+                if (!concatenatedOperator &&
+                    !TryGetBinaryOperator(out op, out precedence))
+                    break;
+                if (precedence < minimumPrecedence)
+                    break;
+
+                if (concatenatedOperator)
+                {
+                    // The lexer has already consumed the complete exported token
+                    // (for example ANDBR). Keep its typed suffix as the current
+                    // operand instead of advancing to the following token.
+                    _current = rightOperand;
+                }
+                else
+                {
                     Advance();
+                    if (op == "NOT LIKE")
+                        Advance();
+                }
+
                 var right = ParseExpression(precedence + 1);
                 left = EmitBinary(op, left, right);
             }
             return left;
         }
+
+        private bool TryGetConcatenatedBinaryOperator(
+            out string op,
+            out int precedence,
+            out Token rightOperand)
+        {
+            op = string.Empty;
+            precedence = -1;
+            rightOperand = default;
+            if (_current.Kind != TokenKind.Identifier)
+                return false;
+
+            foreach (var candidate in ConcatenatedBinaryOperators)
+            {
+                if (_current.Text.Length <= candidate.Word.Length ||
+                    !_current.Text.StartsWith(candidate.Word, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var suffix = _current.Text[candidate.Word.Length..];
+                var fullSymbol = _context.ResolveSymbol(_current.Text);
+                var suffixSymbol = _context.ResolveSymbol(suffix);
+                var suffixStartsFunctionCall = _lexer.Peek().Kind == TokenKind.OpenParenthesis;
+                if (!IsUnresolvedSymbol(fullSymbol, _current.Text) ||
+                    (IsUnresolvedSymbol(suffixSymbol, suffix) && !suffixStartsFunctionCall))
+                    continue;
+
+                op = candidate.Operator;
+                precedence = candidate.Precedence;
+                rightOperand = new Token(TokenKind.Identifier, suffix);
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool IsUnresolvedSymbol(
+            XpaTypedExpression? symbol,
+            string sourceName)
+            => !symbol.HasValue ||
+               (symbol.Value.Type == XpaType.Object &&
+                string.Equals(symbol.Value.Code, sourceName, StringComparison.OrdinalIgnoreCase));
+
+        private static readonly (string Word, string Operator, int Precedence)[]
+            ConcatenatedBinaryOperators =
+            [
+                ("AND", "&&", 20),
+                ("OR", "||", 10),
+                ("LIKE", "LIKE", 30),
+                ("MOD", "%", 50)
+            ];
 
         // Word operators (AND/OR/MOD/LIKE/NOT LIKE) are valid only in infix
         // position. In operand position the same words are legacy variable
@@ -463,9 +533,17 @@ internal static class XpaTypedExpressionEmitter
                 while (true)
                 {
                     arguments.Add(ParseExpression(0));
-                    if (_current.Kind != TokenKind.Comma)
+                    if (_current.Kind == TokenKind.Comma)
+                    {
+                        Advance();
+                        continue;
+                    }
+
+                    // Some XPA exports omit an argument separator between two
+                    // complete expressions. Keep recovery in the source parser:
+                    // the emitted C# is still produced from typed argument nodes.
+                    if (!CanStartImplicitArgument(_current.Kind))
                         break;
-                    Advance();
                 }
             }
             Require(TokenKind.CloseParenthesis);
@@ -480,6 +558,13 @@ internal static class XpaTypedExpressionEmitter
                        "object",
                        XpaType.Object);
         }
+
+        private static bool CanStartImplicitArgument(TokenKind kind)
+            => kind is TokenKind.Identifier or
+                       TokenKind.Number or
+                       TokenKind.Date or
+                       TokenKind.String or
+                       TokenKind.OpenParenthesis;
 
         private static XpaTypedExpression EmitUnary(
             string op,
@@ -611,6 +696,14 @@ internal static class XpaTypedExpressionEmitter
             }
             var trueValue = ConvertRequired(whenTrue, resultType);
             var falseValue = ConvertRequired(whenFalse, resultType);
+            if (resultType == XpaType.Object)
+            {
+                return new XpaTypedExpression(
+                    $"(({boolean.Code}) ? ({trueValue.Code}) : ({falseValue.Code}))",
+                    "object",
+                    XpaType.Object);
+            }
+
             return new XpaTypedExpression(
                 $"u.If({boolean.Code}, {trueValue.Code}, {falseValue.Code})",
                 trueValue.ReturnType,

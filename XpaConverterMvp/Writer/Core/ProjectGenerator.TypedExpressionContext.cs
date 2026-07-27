@@ -214,10 +214,15 @@ internal static partial class ProjectGenerator
     {
         if (task is null || preserveBinding)
             return expression;
-        return EmitExpressionForContext(
+
+        var expectedReturnType = NormalizeReturnTypeToken(parameterType);
+        return TryEmitExpectedArgumentFromReliableEvidence(
             expression,
+            expectedReturnType,
             task,
-            CreateRunArgumentEmissionContext(parameterType, preserveBinding));
+            out var emitted)
+            ? emitted
+            : expression;
     }
 
     private static string ApplyExpectedTypeContextCentral(

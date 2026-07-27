@@ -43,6 +43,7 @@ internal static partial class ProjectGenerator
         sb.AppendLine($"{classAccessibility} class {className} : {baseClass}");
         sb.AppendLine("{");
         TimeSection(() => EmitTaskMembers(sb, t, dataObjects, fieldModels), "TASK_BUILD", className, "emit-members");
+        EmitVariableCurrentByNameHelper(sb, t);
         if (cachedSubforms.Count > 0)
         {
             sb.AppendLine("    #region Initialize CachedControllers");
@@ -70,6 +71,8 @@ internal static partial class ProjectGenerator
         sb.AppendLine("    {");
         if (needsParentRef)
             sb.AppendLine("        _parent = parent;");
+        if (baseClass is "UIControllerBase" or "FlowUIControllerBase")
+            sb.AppendLine($"        setApplication(global::{_targetNamespace}.Application.Instance);");
         if (cachedSubforms.Count > 0)
         {
             foreach (var subform in cachedSubforms)

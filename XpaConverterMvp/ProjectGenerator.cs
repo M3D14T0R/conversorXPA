@@ -192,7 +192,7 @@ internal static partial class ProjectGenerator
         ["VarAttr"] = "u.VarAttr",
         ["VarControlID"] = "u.VarControlID",
         ["VarCurr"] = "u.VarCurr",
-        ["VarCurrN"] = "u.VarCurrN",
+        ["VarCurrN"] = VariableCurrentByNameHelper,
         ["VarDbName"] = "u.VarDbName",
         ["VarDisplayName"] = "u.VarDisplayName",
         ["VarIndex"] = "u.VarIndex",

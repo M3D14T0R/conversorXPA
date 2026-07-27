@@ -14,7 +14,9 @@ internal sealed class ProjectManifest
     public Dictionary<int, string> DataObjectsByIndex { get; set; } = new();
     public List<ProjectManifestDataObject> DataObjectDetails { get; set; } = new();
     public Dictionary<string, string> Rights { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, string> RightMembersByAlias { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, ProjectManifestFunction> Functions { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public List<ProjectManifestFieldModel> FieldModels { get; set; } = new();
 
     public static string GetManifestPath(string sourcePath)
     {
@@ -74,6 +76,21 @@ internal sealed class ProjectManifestFunction
     public List<string> ParameterTypes { get; set; } = new();
 }
 
+internal sealed class ProjectManifestFieldModel
+{
+    public int ObjectIndex { get; set; }
+    public string PublicName { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string AttrObj { get; set; } = "";
+    public string Picture { get; set; } = "";
+    public string? InputRange { get; set; }
+    public string? NullDisplayText { get; set; }
+    public string? DefaultValue { get; set; }
+    public string? RaiseEventType { get; set; }
+    public int? RaiseEventInternalEventId { get; set; }
+    public int? RaiseEventKeyCombinationId { get; set; }
+}
+
 internal sealed class ProjectManifestDataObject
 {
     public int ObjectIndex { get; set; }
@@ -106,6 +123,7 @@ internal sealed class ProjectManifestDataColumn
     public string? DbColumnName { get; set; }
     public string? DbType { get; set; }
     public string? ModelRefObj { get; set; }
+    public string? InputRange { get; set; }
 }
 
 internal sealed class ProjectManifestIndexSegment

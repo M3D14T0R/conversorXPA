@@ -52,7 +52,15 @@ internal static partial class ProjectGenerator
         var scope = ResolveGenerationScope(request.Parsed, request.FolderFilter, request.TaskFilters, request.WithTaskDependencies, request.ForceTaskScopedGeneration);
         var outputLayout = new ProjectOutputLayout(request.OutputRoot);
 
-        PrepareProjectOutputs(request.Parsed, sharedAssetsSource, scope, outputLayout, request.SourceRoot, request.AppNamespace, request.ParallelTaskGeneration);
+        PrepareProjectOutputs(
+            request.Parsed,
+            sharedAssetsSource,
+            scope,
+            outputLayout,
+            request.SourceRoot,
+            request.AppNamespace,
+            request.ParallelTaskGeneration,
+            request.IncrementalOutput);
         WriteProjectMetadataOutputs(request.Parsed, scope, request.OutputRoot, request.AppNamespace, request.IncrementalOutput);
 
         var generatedTasks = ResolveGeneratedTasks(request.Parsed, scope);

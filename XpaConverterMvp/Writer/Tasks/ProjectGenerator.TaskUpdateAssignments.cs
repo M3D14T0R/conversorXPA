@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Text;
@@ -183,8 +184,59 @@ internal static partial class ProjectGenerator
         return match.Groups[1].Value;
     }
 
+    private static bool TryEmitUpdateWithoutValueStatements(
+        StringBuilder sb,
+        string pad,
+        TaskUpdateDef update,
+        string target,
+        TaskSemantic task,
+        IReadOnlyList<DataObjectDef> dataObjects,
+        bool suppressForcedUndo = false,
+        bool includeCondition = false)
+    {
+        if (!string.IsNullOrWhiteSpace(update.WithValue))
+            return false;
+
+        var condition = includeCondition && update.ConditionExpressionId.HasValue
+            ? ResolveExpressionCode(
+                update.ConditionExpressionId.Value.ToString(),
+                task,
+                dataObjects,
+                CreateBooleanConditionEmissionContext())
+            : "";
+        var body = update.ForcedUpdate && !suppressForcedUndo
+            ? $"u.DenyUndoFor({target});"
+            : $"// Update without WithValue does not change the current value. XML={update.XmlTrace ?? "?"}";
+
+        if (!string.IsNullOrWhiteSpace(condition))
+        {
+            sb.AppendLine($"{pad}if ({condition})");
+            sb.AppendLine($"{pad}{{");
+            sb.AppendLine($"{pad}    {body}");
+            sb.AppendLine($"{pad}}}");
+        }
+        else
+        {
+            sb.AppendLine($"{pad}{body}");
+        }
+
+        return true;
+    }
+
     private static void EmitUpdateAssignmentStatements(StringBuilder sb, string pad, TaskUpdateDef update, string target, string value, TaskSemantic task, bool preferValueForResourceAssignments = false, bool suppressForcedUndo = false)
     {
+        if (TryEmitUpdateWithoutValueStatements(
+                sb,
+                pad,
+                update,
+                target,
+                task,
+                _dataObjectsByOrdinal.Values.ToArray(),
+                suppressForcedUndo))
+        {
+            return;
+        }
+
         if (TryBuildUnsupportedUpdateExpressionComment(update.WithValue, task, out var comment))
         {
             sb.AppendLine($"{pad}{comment}");
@@ -357,9 +409,24 @@ internal static partial class ProjectGenerator
             expectedReturnType = MapAttrObjToReturnType(attrObj);
         }
 
+        var sourceResource = ResolveResourceByTargetPath(
+            task,
+            value.Trim(),
+            _allTasks ?? Array.Empty<TaskSemantic>());
+        var sourceReturnType = "";
         var hasSourceReturnType =
-            TryResolveKnownExpressionReturnTypeWithoutLegacy(task, value, out var sourceReturnType) &&
+            sourceResource is not null &&
+            TryResolveTaskResourceStrictReturnType(
+                sourceResource,
+                ResolveTaskOwnerFromTargetPath(task, value.Trim()) ?? task,
+                out sourceReturnType) &&
             !string.IsNullOrWhiteSpace(sourceReturnType);
+        if (!hasSourceReturnType)
+        {
+            hasSourceReturnType =
+                TryResolveKnownExpressionReturnTypeWithoutLegacy(task, value, out sourceReturnType) &&
+                !string.IsNullOrWhiteSpace(sourceReturnType);
+        }
         if (!hasSourceReturnType &&
             int.TryParse(update.WithValue, out var expressionOrdinal) &&
             task.ExpressionsSemantic.EntriesByOrdinal.TryGetValue(expressionOrdinal, out var expression) &&

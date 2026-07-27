@@ -52,6 +52,17 @@ internal static partial class ProjectGenerator
             if (col is null)
                 continue;
             var fromCol = $"{fromMember}.{ResolveDataObjectColumnMemberName(fromEntity, col)}";
+            if (TryBuildRequiredEmbeddedSubformKeyRange(
+                    s,
+                    fromCol,
+                    t,
+                    dataObjects,
+                    allTasks,
+                    out var requiredSubformRange))
+            {
+                sb.AppendLine($"        Where.Add({requiredSubformRange});");
+                continue;
+            }
             var rangeWhereExpr = ResolveSelectRangeWhereExpression(s, fromCol, t, dataObjects);
             if (!string.IsNullOrWhiteSpace(rangeWhereExpr))
             {
@@ -65,7 +76,7 @@ internal static partial class ProjectGenerator
                 var directRangeExpr = ResolveFilterOperandExpression(t, fromCol, s.RangeMin.Value, dataObjects);
                 if (IsBooleanLiteralExpression(directRangeExpr))
                 {
-                    sb.AppendLine($"        Where.Add({BuildFilterIsEqualTo(t, fromCol, directRangeExpr)});");
+                    sb.AppendLine($"        Where.Add({BuildFilterBindEqualTo(t, fromCol, directRangeExpr)});");
                     continue;
                 }
             }
@@ -79,6 +90,7 @@ internal static partial class ProjectGenerator
         StringBuilder sb,
         TaskSemantic t,
         IReadOnlyList<DataObjectDef> dataObjects,
+        IReadOnlyList<TaskSemantic> allTasks,
         int? primaryObj,
         string? primaryMember)
     {
@@ -108,7 +120,16 @@ internal static partial class ProjectGenerator
             var cndRangeExpr = isDirectLiteralRange ? "" : ResolveCndRangeExpressionForSelect(s, fromCol, t, dataObjects);
             if (!string.IsNullOrWhiteSpace(cndRangeExpr))
             {
-                sb.AppendLine($"        Where.Add({cndRangeExpr});");
+                if (TryBuildRequiredEmbeddedSubformKeyRange(
+                        s,
+                        fromCol,
+                        t,
+                        dataObjects,
+                        allTasks,
+                        out var sourceCndRequiredSubformRange))
+                    sb.AppendLine($"        Where.Add({sourceCndRequiredSubformRange});");
+                else
+                    sb.AppendLine($"        Where.Add({cndRangeExpr});");
                 emittedRangeWhere = true;
                 continue;
             }
@@ -159,7 +180,7 @@ internal static partial class ProjectGenerator
                     : ResolveFilterOperandExpression(t, fromCol, s.RangeMin.Value, dataObjects);
                 if (IsBooleanLiteralExpression(directRangeExpr))
                 {
-                    sb.AppendLine($"        Where.Add({BuildFilterIsEqualTo(t, fromCol, directRangeExpr)});");
+                    sb.AppendLine($"        Where.Add({BuildFilterBindEqualTo(t, fromCol, directRangeExpr)});");
                     emittedRangeWhere = true;
                     continue;
                 }
@@ -227,7 +248,14 @@ internal static partial class ProjectGenerator
                 emittedRangeWhere = true;
                 continue;
             }
-            var isParameterRange = s.IsParameter || rangeParam is not null || usesLiteralEquality;
+            // A literal equality is a field range, not a parameter range.  Besides
+            // filtering existing rows, XPA uses that value to initialize a new row.
+            // BindEqualTo preserves both behaviours; treating the literal as a
+            // parameter emits IsEqualTo only and can immediately reject an insert
+            // row whose field has not been initialized yet.
+            var isParameterRange =
+                !usesLiteralEquality &&
+                (s.IsParameter || rangeParam is not null);
             var whereExpr = isParameterRange
                 ? BuildFilterIsEqualTo(t, fromCol, fromExpr)
                 : BuildFilterBindEqualTo(t, fromCol, fromExpr);
@@ -261,32 +289,13 @@ internal static partial class ProjectGenerator
             if (virtualResource is not null)
             {
                 var targetExpr = ResolveTaskResourceMemberName(t, virtualResource);
-                var virtualValueExpr = "";
-                var virtualAssignmentIndex = s.AssignmentExpressionId!.Value - 1;
-                var virtualAssignmentSelect = GetEffectiveRangeParameterSelects(t).ElementAtOrDefault(Math.Max(0, virtualAssignmentIndex));
-                if (virtualAssignmentSelect is not null)
-                    virtualValueExpr = ResolveSelectExpression(virtualAssignmentSelect, t, dataObjects, primaryMember ?? "");
-                if (string.IsNullOrWhiteSpace(virtualValueExpr))
-                    virtualValueExpr = ResolveFilterOperandExpression(t, targetExpr, s.AssignmentExpressionId!.Value, dataObjects);
-                if (string.IsNullOrWhiteSpace(virtualValueExpr) || string.IsNullOrWhiteSpace(targetExpr))
-                    continue;
-
-                var virtualCondExpr = "";
-                if (s.RangeMin.HasValue && s.RangeMax.HasValue && s.RangeMin.Value == s.RangeMax.Value)
-                    virtualCondExpr = ResolveExpressionCode(s.RangeMin.Value.ToString(), t, dataObjects, CreateBooleanConditionEmissionContext());
-                if (!string.IsNullOrWhiteSpace(virtualCondExpr) &&
-                    TrySplitCndRangeExpression(virtualCondExpr, out var extractedCond, out _))
-                    virtualCondExpr = EmitExpressionForContext(extractedCond, t, CreateBooleanConditionEmissionContext());
-                else if (!string.IsNullOrWhiteSpace(virtualCondExpr))
-                    virtualCondExpr = EmitExpressionForContext(virtualCondExpr, t, CreateBooleanConditionEmissionContext());
-                if (ShouldSuppressRangeCondition(virtualCondExpr, virtualValueExpr))
-                    virtualCondExpr = "";
-
-                var filterExpr = BuildFilterIsEqualTo(t, targetExpr, virtualValueExpr);
-                if (!string.IsNullOrWhiteSpace(virtualCondExpr))
-                    sb.AppendLine($"        NonDbWhere.Add(CndRange(() => {virtualCondExpr}, {filterExpr}));");
-                else
-                    sb.AppendLine($"        NonDbWhere.Add({filterExpr});");
+                var virtualRangeWhereExpr = ResolveSelectRangeWhereExpression(
+                    s,
+                    targetExpr,
+                    t,
+                    dataObjects);
+                if (!string.IsNullOrWhiteSpace(virtualRangeWhereExpr))
+                    sb.AppendLine($"        NonDbWhere.Add({virtualRangeWhereExpr});");
                 continue;
             }
 
@@ -298,28 +307,49 @@ internal static partial class ProjectGenerator
             }
 
             var fromCol = $"{primaryMember}.{ResolveDataObjectColumnMemberName(fromEntity, col)}";
-            var valueExpr = "";
-            var assignmentIndex = s.AssignmentExpressionId!.Value - 1;
-            var assignmentSelect = GetEffectiveRangeParameterSelects(t).ElementAtOrDefault(Math.Max(0, assignmentIndex));
-            if (assignmentSelect is not null)
-                valueExpr = ResolveSelectExpression(assignmentSelect, t, dataObjects, primaryMember);
-            if (string.IsNullOrWhiteSpace(valueExpr))
-                valueExpr = ResolveFilterOperandExpression(t, fromCol, s.AssignmentExpressionId!.Value, dataObjects);
+            var cndRangeExpr = ResolveCndRangeExpressionForSelect(
+                s,
+                fromCol,
+                t,
+                dataObjects);
+            if (!string.IsNullOrWhiteSpace(cndRangeExpr))
+            {
+                if (TryBuildRequiredEmbeddedSubformKeyRange(
+                        s,
+                        fromCol,
+                        t,
+                        dataObjects,
+                        allTasks,
+                        out var sourceCndRequiredSubformRange))
+                    sb.AppendLine($"        Where.Add({sourceCndRequiredSubformRange});");
+                else
+                    sb.AppendLine($"        Where.Add({cndRangeExpr});");
+                continue;
+            }
+
+            if (!s.RangeMin.HasValue ||
+                !s.RangeMax.HasValue ||
+                s.RangeMin.Value != s.RangeMax.Value)
+            {
+                var rangeWhereExpr = ResolveSelectRangeWhereExpression(
+                    s,
+                    fromCol,
+                    t,
+                    dataObjects);
+                if (!string.IsNullOrWhiteSpace(rangeWhereExpr))
+                    sb.AppendLine($"        Where.Add({rangeWhereExpr});");
+                continue;
+            }
+
+            var valueExpr = ResolveFilterOperandExpression(
+                t,
+                fromCol,
+                s.RangeMin.Value,
+                dataObjects);
             if (string.IsNullOrWhiteSpace(valueExpr))
             {
                 sb.AppendLine($"        // GAP: Range with assignment not mapped to Where (Select={s.Name}, ColumnId={s.ColumnId}, ASS={s.AssignmentExpressionId?.ToString() ?? "?"}). XML={s.XmlTrace ?? "?"}");
                 continue;
-            }
-
-            var condExpr = "";
-            if (s.RangeMin.HasValue && s.RangeMax.HasValue && s.RangeMin.Value == s.RangeMax.Value)
-                condExpr = ResolveExpressionCode(s.RangeMin.Value.ToString(), t, dataObjects, CreateBooleanConditionEmissionContext());
-            if (!string.IsNullOrWhiteSpace(condExpr))
-            {
-                if (TrySplitCndRangeExpression(condExpr, out var extractedCond, out _))
-                    condExpr = EmitExpressionForContext(extractedCond, t, CreateBooleanConditionEmissionContext());
-                else
-                    condExpr = EmitExpressionForContext(condExpr, t, CreateBooleanConditionEmissionContext());
             }
 
             if (valueExpr.Contains("_parent.", StringComparison.Ordinal))
@@ -335,13 +365,25 @@ internal static partial class ProjectGenerator
                 continue;
             }
 
-            if (ShouldSuppressRangeCondition(condExpr, valueExpr))
-                condExpr = "";
+            if (TryBuildRequiredEmbeddedSubformKeyRangeFromOperands(
+                    fromCol,
+                    t,
+                    allTasks,
+                    valueExpr,
+                    valueExpr,
+                    out var requiredSubformRange))
+            {
+                sb.AppendLine($"        Where.Add({requiredSubformRange});");
+                continue;
+            }
 
-            if (!string.IsNullOrWhiteSpace(condExpr))
-                sb.AppendLine($"        Where.Add(CndRange(() => {condExpr}, {BuildFilterIsEqualTo(t, fromCol, valueExpr)}));");
-            else
-                sb.AppendLine($"        Where.Add({BuildFilterIsEqualTo(t, fromCol, valueExpr)});");
+            t.ExpressionsSemantic.EntriesByOrdinal.TryGetValue(
+                s.RangeMin.Value,
+                out var rangeSource);
+            var rangeFilter = IsLiteralRangeAssignment(rangeSource)
+                ? BuildFilterBindEqualTo(t, fromCol, valueExpr)
+                : BuildFilterIsEqualTo(t, fromCol, valueExpr);
+            sb.AppendLine($"        Where.Add({rangeFilter});");
         }
 
         _ = emittedRangeWhere;
@@ -397,7 +439,14 @@ internal static partial class ProjectGenerator
             if (!string.IsNullOrWhiteSpace(minExpr) && !string.IsNullOrWhiteSpace(maxExpr))
             {
                 if (select.RangeMin.Value == select.RangeMax.Value || string.Equals(minExpr, maxExpr, StringComparison.Ordinal))
-                    return BuildFilterIsEqualTo(task, fromCol, minExpr);
+                {
+                    var initializeInsertedRow =
+                        isDirectLiteralRange ||
+                        IsBooleanLiteralExpression(minExpr);
+                    return initializeInsertedRow
+                        ? BuildFilterBindEqualTo(task, fromCol, minExpr)
+                        : BuildFilterIsEqualTo(task, fromCol, minExpr);
+                }
                 return $"{BuildFilterIsGreaterOrEqualTo(task, fromCol, minExpr)}.And({BuildFilterIsLessOrEqualTo(task, fromCol, maxExpr)})";
             }
         }
@@ -461,9 +510,11 @@ internal static partial class ProjectGenerator
                     continue;
                 }
 
-                var predicateExpr = ResolveSourceFragmentCode(sourceSyntax, task, dataObjects, CreateBooleanConditionEmissionContext());
-                if (!string.IsNullOrWhiteSpace(predicateExpr))
-                    sb.AppendLine($"        Where.Add(() => {predicateExpr});");
+                // VarRangeInfo is a range declaration, not an arbitrary row predicate.
+                // If the expression cannot be decomposed into an equality plus its
+                // optional condition, emitting the whole boolean expression as Where
+                // changes XPA semantics and can reject a freshly inserted row before
+                // the user has a chance to fill its fields.
                 continue;
             }
 
@@ -668,16 +719,203 @@ internal static partial class ProjectGenerator
     {
         if (!select.HasRange || !select.RangeMin.HasValue || string.IsNullOrWhiteSpace(fromCol))
             return "";
-        var expr = ResolveExpressionCode(select.RangeMin.Value.ToString(), task, dataObjects);
-        if (string.IsNullOrWhiteSpace(expr))
-            return "";
-        if (!TrySplitCndRangeExpression(expr, out var cond, out var val))
-            return "";
-        cond = EmitExpressionForContext(cond, task, CreateBooleanConditionEmissionContext());
-        val = EmitComparisonRightExpression(task, fromCol, val);
-        if (val.Contains("_parent.", StringComparison.Ordinal))
-            return BuildFilterBindEqualTo(task, fromCol, val);
-        return $"CndRange(() => {cond}, {BuildFilterIsEqualTo(task, fromCol, val)})";
+        if (!TryResolveSourceCndRangeOperands(
+                select.RangeMin.Value,
+                fromCol,
+                task,
+                dataObjects,
+                out var cond,
+                out var val))
+        {
+            var expr = ResolveExpressionCode(select.RangeMin.Value.ToString(), task, dataObjects);
+            if (string.IsNullOrWhiteSpace(expr) ||
+                !TrySplitCndRangeExpression(expr, out cond, out val))
+                return "";
+
+            cond = EmitExpressionForContext(cond, task, CreateBooleanConditionEmissionContext());
+            val = EmitComparisonRightExpression(task, fromCol, val);
+        }
+
+        // A parent-bound value still belongs to the conditional range.  Dropping
+        // CndRange here turns an optional XPA range into an unconditional filter
+        // (for example, filtering TipoPCP by an empty parameter during OP
+        // explosion). BindEqualTo keeps the parent binding semantics, while the
+        // outer CndRange preserves whether that filter is active.
+        var filter = val.Contains("_parent.", StringComparison.Ordinal)
+            ? BuildFilterBindEqualTo(task, fromCol, val)
+            : BuildFilterIsEqualTo(task, fromCol, val);
+        return $"CndRange(() => {cond}, {filter})";
+    }
+
+    private static bool TryResolveSourceCndRangeOperands(
+        int expressionOrdinal,
+        string fromCol,
+        TaskSemantic task,
+        IReadOnlyList<DataObjectDef> dataObjects,
+        out string condition,
+        out string value)
+    {
+        condition = "";
+        value = "";
+        if (!task.ExpressionsSemantic.EntriesByOrdinal.TryGetValue(expressionOrdinal, out var expression) ||
+            expression is null)
+            return false;
+
+        var source = ResolveExpressionEntrySourceSyntax(expression);
+        if (!TryParseFunctionCall(source, out var functionName, out var arguments) ||
+            !string.Equals(
+                NormalizeXpaFunctionContractName(functionName),
+                "CNDRANGE",
+                StringComparison.Ordinal) ||
+            arguments.Count < 2)
+            return false;
+
+        condition = ResolveSourceFragmentCode(
+            arguments[0],
+            task,
+            dataObjects,
+            CreateBooleanConditionEmissionContext());
+
+        if (TryCreateFilterComparisonContext(task, fromCol, out var comparisonContext))
+        {
+            value = ResolveSourceFragmentCode(
+                arguments[1],
+                task,
+                dataObjects,
+                comparisonContext);
+        }
+        else
+        {
+            value = TranslateXpaExpressionToCSharp(arguments[1], task, dataObjects);
+            value = EmitComparisonRightExpression(task, fromCol, value);
+        }
+
+        condition = condition.Trim();
+        value = value.Trim();
+        return !string.IsNullOrWhiteSpace(condition) &&
+               !string.IsNullOrWhiteSpace(value);
+    }
+
+    private static bool TryBuildRequiredEmbeddedSubformKeyRange(
+        TaskLogicSelectDef select,
+        string fromCol,
+        TaskSemantic task,
+        IReadOnlyList<DataObjectDef> dataObjects,
+        IReadOnlyList<TaskSemantic>? allTasks,
+        out string filter)
+    {
+        filter = "";
+        var embeddedSubform = IsEmbeddedSubformTask(task, allTasks);
+        if (!embeddedSubform ||
+            !select.HasRange ||
+            !select.RangeMin.HasValue ||
+            (select.RangeMax.HasValue && select.RangeMax.Value != select.RangeMin.Value))
+            return false;
+
+        if (!TryResolveSourceCndRangeOperands(
+                select.RangeMin.Value,
+                fromCol,
+                task,
+                dataObjects,
+                out var condition,
+                out var value))
+        {
+            var expression = ResolveExpressionCode(select.RangeMin.Value.ToString(), task, dataObjects);
+            if (!TrySplitCndRangeExpression(expression, out condition, out value))
+                return false;
+        }
+
+        return TryBuildRequiredEmbeddedSubformKeyRangeFromOperands(
+            fromCol,
+            task,
+            allTasks,
+            condition,
+            value,
+            out filter);
+    }
+
+    private static bool TryBuildRequiredEmbeddedSubformKeyRangeFromOperands(
+        string fromCol,
+        TaskSemantic task,
+        IReadOnlyList<TaskSemantic>? allTasks,
+        string condition,
+        string value,
+        out string filter)
+    {
+        filter = "";
+        if (!IsEmbeddedSubformTask(task, allTasks) ||
+            string.IsNullOrWhiteSpace(condition) ||
+            string.IsNullOrWhiteSpace(value))
+            return false;
+
+        // CndRange(P_KEY, P_KEY) is commonly used by callable searches to make
+        // a parameter optional. In an embedded subform, however, disabling the
+        // range for an empty numeric master key exposes rows from every master.
+        // Keep the range mandatory only for the exact key-parameter idiom.
+        if (!string.Equals(
+                NormalizeRequiredSubformRangeOperand(condition),
+                NormalizeRequiredSubformRangeOperand(value),
+                StringComparison.Ordinal))
+            return false;
+
+        var isNumericKeyParameter = GetTaskParameters(task)
+            .Any(parameter =>
+                string.Equals(parameter.ParameterType, "NumberParameter", StringComparison.Ordinal) &&
+                string.Equals(
+                NormalizeRequiredSubformRangeOperand(parameter.ColumnMember),
+                NormalizeRequiredSubformRangeOperand(value),
+                StringComparison.Ordinal));
+        if (!isNumericKeyParameter)
+            return false;
+
+        var comparisonValue = EmitComparisonRightExpression(task, fromCol, value);
+        filter = BuildFilterIsEqualTo(task, fromCol, comparisonValue);
+        return true;
+    }
+
+    private static string NormalizeRequiredSubformRangeOperand(string expression)
+    {
+        var current = StripRedundantOuterParentheses(expression.Trim());
+        while (TryParseFunctionCall(current, out var functionName, out var arguments) &&
+               arguments.Count == 1 &&
+               (string.Equals(functionName, "u.CastToBool", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(functionName, "u.CastToNumber", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(functionName, "u.CastToText", StringComparison.OrdinalIgnoreCase)))
+        {
+            current = StripRedundantOuterParentheses(arguments[0].Trim());
+        }
+
+        return NormalizeKey(current);
+    }
+
+    private static bool IsEmbeddedSubformTask(
+        TaskSemantic task,
+        IReadOnlyList<TaskSemantic>? taskScope)
+    {
+        var allTasks = taskScope ?? _allTasks ?? Array.Empty<TaskSemantic>();
+        if (allTasks.Any(owner =>
+                owner.View.SubformBindings.Any(binding =>
+                    binding.Kind == ViewSubformBindingKind.Task &&
+                    binding.TargetTaskOrdinal == task.Ordinal)))
+            return true;
+
+        if (!task.ParentOrdinal.HasValue)
+            return false;
+
+        var parent = GetTaskByOrdinal(task.ParentOrdinal, allTasks);
+        if (parent is null)
+            return false;
+
+        if (parent.View.SubformBindings.Any(binding =>
+                binding.Kind == ViewSubformBindingKind.Task &&
+                binding.TargetTaskOrdinal == task.Ordinal))
+            return true;
+
+        return task.SubtaskIndex.HasValue &&
+               parent.Form?.Controls.Any(control =>
+                   string.Equals(control.Model, "CTRL_GUI0_SUBFORM", StringComparison.OrdinalIgnoreCase) &&
+                   !control.SubformComponentId.HasValue &&
+                   control.SubformTaskNumber == task.SubtaskIndex) == true;
     }
 
     private static bool TrySplitCndRangeExpression(string expr, out string cond, out string val)
@@ -719,6 +957,20 @@ internal static partial class ProjectGenerator
         var trimmed = value.Trim();
         return string.Equals(trimmed, "true", StringComparison.OrdinalIgnoreCase) ||
                string.Equals(trimmed, "false", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsLiteralRangeAssignment(ExpressionEntrySemantic? expression)
+    {
+        if (expression is null)
+            return false;
+        if (expression.IsStringLiteral)
+            return true;
+
+        var source = expression.SourceSyntax;
+        return TryResolveXpaLogicalLiteralCode(source, out _) ||
+               IsNumericLiteralExpressionCentral(source) ||
+               IsSourceDateLiteral(source) ||
+               IsSourceTimeLiteral(source);
     }
 
     private static bool IsSimpleIdentifierPath(string value)

@@ -14,5 +14,6 @@
   <ItemGroup>
     <None Include="XpaRuntime.GenericLauncher.ini" CopyToOutputDirectory="Always" />
     <None Include="XpaRuntime.GenericLauncher.CGGeral.ini" CopyToOutputDirectory="Always" />
+    <None Include="XpaRuntime.GenericLauncher.CG00347.ini" CopyToOutputDirectory="Always" />
   </ItemGroup>
 </Project>

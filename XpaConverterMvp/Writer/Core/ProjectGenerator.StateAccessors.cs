@@ -149,6 +149,7 @@ internal static partial class ProjectGenerator
             DllReferenceMap = source.DllReferenceMap,
             DotNetReferenceAssemblyPathMap = source.DotNetReferenceAssemblyPathMap,
             ProjectReferenceManifests = source.ProjectReferenceManifests,
+            CurrentProjectManifest = source.CurrentProjectManifest,
             ExternalManifestColumnAttrObjIndex = source.ExternalManifestColumnAttrObjIndex,
             ApplicationResourceBindingMap = source.ApplicationResourceBindingMap,
             TaskCommandMemberMapCache = source.TaskCommandMemberMapCache,
@@ -296,6 +297,7 @@ internal static partial class ProjectGenerator
     private static Dictionary<string, string> _dllReferenceMap { get => _state.DllReferenceMap; set => _state.DllReferenceMap = value; }
     private static Dictionary<string, string> _dotNetReferenceAssemblyPathMap { get => _state.DotNetReferenceAssemblyPathMap; set => _state.DotNetReferenceAssemblyPathMap = value; }
     private static Dictionary<string, ProjectManifest> _projectReferenceManifests { get => _state.ProjectReferenceManifests; set => _state.ProjectReferenceManifests = value; }
+    private static ProjectManifest? _currentProjectManifest { get => _state.CurrentProjectManifest; set => _state.CurrentProjectManifest = value; }
     private static HashSet<string>? _userMethodsPublicNames { get => _state.UserMethodsPublicNames; set => _state.UserMethodsPublicNames = value; }
     private static Dictionary<string, string>? _userMethodsPublicNameMap { get => _state.UserMethodsPublicNameMap; set => _state.UserMethodsPublicNameMap = value; }
     private static Dictionary<string, string> _componentFunctionSourceByName { get => _state.ComponentFunctionSourceByName; set => _state.ComponentFunctionSourceByName = value; }

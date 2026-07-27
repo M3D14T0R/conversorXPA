@@ -32,6 +32,14 @@ internal static partial class ProjectGenerator
             .Select(kv => (Component: kv.Key, Manifest: ProjectManifest.LoadForSource(kv.Value)))
             .Where(x => x.Manifest is not null)
             .ToDictionary(x => x.Component, x => x.Manifest!, StringComparer.OrdinalIgnoreCase);
+        _currentProjectManifest = null;
+        if (request.IncrementalOutput &&
+            (request.ForceTaskScopedGeneration || request.TaskFilters is { Count: > 0 }))
+        {
+            var currentProjectName = request.AppNamespace.Split('.').FirstOrDefault() ?? request.AppNamespace;
+            _currentProjectManifest = ProjectManifest.LoadForProject(
+                System.IO.Path.Combine(request.OutputRoot, currentProjectName + ".csproj"));
+        }
         _externalManifestColumnAttrObjIndex = BuildExternalManifestColumnAttrObjIndex();
         var componentFunctionSourceByName = request.Parsed.ComponentFunctions
             .Where(x => !string.IsNullOrWhiteSpace(x.Name) && !string.IsNullOrWhiteSpace(x.ComponentName))
@@ -61,7 +69,7 @@ internal static partial class ProjectGenerator
             kv =>
             {
                 var ns = ResolveNamespaceForComponent(kv.Value.ComponentName);
-                return $"{ns}.Roles.{kv.Value.RoleMemberName}.Allowed";
+                return $"global::{ns}.Roles.{kv.Value.RoleMemberName}";
             },
             StringComparer.OrdinalIgnoreCase);
         _applicationSelectMap = new Dictionary<string, string>(request.Parsed.ApplicationSelectMap, StringComparer.OrdinalIgnoreCase);

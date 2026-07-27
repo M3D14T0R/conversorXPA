@@ -13,7 +13,8 @@ internal static partial class ProjectGenerator
 {
     private static string BuildBindValueSuffix(string bindExpr, TaskSemantic? task = null)
     {
-        if (LooksLikeTaskRunConstruction(bindExpr))
+        if (LooksLikeTaskRunConstruction(bindExpr) ||
+            LooksLikeSideEffectingFunctionOverrideCall(bindExpr, task))
             return $".BindValueToColumnChange(() => {bindExpr})";
         var simpleMember = IsSimpleMemberPath(bindExpr);
         var hasOperatorsOrCalls = ContainsDynamicOperators(bindExpr);
@@ -33,6 +34,32 @@ internal static partial class ProjectGenerator
             return $".BindValue({bindExpr})";
         }
         return $".BindValue(() => {bindExpr})";
+    }
+
+    private static bool LooksLikeSideEffectingFunctionOverrideCall(
+        string bindExpr,
+        TaskSemantic? task)
+    {
+        if (task is null || string.IsNullOrWhiteSpace(bindExpr))
+            return false;
+
+        foreach (var function in task.FunctionOverridesSemantic)
+        {
+            if (!function.OrderedActions.Any(action =>
+                    string.Equals(action.Kind, "Call", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(action.Kind, "Update", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(action.Kind, "Invoke", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(action.Kind, "Stop", StringComparison.OrdinalIgnoreCase)))
+                continue;
+
+            if (Regex.IsMatch(
+                    bindExpr,
+                    $@"(?<![\w.]){Regex.Escape(function.MethodName)}\s*\(",
+                    RegexOptions.CultureInvariant))
+                return true;
+        }
+
+        return false;
     }
 
     private static bool IsResourceDisplayedInView(TaskSemantic task, TaskResourceColumnDef resource)
@@ -355,6 +382,25 @@ internal static partial class ProjectGenerator
         TaskSemantic task,
         IReadOnlyList<DataObjectDef> dataObjects)
     {
+        if (string.Equals(suffix, "RIGHT", StringComparison.OrdinalIgnoreCase))
+        {
+            var rightLiteral = literalValue.Trim();
+            if (_componentRightLiteralMap.TryGetValue(rightLiteral, out var roleReference))
+            {
+                return new XpaTypedExpression(
+                    roleReference,
+                    "ENV.Security.Role",
+                    XpaType.Object);
+            }
+
+            ConversionTelemetry.Log(
+                "UNRESOLVED_RIGHT",
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"task={task.Ordinal} literal={QuoteTelemetry(rightLiteral)}"));
+            return null;
+        }
+
         if (!string.Equals(suffix, "DSOURCE", StringComparison.OrdinalIgnoreCase))
             return null;
 
@@ -378,7 +424,8 @@ internal static partial class ProjectGenerator
         return new XpaTypedExpression(
             $"typeof({ResolveModelTypeReference(dataObject, task)})",
             "System.Type",
-            XpaType.Object);
+            XpaType.Object,
+            objectOrdinal.ToString(CultureInfo.InvariantCulture));
     }
 
     private static XpaTypedExpression? ResolveTypedXpaSymbol(
@@ -441,6 +488,14 @@ internal static partial class ProjectGenerator
         if (string.IsNullOrWhiteSpace(binding))
             binding = name;
 
+        if (resolvedResource is null && !string.IsNullOrWhiteSpace(binding))
+        {
+            resolvedResource = ResolveResourceByTargetPath(
+                task,
+                binding,
+                _allTasks ?? Array.Empty<TaskSemantic>());
+        }
+
         var returnType = "";
         if (resolvedResource is not null)
             TryResolveTaskResourceStrictReturnType(resolvedResource, task, out returnType);
@@ -451,7 +506,8 @@ internal static partial class ProjectGenerator
         return new XpaTypedExpression(
             binding,
             string.IsNullOrWhiteSpace(returnType) ? "object" : returnType,
-            type == XpaType.Unknown ? XpaType.Object : type);
+            type == XpaType.Unknown ? XpaType.Object : type,
+            BindingCode: binding);
     }
 
     private static XpaTypedExpression? ResolveTypedXpaFunction(
@@ -461,12 +517,38 @@ internal static partial class ProjectGenerator
         XpaExpressionDestination expressionDestination)
     {
         var normalizedFunction = NormalizeXpaFunctionContractName(name);
+        if (normalizedFunction == "RIGHTS" &&
+            arguments.Count == 1 &&
+            string.Equals(
+                NormalizeReturnTypeToken(arguments[0].ReturnType),
+                "ENV.Security.Role",
+                StringComparison.Ordinal))
+        {
+            return new XpaTypedExpression(
+                $"u.Rights({arguments[0].Code})",
+                "Bool",
+                XpaType.Bool);
+        }
+
         if (normalizedFunction == "DNSET" && arguments.Count == 2)
         {
             return new XpaTypedExpression(
                 $"{arguments[0].Code} = {arguments[1].Code}",
                 "object",
                 XpaType.Object);
+        }
+
+        if (normalizedFunction == "DNREF" && arguments.Count == 1)
+            return arguments[0];
+
+        if (normalizedFunction == "COMHANDLEGET" &&
+            arguments.Count == 1 &&
+            !string.IsNullOrWhiteSpace(arguments[0].BindingCode))
+        {
+            return new XpaTypedExpression(
+                $"u.COMHandleGet({arguments[0].BindingCode})",
+                "Number",
+                XpaType.Number);
         }
 
         if (normalizedFunction == "DNCAST" &&
@@ -577,6 +659,19 @@ internal static partial class ProjectGenerator
                 // by the surrounding typed expression.
                 argument = cndRangeTimeValue;
             }
+            else if (normalizedFunction == "CNDRANGE" &&
+                     i == 1 &&
+                     expressionDestination.Type is not (XpaType.Unknown or XpaType.Object) &&
+                     XpaExpressionTypeMap.TryApply(
+                         argument,
+                         expressionDestination,
+                         out var cndRangeContextualValue))
+            {
+                // CndRange is generic in XPA. Its value argument must be
+                // materialized with the surrounding destination type before
+                // C# overload resolution (not converted after the call).
+                argument = cndRangeContextualValue;
+            }
             else if (i == 0 &&
                 RequiresVariableIndexArgument(name) &&
                 argument.Type != XpaType.Number)
@@ -599,6 +694,35 @@ internal static partial class ProjectGenerator
             {
                 // AddTime over a Date is the XPA date-arithmetic overload.
                 // XPARuntimeCore exposes that overload as AddDate.
+            }
+            else if (normalizedFunction == "DBNAME" &&
+                     i == 0 &&
+                     string.Equals(
+                         NormalizeReturnTypeToken(argument.ReturnType),
+                         "System.Type",
+                         StringComparison.Ordinal))
+            {
+                // A DSOURCE literal is resolved centrally to typeof(Entity).
+                // ENV.UserMethods exposes a matching DBName(Type) overload.
+                // Coercing this typed reference to Number loses it (the runtime
+                // conversion returns zero) and therefore loses the physical
+                // table name.
+            }
+            else if (TryResolveTypedFunctionArgumentDestination(
+                         name,
+                         target,
+                         i,
+                         arguments.Count,
+                         task,
+                         out var columnArgumentDestination) &&
+                     IsColumnBaseReturnContract(columnArgumentDestination.ReturnType) &&
+                     !string.IsNullOrWhiteSpace(argument.BindingCode))
+            {
+                argument = new XpaTypedExpression(
+                    argument.BindingCode,
+                    columnArgumentDestination.ReturnType,
+                    XpaType.Object,
+                    BindingCode: argument.BindingCode);
             }
             else if (TryApplyDotNetConstructorArgumentEvidence(
                          target,
@@ -647,6 +771,9 @@ internal static partial class ProjectGenerator
             returnType = variableAccessorReturnType;
         else if (conditionalResultType is not (XpaType.Unknown or XpaType.Object))
             returnType = XpaExpressionTypeMap.TypeName(conditionalResultType);
+        else if (normalizedFunction == "CNDRANGE" &&
+                 expressionDestination.Type is not (XpaType.Unknown or XpaType.Object))
+            returnType = expressionDestination.ReturnType;
         else if (normalizedFunction == "CNDRANGE" && arguments.Count >= 2)
             returnType = arguments[1].Type == XpaType.Time ? "Number" : arguments[1].ReturnType;
         else if (TryGetAccessibleFunctionContract(task, name, out var accessibleContract, out _))
@@ -677,7 +804,10 @@ internal static partial class ProjectGenerator
         return new XpaTypedExpression(
             renderedCode,
             string.IsNullOrWhiteSpace(returnType) ? "object" : returnType,
-            type == XpaType.Unknown ? XpaType.Object : type);
+            type == XpaType.Unknown ? XpaType.Object : type,
+            BindingCode: IsRuntimeValueAccessorFunction(normalizedFunction) && arguments.Count > 0
+                ? arguments[0].BindingCode ?? arguments[0].Code
+                : null);
     }
 
     private static XpaType ResolveConditionalFunctionResultType(
@@ -716,11 +846,42 @@ internal static partial class ProjectGenerator
         IReadOnlyList<XpaTypedExpression> arguments,
         TaskSemantic task)
     {
+        if (normalizedFunction == "VECGET" &&
+            arguments.Count >= 1 &&
+            TryResolveArrayItemTypeFromReturnType(
+                arguments[0].ReturnType,
+                out var arrayItemReturnType))
+        {
+            return NormalizeReturnTypeToken(arrayItemReturnType);
+        }
+
         if (normalizedFunction is not ("VARPREV" or "VARCURR" or "VARCURRN") ||
             arguments.Count != 1)
             return "";
 
         var argument = arguments[0];
+        if (normalizedFunction == "VARCURRN")
+        {
+            // VarCurrN receives the *name* of the variable, not the variable
+            // whose value is returned. Therefore the selector's Text type is
+            // not evidence that the result is Text. Keep dynamic selectors as
+            // object so the typed expression tree can materialize the value
+            // from its comparison/assignment context.
+            if (!string.IsNullOrWhiteSpace(argument.LiteralValue))
+            {
+                task.ResourcesSemantic.ByName.TryGetValue(argument.LiteralValue, out var resource);
+                if (resource is null)
+                    task.ResourcesSemantic.ByLegacyName.TryGetValue(argument.LiteralValue, out resource);
+                if (resource is not null &&
+                    TryResolveTaskResourceStrictReturnType(resource, task, out var literalReturnType))
+                {
+                    return NormalizeReturnTypeToken(GetValueReturnType(literalReturnType));
+                }
+            }
+
+            return "";
+        }
+
         if (TryParseFunctionCall(argument.Code, out var indexFunction, out var indexArguments) &&
             IsTopLevelCall(indexFunction, "u.IndexOf") &&
             indexArguments.Count > 0 &&
@@ -765,6 +926,7 @@ internal static partial class ProjectGenerator
         {
             var qualifiedName = name["DotNet.".Length..];
             return HasClrConstructorEvidenceFromMetadata(qualifiedName, argumentCount) ||
+                   IsDotNetObjectTypeDeclaredInTaskScope(task, qualifiedName) ||
                    (TryLoadClrTypeFromMappedReference(qualifiedName, out var clrType) &&
                     clrType is not null)
                 ? $"new global::{qualifiedName}"
@@ -788,6 +950,12 @@ internal static partial class ProjectGenerator
         if (TryGetComponentFunctionCallContract(name, out var componentContract))
             return componentContract.TargetName;
 
+        if (string.Equals(
+                NormalizeXpaFunctionContractName(name),
+                "VARCURRN",
+                StringComparison.Ordinal))
+            return VariableCurrentByNameHelper;
+
         var userMethods = GetUserMethodsPublicNameMap();
         if (userMethods.TryGetValue(name, out var userMethod))
             return $"u.{userMethod}";
@@ -801,6 +969,37 @@ internal static partial class ProjectGenerator
         return name.Contains('.', StringComparison.Ordinal)
             ? name
             : $"u.{name}";
+    }
+
+    private static bool IsDotNetObjectTypeDeclaredInTaskScope(
+        TaskSemantic task,
+        string qualifiedName)
+    {
+        var current = task;
+        var visited = new HashSet<int>();
+        while (visited.Add(current.Ordinal))
+        {
+            if (current.ResourcesSemantic.Ordered.Any(resource =>
+                    IsDotNetTaskResource(resource) &&
+                    string.Equals(
+                        NormalizeRawDotNetObjectType(resource.ObjectType ?? ""),
+                        qualifiedName,
+                        StringComparison.Ordinal)))
+            {
+                return true;
+            }
+
+            if (!current.ParentOrdinal.HasValue)
+                break;
+            var parent = GetTaskByOrdinal(
+                current.ParentOrdinal.Value,
+                _allTasks ?? Array.Empty<TaskSemantic>());
+            if (parent is null)
+                break;
+            current = parent;
+        }
+
+        return false;
     }
 
     private static bool TryResolveComponentFunctionTargetWithoutContract(
@@ -817,9 +1016,8 @@ internal static partial class ProjectGenerator
             return false;
         }
 
-        var componentNamespace = ResolveNamespaceForComponent(componentName);
         var methodName = ToCodeIdentifierPreservingCase(lookupName);
-        target = $"global::{componentNamespace}.ComponentFunctions.{methodName}";
+        target = $"ComponentFunctionCompat.{methodName}";
         return true;
     }
 
@@ -838,6 +1036,11 @@ internal static partial class ProjectGenerator
             !TryReadDotNetMethodArgumentTypeEvidence(
                 targetName,
                 task,
+                argumentIndex,
+                argumentCount,
+                out returnType) &&
+            !TryResolveXpaFunctionEmissionArgumentReturnTypeContract(
+                sourceName,
                 argumentIndex,
                 argumentCount,
                 out returnType) &&

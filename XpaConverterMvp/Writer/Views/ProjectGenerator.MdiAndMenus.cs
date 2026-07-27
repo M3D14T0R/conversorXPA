@@ -6,9 +6,6 @@ internal static partial class ProjectGenerator
 {
     private static void WriteMdiAndMenus(ProjectSemantic parsed, string viewsDir, string appNamespace)
     {
-        if (parsed.Menus.Count == 0)
-            return;
-
         var menus = parsed.Menus.OrderBy(m => m.Obj).ToList();
         var appRoot = appNamespace.Split('.').FirstOrDefault() ?? appNamespace;
         var systemPulldownObj = parsed.ProjectMenuSettings.SystemPulldownMenuObj

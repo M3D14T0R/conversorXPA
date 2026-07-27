@@ -36,7 +36,9 @@ internal static partial class ProjectGenerator
     {
         if (!int.TryParse(obj, out var n))
             return "";
-        var task = GetTaskByOrdinal(n, tasks);
+        var task = tasks.FirstOrDefault(t =>
+                       !t.ParentOrdinal.HasValue &&
+                       t.TopLevelProgramIndex == n);
         return task is null ? "" : ResolveTaskClassName(task, tasks);
     }
 
@@ -270,6 +272,17 @@ internal static partial class ProjectGenerator
         if (_externalTaskTypeReferenceCache.TryGetValue(cacheKey, out var cached))
             return cached;
 
+        var currentProjectDetail = ResolveCurrentProjectProgramDetail(call);
+        if (currentProjectDetail is not null)
+        {
+            var currentNamespace = string.IsNullOrWhiteSpace(_currentProjectManifest?.Namespace)
+                ? _targetNamespace
+                : _currentProjectManifest!.Namespace;
+            var currentProjectType = $"{currentNamespace}.{currentProjectDetail.ClassName}";
+            _externalTaskTypeReferenceCache[cacheKey] = currentProjectType;
+            return currentProjectType;
+        }
+
         if (string.IsNullOrWhiteSpace(call.TargetComponentName))
         {
             _externalTaskTypeReferenceCache[cacheKey] = null;
@@ -313,6 +326,7 @@ internal static partial class ProjectGenerator
             call.TargetComponentName ?? "",
             call.TargetPublicName ?? "",
             call.TargetObjectId?.ToString(CultureInfo.InvariantCulture) ?? "",
+            call.TaskId?.ToString(CultureInfo.InvariantCulture) ?? "",
             call.OperationType ?? "");
 
     private static string NormalizeTaskName(string s)

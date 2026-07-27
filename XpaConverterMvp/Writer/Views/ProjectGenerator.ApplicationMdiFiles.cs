@@ -35,6 +35,7 @@ internal static partial class ProjectGenerator
         mdi.AppendLine("        {");
         mdi.AppendLine("            Common.ProcessMDIMessage(this, m);");
         mdi.AppendLine("            base.WndProc(ref m);");
+        mdi.AppendLine("            Application.Instance.RunRequestedStartProgram();");
         mdi.AppendLine("            Common.ProcessMDIMessageAfterMDI(this, m, SizeFromClientSize);");
         mdi.AppendLine("        }");
         mdi.AppendLine("        protected override void OnClosed(EventArgs e)");

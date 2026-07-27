@@ -264,12 +264,14 @@ internal static partial class ProjectGenerator
                 continue;
 
             var targetTask = ResolveTaskByCall(task, call, _allTasks);
-            if (targetTask is null)
-                continue;
-
-            var parameters = GetTaskParameters(targetTask);
-            if (parameters.Count == 0 ||
-                call.ArgumentDefs.Count != parameters.Count)
+            var parameterTypes = targetTask is not null
+                ? GetTaskParameters(targetTask)
+                    .Select(parameter => parameter.ParameterType)
+                    .ToArray()
+                : ResolveExternalProgramParameterTypes(call)?.ToArray() ??
+                  Array.Empty<string>();
+            if (parameterTypes.Length == 0 ||
+                call.ArgumentDefs.Count != parameterTypes.Length)
                 continue;
 
             for (var i = 0; i < call.ArgumentDefs.Count; i++)
@@ -279,7 +281,7 @@ internal static partial class ProjectGenerator
                     !CallArgumentReferencesSelect(argument, selectName, task))
                     continue;
 
-                var expected = ExpectedTypeForParameterType(parameters[i].ParameterType);
+                var expected = ExpectedTypeForParameterType(parameterTypes[i]);
                 var returnType = NormalizeReturnTypeToken(
                     GetValueReturnType(expected.ReturnType));
                 if (!string.IsNullOrWhiteSpace(returnType))

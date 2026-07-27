@@ -6,6 +6,38 @@ namespace XpaConverterMvp;
 
 internal static partial class ProjectGenerator
 {
+    private static bool TryResolveEventAncestor(
+        TaskSemantic task,
+        int? eventParent,
+        out TaskSemantic ancestor,
+        out string relativePrefix)
+    {
+        ancestor = null!;
+        relativePrefix = "";
+        if (!eventParent.HasValue ||
+            eventParent.Value <= 0 ||
+            IsApplicationEventReference(eventParent, null))
+            return false;
+
+        var currentTask = task;
+        for (var level = 0; level < eventParent.Value; level++)
+        {
+            if (!currentTask.ParentOrdinal.HasValue)
+                return false;
+
+            currentTask = GetTaskByOrdinal(
+                currentTask.ParentOrdinal.Value,
+                _allTasks ?? Array.Empty<TaskSemantic>());
+            if (currentTask is null)
+                return false;
+
+            relativePrefix += "_parent.";
+        }
+
+        ancestor = currentTask;
+        return true;
+    }
+
     private static string ResolveHandlerCommandName(TaskHandlerDef h, TaskSemantic task)
     {
         if (IsApplicationEventReference(h.EventParent, h.EventPublicComponentId) &&
@@ -19,24 +51,12 @@ internal static partial class ProjectGenerator
                 return ResolveTaskCommandIdentifier(appTask, appEvt.Description, preserveCase: true);
         }
 
-        if (h.EventParent.HasValue && task.ParentOrdinal.HasValue)
+        if (TryResolveEventAncestor(task, h.EventParent, out var parentTask, out var relativePrefix))
         {
-            var relativePrefix = "_parent.";
-            var currentTask = GetTaskByOrdinal(task.ParentOrdinal.Value, _allTasks);
-            if (int.TryParse(h.EventPublicObject, out var parentEventObj))
-            {
-                while (currentTask is not null)
-                {
-                    if (currentTask.EventsSemantic.ItemsByOrdinal.TryGetValue(parentEventObj, out var parentEvt) &&
-                        !string.IsNullOrWhiteSpace(parentEvt.Description))
-                        return relativePrefix + ResolveTaskCommandIdentifier(currentTask, parentEvt.Description, preserveCase: true);
-
-                    relativePrefix += "_parent.";
-                    if (!currentTask.ParentOrdinal.HasValue)
-                        break;
-                    currentTask = GetTaskByOrdinal(currentTask.ParentOrdinal.Value, _allTasks);
-                }
-            }
+            if (int.TryParse(h.EventPublicObject, out var parentEventObj) &&
+                parentTask.EventsSemantic.ItemsByOrdinal.TryGetValue(parentEventObj, out var parentEvt) &&
+                !string.IsNullOrWhiteSpace(parentEvt.Description))
+                return relativePrefix + ResolveTaskCommandIdentifier(parentTask, parentEvt.Description, preserveCase: true);
         }
 
         if (TryResolveHandlerEvent(h, task, out var evt) &&
@@ -59,20 +79,11 @@ internal static partial class ProjectGenerator
             if (appTask is not null && appTask.EventsSemantic.DescriptionByOrdinal.TryGetValue(eventObj, out var appDescription))
                 return "Application." + ResolveTaskCommandIdentifier(appTask, appDescription, preserveCase: true);
         }
-        if (eventParent.HasValue && task.ParentOrdinal.HasValue)
+        if (TryResolveEventAncestor(task, eventParent, out var parentTask, out var relativePrefix))
         {
-            var relativePrefix = "_parent.";
-            var currentTask = GetTaskByOrdinal(task.ParentOrdinal, _allTasks ?? Array.Empty<TaskSemantic>());
-            while (currentTask is not null)
-            {
-                if (currentTask.EventsSemantic.DescriptionByOrdinal.TryGetValue(eventObj, out var parentDescription))
-                    return relativePrefix + ResolveTaskCommandIdentifier(currentTask, parentDescription, preserveCase: true);
-
-                relativePrefix += "_parent.";
-                if (!currentTask.ParentOrdinal.HasValue)
-                    break;
-                currentTask = GetTaskByOrdinal(currentTask.ParentOrdinal, _allTasks ?? Array.Empty<TaskSemantic>());
-            }
+            if (parentTask.EventsSemantic.DescriptionByOrdinal.TryGetValue(eventObj, out var parentDescription))
+                return relativePrefix + ResolveTaskCommandIdentifier(parentTask, parentDescription, preserveCase: true);
+            return "";
         }
         if (task.EventsSemantic.DescriptionByOrdinal.TryGetValue(eventObj, out var description))
             return ResolveTaskCommandIdentifier(task, description, preserveCase: true);
@@ -92,20 +103,11 @@ internal static partial class ProjectGenerator
             return null;
         }
 
-        if (raise.EventParent.HasValue && task.ParentOrdinal.HasValue)
+        if (TryResolveEventAncestor(task, raise.EventParent, out var parentTask, out _))
         {
-            var currentTask = GetTaskByOrdinal(task.ParentOrdinal, _allTasks ?? Array.Empty<TaskSemantic>());
-            while (currentTask is not null)
-            {
-                if (currentTask.EventsSemantic.ItemsByOrdinal.TryGetValue(eventObj, out var parentEvent))
-                    return parentEvent.Parameters.Count;
-
-                if (!currentTask.ParentOrdinal.HasValue)
-                    break;
-                currentTask = GetTaskByOrdinal(currentTask.ParentOrdinal, _allTasks ?? Array.Empty<TaskSemantic>());
-            }
-
-            return null;
+            return parentTask.EventsSemantic.ItemsByOrdinal.TryGetValue(eventObj, out var parentEvent)
+                ? parentEvent.Parameters.Count
+                : null;
         }
 
         if (task.EventsSemantic.ItemsByOrdinal.TryGetValue(eventObj, out var taskEvent))
@@ -126,21 +128,10 @@ internal static partial class ProjectGenerator
             if (appTask is not null && appTask.EventsSemantic.ItemsByOrdinal.TryGetValue(eventObj, out var appEvent))
                 parameters = appEvent.Parameters;
         }
-        else if (raise.EventParent.HasValue && task.ParentOrdinal.HasValue)
+        else if (TryResolveEventAncestor(task, raise.EventParent, out var parentTask, out _))
         {
-            var currentTask = GetTaskByOrdinal(task.ParentOrdinal, _allTasks ?? Array.Empty<TaskSemantic>());
-            while (currentTask is not null)
-            {
-                if (currentTask.EventsSemantic.ItemsByOrdinal.TryGetValue(eventObj, out var parentEvent))
-                {
-                    parameters = parentEvent.Parameters;
-                    break;
-                }
-
-                if (!currentTask.ParentOrdinal.HasValue)
-                    break;
-                currentTask = GetTaskByOrdinal(currentTask.ParentOrdinal, _allTasks ?? Array.Empty<TaskSemantic>());
-            }
+            if (parentTask.EventsSemantic.ItemsByOrdinal.TryGetValue(eventObj, out var parentEvent))
+                parameters = parentEvent.Parameters;
         }
         else if (task.EventsSemantic.ItemsByOrdinal.TryGetValue(eventObj, out var taskEvent))
         {
@@ -152,7 +143,8 @@ internal static partial class ProjectGenerator
 
         return (
             parameters.Select(ResolveEventParameterType).ToArray(),
-            parameters.Select(_ => "Input").ToArray());
+            parameters.Select(parameter => ResolveParameterDirection(
+                ToParameterIdentifier(parameter.Name))).ToArray());
     }
 
     private static string ResolveEventParameterType(TaskEventParameterDef parameter)

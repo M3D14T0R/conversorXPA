@@ -29,6 +29,18 @@ internal static partial class ProjectGenerator
                     var target = ResolveUpdateTargetExpression(up.Variable, t, dataObjects, allTasks);
                     if (target.StartsWith("_parent.", StringComparison.Ordinal))
                     {
+                        if (TryEmitUpdateWithoutValueStatements(
+                                sb,
+                                "        ",
+                                up,
+                                target,
+                                t,
+                                dataObjects,
+                                includeCondition: true))
+                        {
+                            continue;
+                        }
+
                         var targetInfo = ResolveTargetValueInfo(t, up.Variable, target);
                         var value = ResolveUpdateValueExpression(up.WithValue, t, dataObjects, CreateAssignmentEmissionContext(targetInfo, target));
                         var cond = up.ConditionExpressionId.HasValue ? ResolveExpressionCode(up.ConditionExpressionId.Value.ToString(), t, dataObjects, CreateBooleanConditionEmissionContext()) : "";
@@ -53,6 +65,7 @@ internal static partial class ProjectGenerator
                 }
                 EmitRowAction(sb, action, t, dataObjects, allTasks, "        ");
             }
+            EmitRaiseStatements(sb, row.Raises, t, dataObjects, "        ");
         }
         sb.AppendLine("    }");
     }

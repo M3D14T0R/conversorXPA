@@ -780,10 +780,14 @@ internal static partial class ProjectGenerator
             if (string.IsNullOrWhiteSpace(snippetParameterTypes[i]))
                 continue;
 
-            normalized[i] = EmitExpressionForContext(
-                normalized[i],
-                task,
-                CreateRunArgumentEmissionContext(snippetParameterTypes[i], preserveBinding: false));
+            if (TryEmitExpectedArgumentFromReliableEvidence(
+                    normalized[i],
+                    snippetParameterTypes[i],
+                    task,
+                    out var emitted))
+            {
+                normalized[i] = emitted;
+            }
         }
 
         return normalized;

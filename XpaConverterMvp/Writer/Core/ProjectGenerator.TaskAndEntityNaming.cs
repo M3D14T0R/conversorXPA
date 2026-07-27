@@ -123,6 +123,7 @@ internal static partial class ProjectGenerator
 
         foreach (var name in ResolveFrameworkReservedTaskMemberNames(task))
             reserved.Add(name);
+        reserved.Add(VariableCurrentByNameHelper);
 
         var allTasks = _allTasks ?? Array.Empty<TaskSemantic>();
         reserved.Add(ResolveTaskClassName(task, allTasks));

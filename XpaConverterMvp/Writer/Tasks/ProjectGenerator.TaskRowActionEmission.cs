@@ -64,7 +64,7 @@ internal static partial class ProjectGenerator
         }
         if (!string.IsNullOrWhiteSpace(actionCond))
         {
-            sb.AppendLine($"{pad}if ({actionCond})");
+            sb.AppendLine($"{pad}if (({actionCond}))");
             sb.AppendLine($"{pad}{{");
             EmitRowActionCore(sb, StripActionCondition(action), t, dataObjects, allTasks, pad + "    ", suppressForcedUndo: suppressForcedUndo);
             sb.AppendLine($"{pad}}}");

@@ -8,3 +8,12 @@ TestResults/
 
 **/bin/
 **/obj/
+
+# Local conversion/build probes and runtime diagnostics
+/diagnostics/
+/XpaRuntime.GenericLauncher/diagnostics/
+/mgerror.log
+
+# Machine-specific launcher profiles
+/XpaRuntime.GenericLauncher/XpaRuntime.GenericLauncher.CG00347.ini
+/XpaRuntime.GenericLauncher/XpaRuntime.GenericLauncher.CG06353-doc-fixed.ini

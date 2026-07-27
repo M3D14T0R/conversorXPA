@@ -24,11 +24,9 @@ internal static partial class ProjectGenerator
 
     private static bool TryResolveHandlerEvent(TaskHandlerDef h, TaskSemantic task, out TaskEventDef evt)
     {
-        if (h.EventParent.HasValue && task.ParentOrdinal.HasValue)
+        if (TryResolveEventAncestor(task, h.EventParent, out var parentTask, out _))
         {
-            var parentTask = GetTaskByOrdinal(task.ParentOrdinal.Value, _allTasks);
-            if (parentTask is not null &&
-                int.TryParse(h.EventPublicObject, out var parentEventObj) &&
+            if (int.TryParse(h.EventPublicObject, out var parentEventObj) &&
                 parentTask.EventsSemantic.ItemsByOrdinal.TryGetValue(parentEventObj, out evt!))
                 return true;
         }

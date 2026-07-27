@@ -31,6 +31,31 @@ internal static partial class ProjectGenerator
         if (resource is null)
             return false;
 
+        if (TryEmitUpdateWithoutValueStatements(
+                sb,
+                pad,
+                up,
+                target,
+                task,
+                dataObjects,
+                suppressForcedUndo,
+                includeCondition: true))
+        {
+            totalStopwatch.Stop();
+            LogSlowDirectUpdate(
+                task,
+                allTasks,
+                action,
+                totalStopwatch.Elapsed,
+                targetStopwatch.Elapsed,
+                resourceStopwatch.Elapsed,
+                TimeSpan.Zero,
+                TimeSpan.Zero,
+                TimeSpan.Zero,
+                TimeSpan.Zero);
+            return true;
+        }
+
         if (TryBuildUnsupportedUpdateExpressionComment(up.WithValue, task, out var unsupportedComment))
         {
             sb.AppendLine($"{pad}{unsupportedComment}");

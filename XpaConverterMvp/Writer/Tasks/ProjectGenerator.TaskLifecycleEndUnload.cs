@@ -29,8 +29,8 @@ internal static partial class ProjectGenerator
                 if (!EmitDirectResourceAssignment(sb, action, t, dataObjects, allTasks, "        "))
                     EmitRowAction(sb, action, t, dataObjects, allTasks, "        ");
             }
+            EmitRaiseStatements(sb, row.Raises, t, dataObjects, "        ");
         }
-        EmitRaiseStatements(sb, t.Logic.EndRaises, t, dataObjects, "        ");
         foreach (var io in endIos)
         {
             if (!io.FormEntryIndex.HasValue || !writeCallMap.TryGetValue(io.FormEntryIndex.Value, out var writeCall))

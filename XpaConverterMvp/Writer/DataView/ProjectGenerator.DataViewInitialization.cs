@@ -63,6 +63,8 @@ internal static partial class ProjectGenerator
             TimeSection(() => linkMembers = BuildLinkMembers(t, dataObjects, modelMembers, primaryObj), "DATAVIEW", className, "build-link-members");
         var linkParamCursorByDbObj = new Dictionary<int, int>();
         var writeModeBoundColumns = new HashSet<string>(StringComparer.Ordinal);
+        var mutableFunctionAssignmentTargets =
+            ResolveMutableFunctionAssignmentTargets(t, dataObjects, allTasks);
         var dataObjectByOrdinal = _dataObjectsByOrdinal;
         var resourceDbByObject = t.ResourceDbs
             .GroupBy(r => r.DataObject)
@@ -320,7 +322,7 @@ internal static partial class ProjectGenerator
         if (!suppressImplicitDataView)
         {
             TimeSection(() => EmitSubtaskWhereByRangeAssignments(sb, t, dataObjects, allTasks), "DATAVIEW", className, "emit-subtask-range-assignments");
-            TimeSection(() => EmitTaskWhereByRanges(sb, t, dataObjects, primaryObj, primaryMember), "DATAVIEW", className, "emit-task-where-ranges");
+            TimeSection(() => EmitTaskWhereByRanges(sb, t, dataObjects, allTasks, primaryObj, primaryMember), "DATAVIEW", className, "emit-task-where-ranges");
             TimeSection(() => EmitTaskRangeExpressions(sb, t, dataObjects), "DATAVIEW", className, "emit-task-range-expressions");
             TimeSection(() => EmitExpandBeforeFlowCalls(sb, t, dataObjects, allTasks), "DATAVIEW", className, "emit-expand-before-flow");
         }
@@ -380,7 +382,11 @@ internal static partial class ProjectGenerator
                     bindExpr = AdjustBindValueExpressionForTarget(sel, refExpr, bindExpr, t, dataObjects);
                     sw.Stop();
                     adjustBindMs += sw.ElapsedMilliseconds;
-                    var suppressBind = writeModeBoundColumns.Contains(refExpr);
+                    var suppressBind =
+                        writeModeBoundColumns.Contains(refExpr) ||
+                        (sel.IsFunctionSelect &&
+                         sel.AssignmentExpressionId.HasValue &&
+                         mutableFunctionAssignmentTargets.Contains(refExpr));
                     var addCollection = sel.IsFunctionSelect ? "AdditionalColumns" : "Columns";
                     var allowBindForRangedVirtual = sel.HasRange &&
                                                     string.Equals(sel.Type, "V", StringComparison.OrdinalIgnoreCase) &&

@@ -54,8 +54,7 @@ internal static partial class ProjectGenerator
             return "DynamicSQLSupportingDataProvider";
         }
 
-        if (string.Equals(dataSource, "Memory", StringComparison.OrdinalIgnoreCase) ||
-            dataSource.Contains("Memory", StringComparison.OrdinalIgnoreCase))
+        if (IsMemoryDataSourceName(dataSource))
             return "XPARuntimeCore.Box.Data.DataProvider.IEntityDataProvider";
         if (dataSource.Contains("XML", StringComparison.OrdinalIgnoreCase))
             return "XmlEntityDataProvider";
@@ -73,12 +72,18 @@ internal static partial class ProjectGenerator
             return $"ConnectionManager.GetSQLDataProvider(\"{Escape(dataSource)}\")";
         }
 
-        if (string.Equals(dataSource, "Memory", StringComparison.OrdinalIgnoreCase) ||
-            dataSource.Contains("Memory", StringComparison.OrdinalIgnoreCase))
+        if (IsMemoryDataSourceName(dataSource))
             return "MemoryDatabase.Instance";
         if (dataSource.Contains("XML", StringComparison.OrdinalIgnoreCase))
             return $"ConnectionManager.GetXmlDataProvider(\"{Escape(dataSource)}\")";
         return $"ConnectionManager.GetSQLDataProvider(\"{Escape(dataSource)}\")";
+    }
+
+    private static bool IsMemoryDataSourceName(string dataSource)
+    {
+        return dataSource.Contains("Memory", StringComparison.OrdinalIgnoreCase) ||
+               dataSource.Contains("Memoria", StringComparison.OrdinalIgnoreCase) ||
+               dataSource.Contains("Memória", StringComparison.OrdinalIgnoreCase);
     }
 
     private static Dictionary<string, string> ParseMagicDatabaseKinds(string sourceRoot)

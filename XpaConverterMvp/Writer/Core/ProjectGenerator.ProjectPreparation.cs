@@ -13,7 +13,8 @@ internal static partial class ProjectGenerator
         ProjectOutputLayout outputLayout,
         string sourceRoot,
         string appNamespace,
-        bool parallelTaskGeneration)
+        bool parallelTaskGeneration,
+        bool incrementalOutput)
     {
         if (!string.IsNullOrWhiteSpace(scope.NormalizedFolderFilter))
             return;
@@ -24,6 +25,21 @@ internal static partial class ProjectGenerator
         Directory.CreateDirectory(outputLayout.SharedDir);
         Directory.CreateDirectory(outputLayout.PropertiesDir);
         Directory.CreateDirectory(outputLayout.ProgramsDir);
+
+        // A task-scoped incremental conversion is built from a reduced XML. Its
+        // semantic graph intentionally contains only the selected tasks, so it
+        // must not replace project-wide assets (for example Printers.cs) that
+        // were generated from the complete project.
+        if (incrementalOutput && scope.TaskScopedGeneration)
+        {
+            LogProgress($"Stage: shared assets skipped for incremental task scope -> {appNamespace}");
+            // Program.cs depends only on the application namespace and the
+            // converter's runtime bootstrap contract. Refreshing it is safe
+            // even when the reduced XML does not contain the full project.
+            WriteProgramEntry(outputLayout.OutputRoot, appNamespace);
+            LogProgress($"Stage: program entry refreshed for incremental task scope -> {appNamespace}");
+            return;
+        }
 
         LogProgress($"Stage: shared assets -> {appNamespace}");
         WriteSharedThemeAssets(sourceRoot, outputLayout.SharedDir, appNamespace, parsed.DataObjects, parsed.Tasks);

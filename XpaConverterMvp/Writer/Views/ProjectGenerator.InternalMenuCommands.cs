@@ -62,6 +62,9 @@ internal static partial class ProjectGenerator
 
     private static string? ResolveCommandByInternalEventId(int internalEventId)
     {
+        if (internalEventId is >= 219 and <= 238)
+            return $"ENV.Commands.CustomCommand_{internalEventId - 218}";
+
         return internalEventId switch
         {
             13 => "Command.CloseForm",

@@ -105,6 +105,11 @@ internal static partial class ProjectGenerator
 
     private static IEnumerable<string> EnumerateTaskFilterCandidates(TaskSemantic task)
     {
+        // Structural top-level tasks can legitimately have no public name,
+        // description or form name. Their generated identity is ordinal-based
+        // and must remain addressable for safe incremental regeneration.
+        yield return $"Task_{task.Ordinal}";
+
         if (!string.IsNullOrWhiteSpace(task.Description))
             yield return task.Description;
         if (!string.IsNullOrWhiteSpace(task.Name))

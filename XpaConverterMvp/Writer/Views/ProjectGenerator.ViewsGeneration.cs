@@ -46,6 +46,8 @@ internal static partial class ProjectGenerator
             var booleanBindings = t.View.BooleanBindings;
             var selectedViewFormEntry = t.View.SelectedFormEntry;
             var selectedViewForm = t.View.SelectedForm;
+            int ScaleViewX(int value) => ScaleViewXForForm(value, selectedViewForm);
+            int ScaleViewY(int value) => ScaleViewYForForm(value, selectedViewForm);
             var formTitleExpressionId = t.View.SelectedFormTextExpressionId;
             var bindFormTitle = formTitleExpressionId.HasValue;
             var formLeftExpressionId = selectedViewForm?.XExpressionId;
@@ -81,6 +83,7 @@ internal static partial class ProjectGenerator
             var tableChildIdsByTable = t.View.TableChildIdsByTable.ToDictionary(x => x.Key, x => x.Value);
             var rootControlIds = t.View.RootControlIds.ToList();
             var groupBoxBindingByControlId = t.View.GroupBoxBindingByControlId.ToDictionary(x => x.Key, x => x.Value);
+            var tabBindingByControlId = t.View.TabBindingByControlId.ToDictionary(x => x.Key, x => x.Value);
             var tableColumnStartX = t.View.TableColumnStartXByTableId.ToDictionary(
                 x => x.Key,
                 x => x.Value.ToDictionary(y => y.Key, y => y.Value));
@@ -91,6 +94,12 @@ internal static partial class ProjectGenerator
                 usedViewHandlerNames.Add(h.HandlerName);
             foreach (var expId in booleanBindings.Select(x => x.ExpressionId).Distinct())
                 usedViewHandlerNames.Add($"Exp_{expId}_Bindings");
+            foreach (var expId in controls
+                         .Where(IsViewEditControl)
+                         .Where(c => c.ModifiableExpressionId.HasValue)
+                         .Select(c => c.ModifiableExpressionId!.Value)
+                         .Distinct())
+                usedViewHandlerNames.Add($"Exp_{expId}_ModifiableBindings");
             if (bindFormTitle)
                 usedViewHandlerNames.Add("this_BindText");
             if (bindFormLeft)
@@ -144,7 +153,11 @@ internal static partial class ProjectGenerator
                     continue;
                 var controlVar = Var(control);
                 if (s.Kind == ViewSubformBindingKind.ExternalProgram)
-                    code.AppendLine($"        {controlVar}.SetController(_controller, _controller.{s.MethodName});");
+                    // ENV.UI.SubForm treats any AbstractUIController passed here as the
+                    // controller that must run inside the subform. The external program
+                    // action does not own a generated child controller, so passing the
+                    // parent would incorrectly mark (and terminate) the main task.
+                    code.AppendLine($"        {controlVar}.SetController(new object(), _controller.{s.MethodName});");
                 else
                     code.AppendLine($"        {controlVar}.SetController(_controller.{s.FieldName}, _controller.{s.MethodName});");
             }
@@ -234,6 +247,21 @@ internal static partial class ProjectGenerator
                 code.AppendLine($"        e.Value = {ResolveBooleanBindingExpression(t, expId)};");
                 code.AppendLine("    }");
             }
+            foreach (var expId in controls
+                         .Where(IsViewEditControl)
+                         .Where(c => c.ModifiableExpressionId.HasValue)
+                         .Select(c => c.ModifiableExpressionId!.Value)
+                         .Distinct()
+                         .OrderBy(x => x))
+            {
+                code.AppendLine();
+                code.AppendLine($"    void Exp_{expId}_ModifiableBindings(object sender, XPARuntimeCore.Box.UI.Advanced.BooleanBindingEventArgs e)");
+                code.AppendLine("    {");
+                code.AppendLine("        if (_controller is null)");
+                code.AppendLine("            return;");
+                code.AppendLine($"        e.Value = !({ResolveBooleanBindingExpression(t, expId)});");
+                code.AppendLine("    }");
+            }
             foreach (var binding in controlHandlerBindings)
             {
                 code.AppendLine();
@@ -277,6 +305,17 @@ internal static partial class ProjectGenerator
                 var typeName = ResolveEffectiveViewControlTypeName(c, t, controlTypeNameById, buttonModels, staticContainerIds);
                 var varName = Var(c);
                 var isNativeWinFormsControl = IsNativeWinFormsViewControl(c, typeName);
+                var isPushButton = string.Equals(
+                    c.Model,
+                    "CTRL_GUI0_PUSH_BUTTON",
+                    StringComparison.OrdinalIgnoreCase);
+                var pushButtonDesignText = isPushButton
+                    ? (!string.IsNullOrWhiteSpace(c.Text) ? c.Text : ResolvePushButtonDesignText(c, t, tasks))
+                    : "";
+                var pushButtonUsesStaticNullDisplay =
+                    isPushButton &&
+                    TryResolvePushButtonControlResource(c, t, tasks, out var pushButtonResource) &&
+                    !string.IsNullOrWhiteSpace(pushButtonResource?.NullDisplayText);
                 var locationX = c.X;
                 var locationY = c.Y;
                 if (columnAttachmentByLeaf.TryGetValue(c.Id, out var parentColumnId))
@@ -307,7 +346,14 @@ internal static partial class ProjectGenerator
                     designer.AppendLine($"        {varName}.Size = new Size({Math.Max(10, ScaleViewX(c.Width))}, {Math.Max(10, ScaleViewY(c.Height))});");
                 }
                 designer.AppendLine($"        {varName}.Name = \"{varName}\";");
-                EmitViewControlPlacement(designer, c, varName);
+                // A GridColumn owns the bounds of its cell controls. Anchoring a
+                // cell to all four sides makes WinForms stretch it against the
+                // grid row and clips the text at the row separator.
+                if (!columnAttachmentByLeaf.ContainsKey(c.Id) &&
+                    !tableAttachmentByLeaf.ContainsKey(c.Id))
+                {
+                    EmitViewControlPlacement(designer, c, varName);
+                }
                 var tabIndex = c.TabOrder ?? c.TabbingOrder;
                 if (tabIndex.HasValue)
                     designer.AppendLine($"        {varName}.TabIndex = {tabIndex.Value};");
@@ -353,6 +399,7 @@ internal static partial class ProjectGenerator
                         designer.AppendLine($"        // GAP: View style not resolved for control {varName} (ControlId={c.Id}, Style={(c.StyleValue ?? c.InternalStyleValue)!.Value}).");
                     }
                 }
+                EmitViewChoiceItems(designer, varName, c, t, tasks, dataObjects);
                 if (c.VerticalScroll.HasValue &&
                     (c.Model == "CTRL_GUI0_EDIT" || c.Model == "CTRL_RICH_CLIENT_EDIT" || c.Model == "CTRL_BROWSER_EDIT" || c.Model == "CTRL_GUI0_RICH_EDIT"))
                 {
@@ -376,6 +423,14 @@ internal static partial class ProjectGenerator
                     var groupVar = Var(groupControl);
                     designer.AppendLine($"        {varName}.BoundTo = new XPARuntimeCore.Box.UI.ControlBinding({groupVar});");
                 }
+                else if (!isNativeWinFormsControl &&
+                         tabBindingByControlId.TryGetValue(c.Id, out var tabBinding) &&
+                         controlById.TryGetValue(tabBinding.TabControlId, out var tabControl))
+                {
+                    var tabVar = Var(tabControl);
+                    designer.AppendLine(
+                        $"        {varName}.BoundTo = new XPARuntimeCore.Box.UI.ControlBinding({tabVar}, {tabBinding.TabIndex});");
+                }
                 if (IsTableViewControl(c))
                 {
                     if (c.LineDivider == true)
@@ -391,7 +446,11 @@ internal static partial class ProjectGenerator
                 }
                 else if (IsTableColumnViewControl(c))
                 {
-                    var colText = !string.IsNullOrWhiteSpace(c.ColumnTitle) ? c.ColumnTitle : c.Text;
+                    var colText = !string.IsNullOrWhiteSpace(c.ColumnTitle)
+                        ? c.ColumnTitle
+                        : !string.IsNullOrWhiteSpace(c.Text)
+                            ? c.Text
+                            : ResolveFallbackGridColumnTitle(c);
                     if (!string.IsNullOrWhiteSpace(colText))
                         designer.AppendLine($"        {varName}.Text = {ToCSharpLiteral(colText!)};");
                     designer.AppendLine($"        {varName}.Width = {Math.Max(10, ScaleViewX(c.Width))};");
@@ -420,18 +479,25 @@ internal static partial class ProjectGenerator
                 }
                 else if (string.Equals(c.Model, "CTRL_GUI0_PUSH_BUTTON", StringComparison.OrdinalIgnoreCase))
                 {
-                    var buttonDesignText = ResolvePushButtonDesignText(c, t);
-                    if (!string.IsNullOrWhiteSpace(buttonDesignText))
-                        designer.AppendLine($"        {varName}.Text = {ToCSharpLiteral(buttonDesignText)};");
+                    if (!string.IsNullOrWhiteSpace(pushButtonDesignText))
+                        designer.AppendLine($"        {varName}.Text = {ToCSharpLiteral(pushButtonDesignText)};");
                 }
+                if (string.Equals(c.Model, "CTRL_GUI0_STATIC", StringComparison.OrdinalIgnoreCase) &&
+                    c.Text is not null &&
+                    (c.Text.Contains('\r') || c.Text.Contains('\n')))
+                    designer.AppendLine($"        {varName}.Multiline = true;");
                 if (IsViewEditControl(c) && c.MultiLineEdit == true)
                 {
                     designer.AppendLine($"        {varName}.Multiline = true;");
                     designer.AppendLine($"        {varName}.AcceptsReturn = true;");
                 }
-                if (IsViewEditControl(c) && c.Modifiable == false)
+                if (IsViewEditControl(c) && c.Modifiable == false && !c.ModifiableExpressionId.HasValue)
                 {
                     designer.AppendLine($"        {varName}.ReadOnly = true;");
+                }
+                if (IsViewEditControl(c) && c.ModifiableExpressionId.HasValue)
+                {
+                    designer.AppendLine($"        {varName}.BindReadOnly += new XPARuntimeCore.Box.UI.Advanced.BindingEventHandler<XPARuntimeCore.Box.UI.Advanced.BooleanBindingEventArgs>(Exp_{c.ModifiableExpressionId.Value}_ModifiableBindings);");
                 }
                 if (ShouldAllowChangeInBrowseForViewControl(t, c))
                 {
@@ -454,6 +520,17 @@ internal static partial class ProjectGenerator
                         designer.AppendLine($"        // GAP: View tooltip expression not resolved for control {varName} (ControlId={c.Id}, ToolTipExp={c.ToolTipExpressionId.Value}).");
                 }
 
+                // ButtonData resolves its caption while Data is assigned. Register
+                // the fallback first so NullDisplay-backed buttons keep their XPA
+                // caption instead of being cleared by a null/blank column value.
+                if (isPushButton && !string.IsNullOrWhiteSpace(pushButtonDesignText))
+                {
+                    var fallbackText = ToCSharpLiteral(pushButtonDesignText);
+                    AppendRuntimeControllerBindingStatement(
+                        controllerBindingStatements,
+                        $"{varName}.BindText += (_, e) => {{ if (global::System.String.IsNullOrWhiteSpace(e.Value)) e.Value = {fallbackText}; }};");
+                }
+
                 var dataExpr = ResolveControlDataExpression(c, t, tasks, dataObjects);
                 var hasXmlDataBindingHint = c.DataExpressionId.HasValue || !string.IsNullOrWhiteSpace(c.DataColumn);
                 var didBindData = false;
@@ -466,23 +543,39 @@ internal static partial class ProjectGenerator
                 var directDataIsDotNet =
                     directDataInfo.IsDotNet ||
                     (directDataResource is not null && IsDotNetTaskResource(directDataResource));
-                if (!string.IsNullOrWhiteSpace(dataExpr) &&
+                if (pushButtonUsesStaticNullDisplay && string.IsNullOrWhiteSpace(dataExpr))
+                {
+                    // XPA NullDisplay is the static caption of a push button. Binding
+                    // the nullable field as ButtonData makes the current runtime erase
+                    // that caption when the control has no explicit data source. A
+                    // button with Data/Column must still be bound because its value is
+                    // the runtime caption and its change raises the XPA button event.
+                    didBindData = true;
+                }
+                else if (!string.IsNullOrWhiteSpace(dataExpr) &&
                     string.Equals(c.Model, "CTRL_GUI0_PUSH_BUTTON", StringComparison.OrdinalIgnoreCase))
                 {
-                    var buttonDataExpr = BuildPushButtonDirectDataAssignmentExpression($"_controller.{dataExpr}", t, tasks);
+                    var controllerDataExpr = ScopeViewDataExpressionToController(dataExpr, t, dataObjects);
+                    var buttonDataExpr = BuildPushButtonDirectDataAssignmentExpression(
+                        controllerDataExpr,
+                        t,
+                        tasks,
+                        pushButtonDesignText);
                     designer.AppendLine($"        {varName}.RaiseChangeOnClick = true;");
                     AppendRuntimeControllerBindingStatement(controllerBindingStatements, $"{varName}.Data = {buttonDataExpr};");
                     didBindData = true;
                 }
                 else if (!string.IsNullOrWhiteSpace(dataExpr) && IsViewCheckBoxControl(c))
                 {
-                    var checkBoxDataExpr = BuildCheckBoxDirectDataAssignmentExpression($"_controller.{dataExpr}", t, tasks);
+                    var controllerDataExpr = ScopeViewDataExpressionToController(dataExpr, t, dataObjects);
+                    var checkBoxDataExpr = BuildCheckBoxDirectDataAssignmentExpression(controllerDataExpr, t, tasks);
                     AppendRuntimeControllerBindingStatement(controllerBindingStatements, $"{varName}.Data = {checkBoxDataExpr};");
                     didBindData = true;
                 }
                 else if (!string.IsNullOrWhiteSpace(dataExpr) && IsViewImageControl(c))
                 {
-                    var imageDataExpr = BuildImageDirectDataAssignmentExpression($"_controller.{dataExpr}", t, tasks);
+                    var controllerDataExpr = ScopeViewDataExpressionToController(dataExpr, t, dataObjects);
+                    var imageDataExpr = BuildImageDirectDataAssignmentExpression(controllerDataExpr, t, tasks);
                     AppendRuntimeControllerBindingStatement(controllerBindingStatements, $"{varName}.Data = {imageDataExpr};");
                     didBindData = true;
                 }
@@ -498,7 +591,7 @@ internal static partial class ProjectGenerator
                     var dataBindingExpr = BuildViewDataBindingExpression(
                         c,
                         attr,
-                        $"() => _controller.{dataExpr}");
+                        $"() => {ScopeViewDataExpressionToController(dataExpr, t, dataObjects)}");
                     if (!string.IsNullOrWhiteSpace(dataBindingExpr))
                     {
                         AppendRuntimeControllerBindingStatement(controllerBindingStatements, $"{varName}.Data = {dataBindingExpr};");
@@ -507,7 +600,8 @@ internal static partial class ProjectGenerator
                 }
                 else if (!string.IsNullOrWhiteSpace(dataExpr) && SupportsDirectViewDataAssignment(c))
                 {
-                    AppendRuntimeControllerBindingStatement(controllerBindingStatements, $"{varName}.Data = _controller.{dataExpr};");
+                    var controllerDataExpr = ScopeViewDataExpressionToController(dataExpr, t, dataObjects);
+                    AppendRuntimeControllerBindingStatement(controllerBindingStatements, $"{varName}.Data = {controllerDataExpr};");
                     didBindData = true;
                 }
                 else
@@ -542,7 +636,6 @@ internal static partial class ProjectGenerator
                 }
                 if (hasXmlDataBindingHint && !didBindData)
                     designer.AppendLine($"        // GAP: View data binding not resolved for control {varName} (ControlId={c.Id}, DataExpressionId={c.DataExpressionId?.ToString() ?? "?"}, DataColumn={c.DataColumn ?? "?"}).");
-
                 var click = clickHandlers.FirstOrDefault(x => x.ControlId == c.Id);
                 if (string.Equals(c.Model, "CTRL_GUI0_PUSH_BUTTON", StringComparison.OrdinalIgnoreCase) &&
                     (click is not null || !string.IsNullOrWhiteSpace(c.RaiseEventType)))
@@ -812,6 +905,23 @@ internal static partial class ProjectGenerator
             if (!string.IsNullOrWhiteSpace(viewClass))
                 yield return viewClass;
         }
+    }
+
+    private static string ResolveFallbackGridColumnTitle(TaskFormControlDef control)
+    {
+        var raw = control.ControlName?.Trim();
+        if (string.IsNullOrWhiteSpace(raw) || raw.All(char.IsDigit))
+            return "";
+
+        var title = raw.Replace('_', ' ').Trim();
+        if (title.Length > 2 &&
+            (title[0] == 'R' || title[0] == 'r' || title[0] == 'V' || title[0] == 'v') &&
+            title[1] == ' ')
+        {
+            title = title[2..].TrimStart();
+        }
+
+        return title;
     }
 
     private static bool DoesGeneratedViewClassFileExist(string outputRoot, string viewClass)

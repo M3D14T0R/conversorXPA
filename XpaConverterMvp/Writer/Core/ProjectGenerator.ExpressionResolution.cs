@@ -733,6 +733,11 @@ internal static partial class ProjectGenerator
                 _typedExpressionEntryCodeCache[cacheKey] = typedBoolean;
                 Interlocked.Increment(ref _typedExpressionIntrinsicKnownCount);
                 Interlocked.Increment(ref _typedExpressionEffectiveKnownCount);
+                ConversionTelemetry.Log(
+                    "EXPRESSION_BOOLEAN",
+                    string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"task={task.Ordinal} expression={expr.Ordinal} route=\"central-typed\" source={QuoteTelemetry(TruncateTelemetryValue(booleanSourceSyntax))} code={QuoteTelemetry(TruncateTelemetryValue(typedBoolean.Code))}"));
                 RegisterContextualExpressionReturnType(task, typedBoolean.Code, context);
                 RegisterTypedExpressionReturnType(task, typedBoolean.Code, "Bool");
                 return typedBoolean;
@@ -764,6 +769,11 @@ internal static partial class ProjectGenerator
                 _typedExpressionEntryCodeCache[cacheKey] = typedBoolean;
                 Interlocked.Increment(ref _typedExpressionIntrinsicKnownCount);
                 Interlocked.Increment(ref _typedExpressionEffectiveKnownCount);
+                ConversionTelemetry.Log(
+                    "EXPRESSION_BOOLEAN",
+                    string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"task={task.Ordinal} expression={expr.Ordinal} route=\"source-fallback\" source={QuoteTelemetry(TruncateTelemetryValue(booleanSourceSyntax))} code={QuoteTelemetry(TruncateTelemetryValue(booleanCode))}"));
                 RegisterContextualExpressionReturnType(task, booleanCode, context);
                 RegisterTypedExpressionReturnType(task, booleanCode, "Bool");
                 return typedBoolean;
@@ -1524,6 +1534,7 @@ internal static partial class ProjectGenerator
            string.Equals(normalizedFunction, "VARCURRN", StringComparison.Ordinal) ||
            string.Equals(normalizedFunction, "VARPREV", StringComparison.Ordinal) ||
            string.Equals(normalizedFunction, "GETPARAM", StringComparison.Ordinal) ||
+           string.Equals(normalizedFunction, "SHAREDVALGET", StringComparison.Ordinal) ||
            string.Equals(normalizedFunction, "CALLDLL", StringComparison.Ordinal) ||
            string.Equals(normalizedFunction, "CALLDLLF", StringComparison.Ordinal) ||
            string.Equals(normalizedFunction, "VARIANTGET", StringComparison.Ordinal) ||
@@ -1704,7 +1715,7 @@ internal static partial class ProjectGenerator
             "CALLDLLF" => "u.CallDLLF",
             "COMHANDLEGET" => "u.COMHandleGet",
             "VARCURR" => "u.VarCurr",
-            "VARCURRN" => "u.VarCurrN",
+            "VARCURRN" => VariableCurrentByNameHelper,
             "VARPREV" => "u.VarPrev",
             "NULL" => "u.Null",
             "VARSET" => "u.VarSet",
@@ -2006,7 +2017,16 @@ internal static partial class ProjectGenerator
         else
         {
             binding = ResolveDirectSourceBindingCode(trimmed, task, dataObjects, normalizedExpectedReturnType);
-            if (!string.IsNullOrWhiteSpace(binding) &&
+            if (TryResolveDirectSourceBindingReturnType(
+                    trimmed,
+                    task,
+                    dataObjects,
+                    depth,
+                    out sourceReturnType))
+            {
+                sourceReturnType = NormalizeReturnTypeToken(sourceReturnType);
+            }
+            else if (!string.IsNullOrWhiteSpace(binding) &&
                 TryResolveTranslatedSourceBindingReturnType(binding, task, out sourceReturnType))
             {
                 sourceReturnType = NormalizeReturnTypeToken(sourceReturnType);
@@ -2041,7 +2061,8 @@ internal static partial class ProjectGenerator
             return false;
 
         code = binding.Trim();
-        if (TryResolveTranslatedSourceBindingReturnType(code, task, out var bindingReturnType))
+        if (string.IsNullOrWhiteSpace(sourceReturnType) &&
+            TryResolveTranslatedSourceBindingReturnType(code, task, out var bindingReturnType))
             sourceReturnType = bindingReturnType;
 
         if (SourceReturnTypeMatchesExpected(sourceReturnType, normalizedExpectedReturnType))
@@ -2058,11 +2079,17 @@ internal static partial class ProjectGenerator
 
     private static bool SourceReturnTypeMatchesExpected(string sourceReturnType, string expectedReturnType)
     {
-        var sourceXpaType = XpaExpressionTypeMap.FromReturnType(NormalizeReturnTypeToken(sourceReturnType));
-        var expectedXpaType = XpaExpressionTypeMap.FromReturnType(NormalizeReturnTypeToken(expectedReturnType));
+        var normalizedSource = XpaExpressionTypeMap.CanonicalTypeName(
+            NormalizeReturnTypeToken(sourceReturnType));
+        var normalizedExpected = XpaExpressionTypeMap.CanonicalTypeName(
+            NormalizeReturnTypeToken(expectedReturnType));
+        var sourceXpaType = XpaExpressionTypeMap.FromReturnType(normalizedSource);
+        var expectedXpaType = XpaExpressionTypeMap.FromReturnType(normalizedExpected);
         return sourceXpaType != XpaType.Unknown &&
                expectedXpaType != XpaType.Unknown &&
-               sourceXpaType == expectedXpaType;
+               sourceXpaType == expectedXpaType &&
+               (sourceXpaType != XpaType.Array ||
+                string.Equals(normalizedSource, normalizedExpected, StringComparison.Ordinal));
     }
 
     private static bool SourceReturnTypeMatchesExpressionAttribute(string sourceReturnType, string? expressionAttribute)
@@ -2969,7 +2996,10 @@ internal static partial class ProjectGenerator
         if (string.IsNullOrWhiteSpace(leftCode) || string.IsNullOrWhiteSpace(rightCode))
             return false;
 
-        code = $"{leftCode} {op} {rightCode}";
+        // Each operand is a complete XPA boolean subtree. Preserve that tree
+        // explicitly in C#: a parenthesized OR used as the right side of AND
+        // must not be flattened by the different C# operator precedence.
+        code = $"({leftCode}) {op} ({rightCode})";
         return true;
     }
 

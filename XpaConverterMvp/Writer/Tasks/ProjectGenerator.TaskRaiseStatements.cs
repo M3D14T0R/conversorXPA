@@ -17,6 +17,9 @@ internal static partial class ProjectGenerator
         var emitted = new HashSet<string>(StringComparer.Ordinal);
         foreach (var raise in raises)
         {
+            if (raise.Disabled)
+                continue;
+
             if (string.Equals(raise.EventType, "U", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(raise.EventPublicObject))
             {
                 var commandName = ResolveCommandNameByEventObject(raise.EventPublicObject, raise.EventPublicComponentId, raise.EventParent, task);
@@ -24,7 +27,7 @@ internal static partial class ProjectGenerator
                 {
                     var selectMap = BuildSelectNameToExpressionMap(task, dataObjects);
                     var parameterMetadata = ResolveRaiseTargetParameterMetadata(raise, task);
-                    var args = ResolveArgumentExpressions(
+                    var args = ResolveCallArgumentExpressionsPreservingPositions(
                         raise.ArgumentDefs,
                         raise.ArgumentExpressionIds,
                         task,
@@ -87,7 +90,8 @@ internal static partial class ProjectGenerator
                             ? $"{pad}Invoke({commandName});"
                             : $"{pad}Invoke({commandName}WithArgs({string.Join(", ", args)}));";
                     }
-                    if (emitted.Add(statement))
+                    statement = ApplyRaiseCondition(statement, raise, task, dataObjects, pad);
+                    if (!string.IsNullOrWhiteSpace(statement) && emitted.Add(statement))
                         sb.AppendLine(statement);
                 }
                 continue;
@@ -98,9 +102,20 @@ internal static partial class ProjectGenerator
                 var raiseCommand = ResolveCommandByInternalEventId(raise.EventInternalEventId.Value);
                 if (!string.IsNullOrWhiteSpace(raiseCommand))
                 {
+                    // A component application is loaded inside its host application.
+                    // Its XPA "Exit Application" terminates component initialization;
+                    // forwarding the command through the shared runtime queue would
+                    // instead close the host MDI.
+                    if (task.MainProgram &&
+                        string.Equals(_outputType, "Library", StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(raiseCommand, "Command.ExitApplication", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
                     var selectMap = BuildSelectNameToExpressionMap(task, dataObjects);
                     var parameterMetadata = ResolveRaiseTargetParameterMetadata(raise, task);
-                    var args = ResolveArgumentExpressions(
+                    var args = ResolveCallArgumentExpressionsPreservingPositions(
                         raise.ArgumentDefs,
                         raise.ArgumentExpressionIds,
                         task,
@@ -112,11 +127,41 @@ internal static partial class ProjectGenerator
                     var statement = args.Count == 0
                         ? $"{pad}Raise({raiseCommand});"
                         : $"{pad}Raise({raiseCommand}, {string.Join(", ", args)});";
-                    if (emitted.Add(statement))
+                    statement = ApplyRaiseCondition(statement, raise, task, dataObjects, pad);
+                    if (!string.IsNullOrWhiteSpace(statement) && emitted.Add(statement))
                         sb.AppendLine(statement);
                 }
             }
         }
+    }
+
+    private static string ApplyRaiseCondition(
+        string statement,
+        TaskRaiseEventDef raise,
+        TaskSemantic task,
+        IReadOnlyList<DataObjectDef> dataObjects,
+        string pad)
+    {
+        if (!raise.ConditionExpressionId.HasValue)
+            return statement;
+
+        var condition = ResolveExpressionCode(
+            raise.ConditionExpressionId.Value.ToString(),
+            task,
+            dataObjects,
+            CreateBooleanConditionEmissionContext());
+        if (string.IsNullOrWhiteSpace(condition))
+            return statement;
+
+        var body = statement.StartsWith(pad, StringComparison.Ordinal)
+            ? statement[pad.Length..]
+            : statement.TrimStart();
+        return string.Join(
+            Environment.NewLine,
+            $"{pad}if ({condition})",
+            $"{pad}{{",
+            $"{pad}    {body}",
+            $"{pad}}}");
     }
 }
 

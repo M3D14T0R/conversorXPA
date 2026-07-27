@@ -41,6 +41,7 @@ internal static partial class ProjectGenerator
             }
             sb.AppendLine("    #endregion");
         }
+        EmitVariableCurrentByNameHelper(sb, main);
         if (parsed.Menus.Count > 0)
             sb.AppendLine("    Views.ApplicationMdi _mdi;");
         sb.AppendLine("    public Application()");
@@ -88,6 +89,19 @@ internal static partial class ProjectGenerator
         {
             sb.AppendLine("    protected override void Execute()");
             sb.AppendLine("    {");
+            sb.AppendLine("        var launcherUser = System.Convert.ToString(u.GetParam(\"XPA_CURRENT_USER\"), System.Globalization.CultureInfo.InvariantCulture)?.Trim();");
+            sb.AppendLine("        if (!string.IsNullOrWhiteSpace(launcherUser))");
+            sb.AppendLine("        {");
+            sb.AppendLine("            var launcherAdmin = System.Convert.ToString(u.GetParam(\"XPA_CURRENT_USER_ADMIN\"), System.Globalization.CultureInfo.InvariantCulture)?.Trim();");
+            sb.AppendLine("            var isLauncherAdmin = string.Equals(launcherAdmin, \"Y\", System.StringComparison.OrdinalIgnoreCase) ||");
+            sb.AppendLine("                                  string.Equals(launcherAdmin, \"S\", System.StringComparison.OrdinalIgnoreCase) ||");
+            sb.AppendLine("                                  string.Equals(launcherAdmin, \"YES\", System.StringComparison.OrdinalIgnoreCase) ||");
+            sb.AppendLine("                                  string.Equals(launcherAdmin, \"SIM\", System.StringComparison.OrdinalIgnoreCase) ||");
+            sb.AppendLine("                                  string.Equals(launcherAdmin, \"TRUE\", System.StringComparison.OrdinalIgnoreCase) ||");
+            sb.AppendLine("                                  string.Equals(launcherAdmin, \"1\", System.StringComparison.OrdinalIgnoreCase);");
+            sb.AppendLine("            ENV.Security.UserManager.UseThisUser(launcherUser, isLauncherAdmin);");
+            sb.AppendLine("            ENV.Security.UserManager.DisplayLoginDialog = false;");
+            sb.AppendLine("        }");
             sb.AppendLine("        ENV.Security.UserManager.Load();");
             sb.AppendLine("        if (!ENV.Security.UserManager.ShowLoginDialog(false))");
             sb.AppendLine("            return;");
@@ -114,12 +128,38 @@ internal static partial class ProjectGenerator
             sb.AppendLine("    }");
             sb.AppendLine();
         }
-        EmitOnStart(sb, main, parsed.DataObjects, tasks);
+        EmitOnStart(
+            sb,
+            main,
+            parsed.DataObjects,
+            tasks,
+            parsed.Menus.Count > 0
+                ? "EnableRequestedStartProgramDispatch();"
+                : "RunRequestedStartProgram();");
         EmitOnEnd(sb, main, parsed.DataObjects, tasks);
         EmitFunctionOverrides(sb, main, parsed.DataObjects);
         sb.AppendLine();
-        sb.AppendLine("    public static void Run()");
+        sb.AppendLine("    string _requestedStartProgram;");
+        sb.AppendLine($"    bool _requestedStartProgramDispatchEnabled = {(parsed.Menus.Count > 0 ? "false" : "true")};");
+        sb.AppendLine();
+        sb.AppendLine("    void EnableRequestedStartProgramDispatch()");
         sb.AppendLine("    {");
+        sb.AppendLine("        _requestedStartProgramDispatchEnabled = true;");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    internal void RunRequestedStartProgram()");
+        sb.AppendLine("    {");
+        sb.AppendLine("        if (!_requestedStartProgramDispatchEnabled)");
+        sb.AppendLine("            return;");
+        sb.AppendLine("        var startProgram = _requestedStartProgram;");
+        sb.AppendLine("        _requestedStartProgram = null;");
+        sb.AppendLine("        if (!string.IsNullOrWhiteSpace(startProgram))");
+        sb.AppendLine("            AllPrograms.RunByPublicName(startProgram);");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    public static void Run(string startProgram = null)");
+        sb.AppendLine("    {");
+        sb.AppendLine("        Instance._requestedStartProgram = startProgram;");
         if (parsed.Menus.Count > 0)
         {
             sb.AppendLine("        Instance._mdi = new Views.ApplicationMdi();");

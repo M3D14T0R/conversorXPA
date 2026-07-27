@@ -21,10 +21,14 @@ internal static partial class ProjectGenerator
         if (!string.IsNullOrWhiteSpace(scope.NormalizedFolderFilter) || scope.TaskScopedGeneration)
         {
             var generatedTaskOrdinals = generatedTasks.Select(t => t.Ordinal).ToHashSet();
+            var referencedStructuralTasks = ResolveReferencedStructuralTopLevelTasks(parsed.Tasks);
             LogProgress($"Stage: scoped task skeletons -> {appNamespace} ({generatedTasks.Count} tasks)");
             var skeletonTasks = generatedTasks.Where(t =>
                     !t.MainProgram &&
-                    (!scope.TaskScopedGeneration || scope.ExplicitlyRequestedTaskOrdinals?.Contains(t.Ordinal) != true || !IsStructuralTask(t)) &&
+                    (!scope.TaskScopedGeneration ||
+                     scope.ExplicitlyRequestedTaskOrdinals?.Contains(t.Ordinal) != true ||
+                     !IsStructuralTask(t) ||
+                     referencedStructuralTasks.Contains(t.Ordinal)) &&
                     ((scope.TaskScopedGeneration && scope.ExplicitlyRequestedTaskOrdinals?.Contains(t.Ordinal) == true)
                      || !t.ParentOrdinal.HasValue
                      || !generatedTaskOrdinals.Contains(t.ParentOrdinal.Value)))
@@ -77,7 +81,15 @@ internal static partial class ProjectGenerator
             includeMissingScopedViewPlaceholders: scope.TaskScopedGeneration);
         if (scope.TaskScopedGeneration)
         {
-            LogProgress($"Stage: mdi/menu skipped for task scope -> {appNamespace}");
+            if (incrementalOutput &&
+                WriteFallbackApplicationMdiMenuIfEmpty(outputLayout.ViewsDir, appNamespace, parsed.Tasks))
+            {
+                LogProgress($"Stage: empty mdi menu replaced by native navigation fallback -> {appNamespace}");
+            }
+            else
+            {
+                LogProgress($"Stage: mdi/menu preserved for task scope -> {appNamespace}");
+            }
         }
         else
         {

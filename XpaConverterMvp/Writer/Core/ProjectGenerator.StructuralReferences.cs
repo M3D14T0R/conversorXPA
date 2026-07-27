@@ -21,6 +21,22 @@ internal static partial class ProjectGenerator
                     result.Add(target.Ordinal);
             }
 
+            if (owner.Form?.Controls is not null)
+            {
+                foreach (var control in owner.Form.Controls)
+                {
+                    if (!control.SelectProgramObj.HasValue ||
+                        control.SelectProgramComponentId.GetValueOrDefault() > 0)
+                        continue;
+
+                    var target = tasks.FirstOrDefault(candidate =>
+                        !candidate.ParentOrdinal.HasValue &&
+                        candidate.TopLevelProgramIndex == control.SelectProgramObj.Value);
+                    if (target is not null && IsStructuralTask(target))
+                        result.Add(target.Ordinal);
+                }
+            }
+
             foreach (var binding in owner.View.SubformBindings)
             {
                 if (binding.Kind != ViewSubformBindingKind.Task || !binding.TargetTaskOrdinal.HasValue)

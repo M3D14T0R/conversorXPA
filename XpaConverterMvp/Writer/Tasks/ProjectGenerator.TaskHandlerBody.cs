@@ -16,6 +16,26 @@ internal static partial class ProjectGenerator
     {
         var pad = new string(' ', indentLevel * 4);
         var selectMap = BuildSelectNameToExpressionMap(task, dataObjects);
+        _handlerBodyByReference.TryGetValue(h, out var structuredBody);
+        var structuredActions = structuredBody?.OrderedActions
+            ?? h.Actions.OrderBy(a => ExtractLogicLineOrder(a.XmlTrace) ?? int.MaxValue).ToList();
+        if (CanEmitStructuredActionBody(structuredActions, h.Blocks, h.EndBlocks, h.Raises))
+        {
+            EmitStructuredActionBody(
+                sb,
+                structuredActions,
+                h.Blocks,
+                h.EndBlocks,
+                task,
+                dataObjects,
+                allTasks,
+                pad,
+                h.FormIos,
+                task.Layout.FormIoWriteCallsByFormEntryIndex,
+                task.Layout.FormIoReadCallsByFormEntryIndex,
+                h.Raises);
+            return;
+        }
         if (h.FormIos.Count > 0)
         {
             var writeCallMap = task.Layout.FormIoWriteCallsByFormEntryIndex;
@@ -93,13 +113,8 @@ internal static partial class ProjectGenerator
         }
         if (h.Actions.Count > 0)
         {
-            _handlerBodyByReference.TryGetValue(h, out var body);
-            var orderedActions = body?.OrderedActions ?? h.Actions.OrderBy(a => ExtractLogicLineOrder(a.XmlTrace) ?? int.MaxValue).ToList();
-            var blocks = body?.Blocks;
-            if (CanEmitStructuredActionBody(orderedActions, h.Blocks, h.EndBlocks))
-                EmitStructuredActionBody(sb, orderedActions, h.Blocks, h.EndBlocks, task, dataObjects, allTasks, pad);
-            else
-                EmitOrderedActions(sb, orderedActions, blocks, task, dataObjects, allTasks, pad);
+            var blocks = structuredBody?.Blocks;
+            EmitOrderedActions(sb, structuredActions, blocks, task, dataObjects, allTasks, pad);
             EmitRaiseStatements(sb, h.Raises, task, dataObjects, pad);
             return;
         }

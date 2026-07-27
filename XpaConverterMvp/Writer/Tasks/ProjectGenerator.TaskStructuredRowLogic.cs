@@ -8,14 +8,18 @@ namespace XpaConverterMvp;
 
 internal static partial class ProjectGenerator
 {
-    private readonly record struct StructuredRowItem(TaskRowActionDef? Action, TaskFormIoDef? Io);
+    private readonly record struct StructuredRowItem(
+        TaskRowActionDef? Action,
+        TaskFormIoDef? Io,
+        TaskRaiseEventDef? Raise);
 
     private static bool CanEmitStructuredActionBody(
         IReadOnlyList<TaskRowActionDef> actions,
         IReadOnlyList<TaskBlockDef> blocks,
-        IReadOnlyList<TaskEndBlockDef> endBlocks)
+        IReadOnlyList<TaskEndBlockDef> endBlocks,
+        IReadOnlyList<TaskRaiseEventDef>? raises = null)
     {
-        return actions.Count > 0 &&
+        return (actions.Count > 0 || raises?.Count > 0) &&
                blocks.Count > 0 &&
                endBlocks.Count > 0 &&
                blocks.All(b => b.LogicLineIndex.HasValue) &&
@@ -27,7 +31,7 @@ internal static partial class ProjectGenerator
 
     private static bool CanEmitStructuredRowLogic(TaskRowLogicDef row)
     {
-        return CanEmitStructuredActionBody(row.Actions, row.Blocks, row.EndBlocks);
+        return CanEmitStructuredActionBody(row.Actions, row.Blocks, row.EndBlocks, row.Raises);
     }
 
     private static void EmitStructuredRowLogic(
@@ -38,7 +42,16 @@ internal static partial class ProjectGenerator
         IReadOnlyList<TaskSemantic> allTasks,
         string pad)
     {
-        EmitStructuredActionBody(sb, row.Actions, row.Blocks, row.EndBlocks, task, dataObjects, allTasks, pad);
+        EmitStructuredActionBody(
+            sb,
+            row.Actions,
+            row.Blocks,
+            row.EndBlocks,
+            task,
+            dataObjects,
+            allTasks,
+            pad,
+            raises: row.Raises);
     }
 
     private static void EmitStructuredActionBody(
@@ -52,15 +65,21 @@ internal static partial class ProjectGenerator
         string pad,
         IReadOnlyList<TaskFormIoDef>? formIos = null,
         IReadOnlyDictionary<int, string>? writeCallMap = null,
-        IReadOnlyDictionary<int, string>? readCallMap = null)
+        IReadOnlyDictionary<int, string>? readCallMap = null,
+        IReadOnlyList<TaskRaiseEventDef>? raises = null)
     {
         var itemsByLine = new Dictionary<int, List<StructuredRowItem>>();
         foreach (var action in actions)
-            AddStructuredRowItem(itemsByLine, ExtractLogicUnitLineIndex(action.XmlTrace) ?? int.MaxValue, new StructuredRowItem(action, null));
+            AddStructuredRowItem(itemsByLine, ExtractLogicUnitLineIndex(action.XmlTrace) ?? int.MaxValue, new StructuredRowItem(action, null, null));
         if (formIos is not null)
         {
             foreach (var io in formIos)
-                AddStructuredRowItem(itemsByLine, ExtractLogicUnitLineIndex(io.XmlTrace) ?? int.MaxValue, new StructuredRowItem(null, io));
+                AddStructuredRowItem(itemsByLine, ExtractLogicUnitLineIndex(io.XmlTrace) ?? int.MaxValue, new StructuredRowItem(null, io, null));
+        }
+        if (raises is not null)
+        {
+            foreach (var raise in raises)
+                AddStructuredRowItem(itemsByLine, ExtractLogicUnitLineIndex(raise.XmlTrace) ?? int.MaxValue, new StructuredRowItem(null, null, raise));
         }
         var blocksByLine = blocks
             .Where(b => b.LogicLineIndex.HasValue)
@@ -125,17 +144,19 @@ internal static partial class ProjectGenerator
                 {
                     if (stopAtElse)
                         return true;
-                    if (block.ConditionExpressionId.HasValue)
+                    if (block.ConditionExpressionId.HasValue || block.ConditionLiteral.HasValue)
                     {
                         index++;
                         if (!HasExecutableStructuredContent(orderedLines, index, itemsByLine, blocksByLine, endBlockLines, stopAtElse: false))
                             continue;
-                        var cond = ResolveConditionExpressionCode(block.ConditionExpressionId.Value.ToString(), task, dataObjects);
+                        var cond = block.ConditionExpressionId.HasValue
+                            ? ResolveConditionExpressionCode(block.ConditionExpressionId.Value.ToString(), task, dataObjects)
+                            : block.ConditionLiteral == true ? "true" : "false";
                         if (string.IsNullOrWhiteSpace(cond))
                             cond = "true";
                         var effectiveCond = CombineStructuredBlockCondition(currentBlockCondition, cond);
 
-                        sb.AppendLine($"{pad}if ({cond})");
+                        sb.AppendLine($"{pad}if (({cond}))");
                         sb.AppendLine($"{pad}{{");
                         EmitStructuredRowLogicRange(sb, orderedLines, ref index, itemsByLine, blocksByLine, endBlockLines, task, dataObjects, allTasks, pad + "    ", effectiveCond, cond, currentLoopConditionId, false, writeCallMap, readCallMap);
                         sb.AppendLine($"{pad}}}");
@@ -155,7 +176,9 @@ internal static partial class ProjectGenerator
                     }
                     var cond = block.ConditionExpressionId.HasValue
                         ? ResolveConditionExpressionCode(block.ConditionExpressionId.Value.ToString(), task, dataObjects)
-                        : "";
+                        : block.ConditionLiteral.HasValue
+                            ? block.ConditionLiteral.Value ? "true" : "false"
+                            : "";
                     if (string.IsNullOrWhiteSpace(cond))
                         cond = "true";
                     var effectiveCond = CombineStructuredBlockCondition(currentBlockCondition, cond);
@@ -168,27 +191,52 @@ internal static partial class ProjectGenerator
                         continue;
                     }
 
-                    sb.AppendLine($"{pad}if ({cond})");
+                    sb.AppendLine($"{pad}if (({cond}))");
                     sb.AppendLine($"{pad}{{");
                     var foundElse = EmitStructuredRowLogicRange(sb, orderedLines, ref index, itemsByLine, blocksByLine, endBlockLines, task, dataObjects, allTasks, pad + "    ", effectiveCond, cond, currentLoopConditionId, true, writeCallMap, readCallMap);
                     sb.AppendLine($"{pad}}}");
 
-                    if (foundElse && index < orderedLines.Count && blocksByLine.TryGetValue(orderedLines[index], out var elseBlock) && string.Equals(elseBlock.Type, "E", StringComparison.OrdinalIgnoreCase))
+                    while (foundElse &&
+                           index < orderedLines.Count &&
+                           blocksByLine.TryGetValue(orderedLines[index], out var elseBlock) &&
+                           string.Equals(elseBlock.Type, "E", StringComparison.OrdinalIgnoreCase))
                     {
                         index++;
                         var elseCond = elseBlock.ConditionExpressionId.HasValue
                             ? ResolveConditionExpressionCode(elseBlock.ConditionExpressionId.Value.ToString(), task, dataObjects)
-                            : "";
+                            : elseBlock.ConditionLiteral == false
+                                ? "false"
+                                : "";
                         var effectiveElseCond = !string.IsNullOrWhiteSpace(elseCond)
                             ? CombineStructuredBlockCondition(currentBlockCondition, elseCond)
                             : CombineStructuredBlockCondition(currentBlockCondition, $"u.Not({cond})");
                         if (!string.IsNullOrWhiteSpace(elseCond))
-                            sb.AppendLine($"{pad}else if ({elseCond})");
+                            sb.AppendLine($"{pad}else if (({elseCond}))");
                         else
                             sb.AppendLine($"{pad}else");
                         sb.AppendLine($"{pad}{{");
-                        EmitStructuredRowLogicRange(sb, orderedLines, ref index, itemsByLine, blocksByLine, endBlockLines, task, dataObjects, allTasks, pad + "    ", effectiveElseCond, elseCond, currentLoopConditionId, false, writeCallMap, readCallMap);
+                        foundElse = EmitStructuredRowLogicRange(
+                            sb,
+                            orderedLines,
+                            ref index,
+                            itemsByLine,
+                            blocksByLine,
+                            endBlockLines,
+                            task,
+                            dataObjects,
+                            allTasks,
+                            pad + "    ",
+                            effectiveElseCond,
+                            elseCond,
+                            currentLoopConditionId,
+                            stopAtElse: !string.IsNullOrWhiteSpace(elseCond),
+                            writeCallMap,
+                            readCallMap);
                         sb.AppendLine($"{pad}}}");
+
+                        // An unconditional ELSE is the last branch in the chain.
+                        if (string.IsNullOrWhiteSpace(elseCond))
+                            break;
                     }
 
                     continue;
@@ -204,7 +252,9 @@ internal static partial class ProjectGenerator
                     }
                     var cond = block.ConditionExpressionId.HasValue
                         ? ResolveConditionExpressionCode(block.ConditionExpressionId.Value.ToString(), task, dataObjects)
-                        : "";
+                        : block.ConditionLiteral.HasValue
+                            ? block.ConditionLiteral.Value ? "true" : "false"
+                            : "";
                     if (string.IsNullOrWhiteSpace(cond))
                         cond = "true";
 
@@ -349,7 +399,7 @@ internal static partial class ProjectGenerator
     {
         if (item.Action is not null)
             return IsExecutableStructuredAction(item.Action);
-        return item.Io?.FormEntryIndex.HasValue == true;
+        return item.Io?.FormEntryIndex.HasValue == true || item.Raise is not null;
     }
 
     private static void EmitStructuredRowItem(
@@ -372,7 +422,13 @@ internal static partial class ProjectGenerator
         }
 
         if (item.Io is not null)
+        {
             EmitStructuredFormIo(sb, item.Io, currentBlockCondition, currentImmediateCondition, currentLoopConditionId, task, dataObjects, pad, writeCallMap, readCallMap);
+            return;
+        }
+
+        if (item.Raise is not null)
+            EmitRaiseStatements(sb, new[] { item.Raise }, task, dataObjects, pad);
     }
 
     private static void EmitStructuredRowAction(
@@ -407,12 +463,17 @@ internal static partial class ProjectGenerator
         var residualActionCond = StripCoveredStructuredCondition(actionCond, currentBlockCondition);
         residualActionCond = StripCoveredStructuredCondition(residualActionCond, currentImmediateCondition);
         var loopMatchesBlock = currentLoopConditionId.HasValue && action.LoopConditionExpressionId == currentLoopConditionId;
+        var currentLoopCondition = loopMatchesBlock
+            ? ResolveConditionExpressionCode(currentLoopConditionId!.Value.ToString(), task, dataObjects)
+            : "";
+        residualActionCond = StripCoveredStructuredCondition(residualActionCond, currentLoopCondition);
         var actionMatchesBlock = (!string.IsNullOrWhiteSpace(currentBlockCondition) ||
-                                  !string.IsNullOrWhiteSpace(currentImmediateCondition)) &&
+                                  !string.IsNullOrWhiteSpace(currentImmediateCondition) ||
+                                  !string.IsNullOrWhiteSpace(currentLoopCondition)) &&
                                  string.IsNullOrWhiteSpace(residualActionCond);
         var normalizedAction = loopMatchesBlock ? action with { LoopConditionExpressionId = null } : action;
 
-        if (actionMatchesBlock || loopMatchesBlock)
+        if (actionMatchesBlock)
         {
             var strippedAction = StripActionCondition(normalizedAction);
             if (!EmitDirectResourceAssignment(sb, strippedAction, task, dataObjects, allTasks, pad, suppressForcedUndo: true))
@@ -420,11 +481,10 @@ internal static partial class ProjectGenerator
             return;
         }
 
-        if (!string.IsNullOrWhiteSpace(residualActionCond) &&
-            !AreEquivalentStructuredConditions(residualActionCond, actionCond))
+        if (!string.IsNullOrWhiteSpace(residualActionCond))
         {
             var strippedAction = StripActionCondition(normalizedAction);
-            sb.AppendLine($"{pad}if ({residualActionCond})");
+            sb.AppendLine($"{pad}if (({residualActionCond}))");
             sb.AppendLine($"{pad}{{");
             if (!EmitDirectResourceAssignment(sb, strippedAction, task, dataObjects, allTasks, pad + "    ", suppressForcedUndo: true))
                 EmitRowActionCore(sb, strippedAction, task, dataObjects, allTasks, pad + "    ", preferValueForResourceAssignments: true, suppressForcedUndo: true);
@@ -468,21 +528,25 @@ internal static partial class ProjectGenerator
         var residualIoCond = StripCoveredStructuredCondition(ioCond, currentBlockCondition);
         residualIoCond = StripCoveredStructuredCondition(residualIoCond, currentImmediateCondition);
         var loopMatchesBlock = currentLoopConditionId.HasValue && io.LoopConditionExpressionId == currentLoopConditionId;
+        var currentLoopCondition = loopMatchesBlock
+            ? ResolveConditionExpressionCode(currentLoopConditionId!.Value.ToString(), task, dataObjects)
+            : "";
+        residualIoCond = StripCoveredStructuredCondition(residualIoCond, currentLoopCondition);
         var normalizedIo = loopMatchesBlock ? io with { LoopConditionExpressionId = null } : io;
         var ioMatchesBlock = (!string.IsNullOrWhiteSpace(currentBlockCondition) ||
-                              !string.IsNullOrWhiteSpace(currentImmediateCondition)) &&
+                              !string.IsNullOrWhiteSpace(currentImmediateCondition) ||
+                              !string.IsNullOrWhiteSpace(currentLoopCondition)) &&
                              string.IsNullOrWhiteSpace(residualIoCond);
 
-        if (ioMatchesBlock || loopMatchesBlock)
+        if (ioMatchesBlock)
         {
             EmitStructuredFormIoCore(sb, StripFormIoCondition(normalizedIo), task, dataObjects, pad, writeCallMap, readCallMap);
             return;
         }
 
-        if (!string.IsNullOrWhiteSpace(residualIoCond) &&
-            !AreEquivalentStructuredConditions(residualIoCond, ioCond))
+        if (!string.IsNullOrWhiteSpace(residualIoCond))
         {
-            sb.AppendLine($"{pad}if ({residualIoCond})");
+            sb.AppendLine($"{pad}if (({residualIoCond}))");
             sb.AppendLine($"{pad}{{");
             EmitStructuredFormIoCore(sb, StripFormIoCondition(normalizedIo), task, dataObjects, pad + "    ", writeCallMap, readCallMap);
             sb.AppendLine($"{pad}}}");
@@ -811,7 +875,9 @@ internal static partial class ProjectGenerator
     private static string WrapStructuredConditionPart(string text)
     {
         var value = text.Trim();
-        return value.StartsWith("(", StringComparison.Ordinal) && value.EndsWith(")", StringComparison.Ordinal)
+        return value.StartsWith("(", StringComparison.Ordinal) &&
+               value.EndsWith(")", StringComparison.Ordinal) &&
+               HasBalancedOuterParentheses(value)
             ? value
             : $"({value})";
     }

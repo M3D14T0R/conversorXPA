@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace XpaConverterMvp.TypeSystem;
 
@@ -20,7 +21,8 @@ internal readonly record struct XpaTypedExpression(
     string Code,
     string ReturnType,
     XpaType Type,
-    string? LiteralValue = null);
+    string? LiteralValue = null,
+    string? BindingCode = null);
 
 internal readonly record struct XpaExpressionDestination(
     string ReturnType,
@@ -106,6 +108,40 @@ internal static class XpaExpressionTypeMap
             return true;
         }
 
+        if (destination.Type == XpaType.Number &&
+            string.Equals(
+                CanonicalTypeName(source.ReturnType),
+                "System.Type",
+                StringComparison.Ordinal) &&
+            decimal.TryParse(
+                source.LiteralValue,
+                System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out _))
+        {
+            // An XPA DSOURCE literal has two valid representations. Functions
+            // such as DBName consume the entity Type, while numeric expressions
+            // consume the data-source ordinal. The literal resolver carries that
+            // ordinal as typed metadata so this decision remains in the central
+            // type map and never depends on parsing emitted C#.
+            result = new XpaTypedExpression(
+                source.LiteralValue!,
+                destinationReturnType,
+                XpaType.Number,
+                source.LiteralValue);
+            return true;
+        }
+
+        if (string.Equals(destinationReturnType, "System.IntPtr", StringComparison.Ordinal) &&
+            source.Type == XpaType.Number)
+        {
+            result = new XpaTypedExpression(
+                $"new global::System.IntPtr((int)({source.Code}))",
+                destinationReturnType,
+                XpaType.Object);
+            return true;
+        }
+
         if (destination.Type == XpaType.Array)
         {
             if (!TryConvertArray(source, destinationReturnType, out var arrayCode))
@@ -187,7 +223,7 @@ internal static class XpaExpressionTypeMap
             "Bool" => XpaType.Bool,
             "byte[]" => XpaType.Blob,
             "Text[]" or "Number[]" or "Date[]" or "Time[]" or "Bool[]" or "byte[][]" => XpaType.Array,
-            "object" or "string[]" or "System.IntPtr" => XpaType.Object,
+            "object" or "string[]" or "System.IntPtr" or "ColumnBase" => XpaType.Object,
             _ => XpaType.Unknown
         };
 
@@ -196,11 +232,8 @@ internal static class XpaExpressionTypeMap
         if (string.IsNullOrWhiteSpace(returnType))
             return "";
 
-        var trimmed = returnType.Trim();
-        var lastDot = trimmed.LastIndexOf('.');
-        var unqualified = lastDot >= 0 && lastDot + 1 < trimmed.Length
-            ? trimmed[(lastDot + 1)..]
-            : trimmed;
+        var trimmed = returnType.Trim().Replace("global::", "", StringComparison.Ordinal);
+        var unqualified = CanonicalizeQualifiedTypeName(trimmed);
 
         return unqualified switch
         {
@@ -220,6 +253,56 @@ internal static class XpaExpressionTypeMap
             "IntPtr" or "System.IntPtr" => "System.IntPtr",
             _ => trimmed
         };
+    }
+
+    private static string CanonicalizeQualifiedTypeName(string typeName)
+    {
+        var trimmed = typeName.Trim();
+        var genericStart = trimmed.IndexOf('<');
+        if (genericStart > 0 && trimmed.EndsWith(">", StringComparison.Ordinal))
+        {
+            var outerType = UnqualifyTypeName(trimmed[..genericStart]);
+            var genericArguments = SplitGenericArguments(trimmed[(genericStart + 1)..^1])
+                .Select(CanonicalTypeName);
+            return $"{outerType}<{string.Join(",", genericArguments)}>";
+        }
+
+        return UnqualifyTypeName(trimmed);
+    }
+
+    private static string UnqualifyTypeName(string typeName)
+    {
+        var trimmed = typeName.Trim();
+        var lastDot = trimmed.LastIndexOf('.');
+        return lastDot >= 0 && lastDot + 1 < trimmed.Length
+            ? trimmed[(lastDot + 1)..]
+            : trimmed;
+    }
+
+    private static IReadOnlyList<string> SplitGenericArguments(string arguments)
+    {
+        var result = new List<string>();
+        var start = 0;
+        var depth = 0;
+        for (var index = 0; index < arguments.Length; index++)
+        {
+            switch (arguments[index])
+            {
+                case '<':
+                    depth++;
+                    break;
+                case '>':
+                    depth--;
+                    break;
+                case ',' when depth == 0:
+                    result.Add(arguments[start..index].Trim());
+                    start = index + 1;
+                    break;
+            }
+        }
+
+        result.Add(arguments[start..].Trim());
+        return result;
     }
 
     internal static bool IsScalar(XpaType type)
@@ -295,6 +378,7 @@ internal static class XpaExpressionTypeMap
             "Date[]" => $"u.CastToDateArray({source.Code})",
             "Time[]" => $"u.CastToTimeArray({source.Code})",
             "Bool[]" => $"u.CastToBoolArray({source.Code})",
+            "byte[][]" => $"u.TextArrayToByteArrayArray(u.CastToTextArray({source.Code}))",
             "string[]" => $"(string[])({source.Code})",
             _ => ""
         };

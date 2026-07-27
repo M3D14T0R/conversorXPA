@@ -58,15 +58,73 @@ internal static partial class ProjectGenerator
         sb.AppendLine("        => new System.NotImplementedException($\"Scoped task probe placeholder: {taskName}\");");
         sb.AppendLine("}");
         sb.AppendLine();
-        sb.AppendLine("internal sealed class Application");
+        sb.AppendLine("internal sealed class Application : ENV.ApplicationControllerBase");
         sb.AppendLine("{");
         sb.AppendLine("    public static Application Instance { get; } = new();");
-        sb.AppendLine("    public static readonly CustomCommand Zoom_Post_Record_Update = new CustomCommand(\"Zoom_Post_Record_Update\");");
-        sb.AppendLine("    public static readonly CustomCommand Select_Post_Record_Update = new CustomCommand(\"Select_Post_Record_Update\");");
-        sb.AppendLine("    public static readonly CustomCommand Zoom_Editing = new CustomCommand(\"Zoom_Editing\");");
+        var appTask = parsed.Tasks.FirstOrDefault(t => t.MainProgram) ??
+                      parsed.Tasks.FirstOrDefault(t => t.ParentOrdinal is null);
+        var emittedCommands = new HashSet<string>(StringComparer.Ordinal);
+        if (appTask is not null)
+        {
+            foreach (var ev in appTask.EventsSemantic.Items)
+            {
+                var name = ResolveTaskCommandIdentifier(appTask, ev.Description, preserveCase: true);
+                if (string.IsNullOrWhiteSpace(name) || !emittedCommands.Add(name))
+                    continue;
+
+                var commandExpression = ev.InternalEventId.HasValue
+                    ? ResolveCommandByInternalEventId(ev.InternalEventId.Value)
+                    : null;
+                var keyExpression = ev.EventKeyCombinationId.HasValue
+                    ? ResolveKeyCombination(ev.EventKeyCombinationId.Value)
+                    : "";
+                if (!string.IsNullOrWhiteSpace(commandExpression) ||
+                    !string.IsNullOrWhiteSpace(keyExpression))
+                {
+                    sb.AppendLine(
+                        $"    internal static readonly CustomCommand {name} = {BuildCustomCommandExpression(ev.Description, commandExpression, keyExpression, ev.ForceExit, ev.EventType)};");
+                }
+                else if (!string.IsNullOrWhiteSpace(ev.PublicName))
+                {
+                    var precondition = ev.ForceExit switch
+                    {
+                        "C" => "Precondition = CustomCommandPrecondition.LeaveControl, CancelTrigger = true, ",
+                        "P" => "Precondition = CustomCommandPrecondition.LeaveRow, CancelTrigger = true, ",
+                        "E" => "Precondition = CustomCommandPrecondition.SaveControlDataToColumn, ",
+                        _ => ""
+                    };
+                    sb.AppendLine(
+                        $"    internal static readonly CustomCommand {name} = new CustomCommand(\"{Escape(ev.Description)}\") {{ {precondition}Key = \"{Escape(ev.PublicName)}\", AllowInvokeByKey = CustomCommandAllowInvokeByKey.FromSameModuleOnly }};");
+                }
+                else
+                {
+                    sb.AppendLine(
+                        $"    internal static readonly CustomCommand {name} = {BuildCustomCommandExpression(ev.Description, null, null, ev.ForceExit, ev.EventType)};");
+                }
+
+                if (ev.Parameters.Count > 0)
+                {
+                    var signature = string.Join(", ", ev.Parameters.Select(BuildEventParameterSignature));
+                    var args = string.Join(", ", ev.Parameters.Select(p => ToParameterIdentifier(p.Name)));
+                    sb.AppendLine(
+                        $"    public static CommandWithArgs {name}WithArgs({signature}) => new CommandWithArgs({name}, {args});");
+                }
+            }
+        }
+
+        foreach (var fallbackCommand in new[]
+                 {
+                     "Zoom_Post_Record_Update",
+                     "Select_Post_Record_Update",
+                     "Zoom_Editing"
+                 })
+        {
+            if (emittedCommands.Add(fallbackCommand))
+                sb.AppendLine(
+                    $"    public static readonly CustomCommand {fallbackCommand} = new CustomCommand(\"{fallbackCommand}\");");
+        }
         sb.AppendLine("    public ScopedTaskCompatPrograms AllPrograms { get; } = new();");
         sb.AppendLine("    public ScopedTaskCompatEntities AllEntities { get; } = new();");
-        var appTask = parsed.Tasks.FirstOrDefault(t => t.MainProgram) ?? parsed.Tasks.FirstOrDefault(t => t.ParentOrdinal is null);
         if (appTask is not null)
         {
             var emittedMembers = new HashSet<string>(StringComparer.Ordinal);

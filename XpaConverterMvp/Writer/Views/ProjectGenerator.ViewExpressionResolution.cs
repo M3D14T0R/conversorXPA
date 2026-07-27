@@ -27,6 +27,14 @@ internal static partial class ProjectGenerator
             return value;
         }
 
+        // In XPA, Data/Exp is the control's actual value. The referenced field
+        // model only supplies presentation/type metadata and must never be
+        // interpreted as a parent column binding. Doing so can bind an
+        // expression-only control to an unrelated entity that is not part of
+        // the task DataView.
+        if (c.DataExpressionId.HasValue)
+            return Cache("");
+
         var allowParentHintBinding = AllowsViewControlParentHintBinding(c);
         var parentModelBinding = allowParentHintBinding
             ? ResolveParentModelBindingByControlHint(c, task, allTasks, dataObjects)
@@ -62,8 +70,6 @@ internal static partial class ProjectGenerator
                 normalizedBinding = normalizedBinding["_controller.".Length..];
             return Cache(normalizedBinding);
         }
-        if (c.DataExpressionId.HasValue)
-            return Cache("");
         return Cache("");
     }
 
@@ -84,10 +90,19 @@ internal static partial class ProjectGenerator
     }
 
     private static bool TryResolvePushButtonControlResource(TaskFormControlDef c, TaskSemantic task, out TaskResourceColumnDef? resource)
+        => TryResolvePushButtonControlResource(c, task, Array.Empty<TaskSemantic>(), out resource);
+
+    private static bool TryResolvePushButtonControlResource(
+        TaskFormControlDef c,
+        TaskSemantic task,
+        IReadOnlyList<TaskSemantic> allTasks,
+        out TaskResourceColumnDef? resource)
     {
         resource = null;
         if (!string.Equals(c.Model, "CTRL_GUI0_PUSH_BUTTON", StringComparison.OrdinalIgnoreCase) ||
-            (string.IsNullOrWhiteSpace(c.ControlName) && !c.ModelVarColumn.HasValue))
+            (string.IsNullOrWhiteSpace(c.ControlName) &&
+             !c.ModelVarColumn.HasValue &&
+             string.IsNullOrWhiteSpace(c.DataColumn)))
             return false;
 
         if (!string.IsNullOrWhiteSpace(c.ControlName) &&
@@ -114,18 +129,55 @@ internal static partial class ProjectGenerator
             }
         }
 
+        // Several legacy XPA forms name the control after a button model
+        // (B_Confirmar_Select/B_Cancelar_Cancel) while Data points to the
+        // actual task variable through an alphabetic column ordinal. Resolve
+        // the same binding used by the control instead of relying on names.
+        if (!string.IsNullOrWhiteSpace(c.DataColumn))
+        {
+            var tasks = allTasks.Count == 0
+                ? new[] { task }
+                : allTasks;
+            var ordinalBinding = ResolveDataColumnOrdinalBinding(c.DataColumn, task, tasks);
+            if (!string.IsNullOrWhiteSpace(ordinalBinding))
+            {
+                var byBinding = ResolveResourceByTargetPath(task, ordinalBinding, tasks);
+                if (byBinding is not null)
+                {
+                    resource = byBinding;
+                    return true;
+                }
+            }
+
+            var bySelect = ResolveDataColumnSelectResource(c.DataColumn, task, tasks);
+            if (bySelect is not null)
+            {
+                resource = bySelect;
+                return true;
+            }
+        }
+
         return false;
     }
 
     private static string ResolvePushButtonDesignText(TaskFormControlDef c, TaskSemantic task)
+        => ResolvePushButtonDesignText(c, task, Array.Empty<TaskSemantic>());
+
+    private static string ResolvePushButtonDesignText(
+        TaskFormControlDef c,
+        TaskSemantic task,
+        IReadOnlyList<TaskSemantic> allTasks)
     {
-        if (!TryResolvePushButtonControlResource(c, task, out var resource) || resource is null)
+        if (!TryResolvePushButtonControlResource(c, task, allTasks, out var resource) || resource is null)
             return "";
 
         var attrObj = NormalizeAttrObjKind(resource.AttrObj);
         if (!string.Equals(attrObj, "FIELD_ALPHA", StringComparison.OrdinalIgnoreCase) &&
             !string.Equals(attrObj, "FIELD_UNICODE", StringComparison.OrdinalIgnoreCase))
             return "";
+
+        if (!string.IsNullOrWhiteSpace(resource.NullDisplayText))
+            return resource.NullDisplayText!;
 
         return string.IsNullOrWhiteSpace(resource.DefaultValue) ? "" : resource.DefaultValue!;
     }

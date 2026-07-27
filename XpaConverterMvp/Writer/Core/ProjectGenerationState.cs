@@ -159,6 +159,7 @@ internal sealed class ProjectGenerationState
     public Dictionary<string, string> DllReferenceMap { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string> DotNetReferenceAssemblyPathMap { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, ProjectManifest> ProjectReferenceManifests { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public ProjectManifest? CurrentProjectManifest { get; set; }
     public HashSet<string>? UserMethodsPublicNames { get; set; }
     public Dictionary<string, string>? UserMethodsPublicNameMap { get; set; }
     public Dictionary<string, string> ComponentFunctionSourceByName { get; set; } = new(StringComparer.OrdinalIgnoreCase);

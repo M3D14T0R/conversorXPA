@@ -24,6 +24,7 @@ internal static partial class ProjectGenerator
 
         var runtimeFiles = ResolveRuntimeThemeFiles(sourceRoot);
         WriteSharedDataSources(sourceRoot, sharedDir, appNamespace, dataObjects, tasks);
+        WriteSharedXpaSqlStorage(sharedDir, appNamespace);
         WriteSharedDebugHelper(sharedDir, appNamespace);
         var hasThemeColors = File.Exists(runtimeFiles.ColorFilePath);
         var hasThemeFonts = File.Exists(runtimeFiles.FontFilePath);

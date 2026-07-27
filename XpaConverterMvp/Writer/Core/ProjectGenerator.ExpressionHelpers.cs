@@ -117,9 +117,6 @@ private static string BuildEvaluateStatement(EmittedExpression expression, TaskS
         TryRenderEvaluateAssignmentStatement(exprCode, task, out var assignmentStatement))
         return assignmentStatement;
 
-    if (expression.CanEmitAsStatement)
-        return $"{StripRedundantOuterParentheses(exprCode.Trim())};";
-
     var statementExpr = StripRedundantOuterParentheses(exprCode.Trim());
     if (IsCSharpInvocationStatementExpression(statementExpr))
         return $"{statementExpr};";
@@ -135,8 +132,22 @@ private static bool IsCSharpInvocationStatementExpression(string expression)
         return false;
 
     var trimmed = StripRedundantOuterParentheses(expression.Trim());
-    return TryParseFunctionCall(trimmed, out var functionName, out _) &&
-           !string.IsNullOrWhiteSpace(functionName);
+    if (!TryParseFunctionCall(trimmed, out var functionName, out _) ||
+        string.IsNullOrWhiteSpace(functionName))
+        return false;
+
+    var callable = functionName.Trim();
+    if (!(char.IsLetter(callable[0]) || callable[0] is '_' or '@'))
+        return false;
+
+    // TryParseFunctionCall is intentionally permissive for XPA parsing and
+    // would also read "!(Call())" as a call whose name is "!". A C# statement
+    // invocation must have a callable/member path, not a unary or binary
+    // expression wrapped around a call.
+    return callable.All(ch =>
+        char.IsLetterOrDigit(ch) ||
+        ch is '_' or '@' or '.' or ':' or '<' or '>' or ',' or '?' or '[' or ']' ||
+        char.IsWhiteSpace(ch));
 }
 
 private static bool TryRenderEvaluateAssignmentStatement(string exprCode, TaskSemantic task, out string statement)

@@ -240,13 +240,13 @@ internal static partial class ProjectGenerator
         sb.AppendLine($"    <RootNamespace>{EscapeXml(projectName)}</RootNamespace>");
         sb.AppendLine($"    <AssemblyName>{EscapeXml(projectName)}</AssemblyName>");
         sb.AppendLine("    <LangVersion>latest</LangVersion>");
+        sb.AppendLine("    <Features>$(Features);experimental-data-section-string-literals=30</Features>");
         // Large XPA applications can exceed the CLR user-string heap limit in
         // a single generated assembly. Roslyn's data-section string literal
         // mode keeps those projects compilable without changing source values.
         // The default threshold only moves literals with at least 100 characters.
         // Large XPA projects also contain enough short literals to overflow #US,
         // so make every non-empty literal eligible for the data section.
-        sb.AppendLine("    <Features>experimental-data-section-string-literals=0</Features>");
         sb.AppendLine("    <Nullable>disable</Nullable>");
         sb.AppendLine("    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>");
         sb.AppendLine("    <NoWarn>1587;1570;1591;1573</NoWarn>");
@@ -657,7 +657,8 @@ internal static partial class ProjectGenerator
                     Translate = c.Translate,
                     DbColumnName = c.DbColumnName,
                     DbType = c.DbType,
-                    ModelRefObj = c.ModelRefObj
+                    ModelRefObj = c.ModelRefObj,
+                    InputRange = c.InputRange
                 }).ToList(),
                 Indexes = dataObject.Indexes.Select(i => new ProjectManifestDataIndex
                 {
@@ -679,8 +680,33 @@ internal static partial class ProjectGenerator
         {
             if (string.IsNullOrWhiteSpace(right.Name))
                 continue;
-            manifest.Rights[right.Name] = ToRoleMemberIdentifier(right.Name);
+            var memberName = ToRoleMemberIdentifier(right.Name);
+            manifest.Rights[right.Name] = memberName;
+            manifest.RightMembersByAlias[right.Name] = memberName;
+            if (!string.IsNullOrWhiteSpace(right.Key))
+                manifest.RightMembersByAlias[right.Key] = memberName;
+            if (!string.IsNullOrWhiteSpace(right.PublicName))
+                manifest.RightMembersByAlias[right.PublicName] = memberName;
         }
+
+        manifest.FieldModels = parsed.FieldModels
+            .Where(model => string.IsNullOrWhiteSpace(model.SourceComponent))
+            .OrderBy(model => model.LocalObjectIndex)
+            .Select(model => new ProjectManifestFieldModel
+            {
+                ObjectIndex = model.LocalObjectIndex,
+                PublicName = model.PublicName ?? "",
+                Name = model.Name,
+                AttrObj = model.AttrObj,
+                Picture = model.Picture,
+                InputRange = model.InputRange,
+                NullDisplayText = model.NullDisplayText,
+                DefaultValue = model.DefaultValue,
+                RaiseEventType = model.RaiseEventType,
+                RaiseEventInternalEventId = model.RaiseEventInternalEventId,
+                RaiseEventKeyCombinationId = model.RaiseEventKeyCombinationId
+            })
+            .ToList();
 
         foreach (var fn in CollectComponentFunctionExports(parsed))
         {

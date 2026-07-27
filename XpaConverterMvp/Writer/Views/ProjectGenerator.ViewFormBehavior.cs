@@ -10,14 +10,23 @@ internal static partial class ProjectGenerator
     /// </summary>
     private static void EmitViewFormBehavior(StringBuilder designer, TaskFormDef form)
     {
+        // Magic StartupPosition 4 explicitly requests centering in the active MDI.
+        // It takes precedence over WindowType 9: several task forms use that
+        // combination but must retain their original size instead of filling the MDI.
+        var centerInMdi = string.Equals(form.StartupPosition, "4", StringComparison.OrdinalIgnoreCase);
+
         // Magic WindowType 9 is Fit-to-MDI. FitToMDI is also what makes the
         // runtime attach the task form to the active MDI container.
-        if (string.Equals(form.WindowType, "9", StringComparison.OrdinalIgnoreCase))
+        if (centerInMdi)
+            designer.AppendLine("        StartPosition = XPARuntimeCore.Box.UI.WindowStartPosition.CenterMDI;");
+        else if (string.Equals(form.WindowType, "9", StringComparison.OrdinalIgnoreCase))
             designer.AppendLine("        FitToMDI = true;");
+        else if (!form.XExpressionId.HasValue && !form.YExpressionId.HasValue)
+            designer.AppendLine("        StartPosition = XPARuntimeCore.Box.UI.WindowStartPosition.CenterMDI;");
 
         // A Fit-to-MDI window fills the MDI client area. StartupMode 2 is the
         // explicit maximized startup mode used by other window types.
-        if (string.Equals(form.WindowType, "9", StringComparison.OrdinalIgnoreCase) ||
+        if ((!centerInMdi && string.Equals(form.WindowType, "9", StringComparison.OrdinalIgnoreCase)) ||
             string.Equals(form.StartupMode, "2", StringComparison.OrdinalIgnoreCase))
             designer.AppendLine("        WindowState = System.Windows.Forms.FormWindowState.Maximized;");
 

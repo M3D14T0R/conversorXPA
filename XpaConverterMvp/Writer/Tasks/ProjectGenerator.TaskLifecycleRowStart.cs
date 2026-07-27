@@ -28,11 +28,17 @@ internal static partial class ProjectGenerator
                 if (!EmitDirectResourceAssignment(sb, action, t, dataObjects, allTasks, "        ", suppressForcedUndo: true))
                     EmitRowAction(sb, action, t, dataObjects, allTasks, "        ");
             }
+            EmitRaiseStatements(sb, row.Raises, t, dataObjects, "        ");
         }
         sb.AppendLine("    }");
     }
 
-    private static void EmitOnStart(StringBuilder sb, TaskSemantic t, IReadOnlyList<DataObjectDef> dataObjects, IReadOnlyList<TaskSemantic> allTasks)
+    private static void EmitOnStart(
+        StringBuilder sb,
+        TaskSemantic t,
+        IReadOnlyList<DataObjectDef> dataObjects,
+        IReadOnlyList<TaskSemantic> allTasks,
+        string? finalStatement = null)
     {
         var writeCallMap = BuildFormIoWriteCallMap(t);
         var startIos = t.Layout.StartTaskOutputIos;
@@ -57,7 +63,12 @@ internal static partial class ProjectGenerator
             .Where(condition => !string.IsNullOrWhiteSpace(condition))
             .Distinct(StringComparer.Ordinal)
             .ToList();
-        if (t.Logic.StartLogics.Count == 0 && t.Logic.StartRaises.Count == 0 && startIos.Count == 0 && !t.HasStartLogicUnit && taskEvaluatedLinks.Count == 0)
+        if (t.Logic.StartLogics.Count == 0 &&
+            t.Logic.StartRaises.Count == 0 &&
+            startIos.Count == 0 &&
+            !t.HasStartLogicUnit &&
+            taskEvaluatedLinks.Count == 0 &&
+            string.IsNullOrWhiteSpace(finalStatement))
             return;
 
         sb.AppendLine();
@@ -79,8 +90,8 @@ internal static partial class ProjectGenerator
                 if (!EmitDirectResourceAssignment(sb, action, t, dataObjects, allTasks, "        ", suppressForcedUndo: true))
                     EmitRowAction(sb, action, t, dataObjects, allTasks, "        ");
             }
+            EmitRaiseStatements(sb, row.Raises, t, dataObjects, "        ");
         }
-        EmitRaiseStatements(sb, t.Logic.StartRaises, t, dataObjects, "        ");
         foreach (var io in startIos)
         {
             if (!io.FormEntryIndex.HasValue || !writeCallMap.TryGetValue(io.FormEntryIndex.Value, out var writeCall))
@@ -98,6 +109,8 @@ internal static partial class ProjectGenerator
             sb.AppendLine("        if (reloadDataAfterStart)");
             sb.AppendLine("            Raise(Command.ReloadData);");
         }
+        if (!string.IsNullOrWhiteSpace(finalStatement))
+            sb.AppendLine($"        {finalStatement}");
         sb.AppendLine("    }");
     }
 

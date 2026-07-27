@@ -585,6 +585,42 @@ internal static partial class ProjectGenerator
         if (names.Length == 0)
             return false;
 
+        // Prefer the declared return contract of an expression assigned to the
+        // vector. This is stronger evidence than the generic FIELD_BLOB cell
+        // model used by XPA for vectors. For example, a CLR String[] producer
+        // defines a Text vector even when its XPA cell model is FIELD_BLOB.
+        var assignedItemTypeEvidence = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var update in EnumerateTaskUpdatesForArrayItemInference(currentTask))
+        {
+            if (!names.Any(name =>
+                    string.Equals(update.Variable, name, StringComparison.OrdinalIgnoreCase)))
+                continue;
+
+            var sourceSyntax = ResolveUpdateValueSourceSyntax(update, currentTask);
+            var sourceReturnType = ResolveSourceExpressionReturnType(
+                sourceSyntax,
+                currentTask,
+                _dataObjectsByOrdinal.Values.ToArray(),
+                0);
+            if (!TryResolveArrayItemTypeFromReturnType(sourceReturnType, out var assignedItemType))
+                continue;
+
+            assignedItemTypeEvidence[assignedItemType] =
+                assignedItemTypeEvidence.TryGetValue(assignedItemType, out var count)
+                    ? count + 1
+                    : 1;
+        }
+
+        if (assignedItemTypeEvidence.Count > 0)
+        {
+            itemType = assignedItemTypeEvidence
+                .OrderByDescending(pair => pair.Value)
+                .ThenBy(pair => pair.Key, StringComparer.Ordinal)
+                .First()
+                .Key;
+            return true;
+        }
+
         var normalizedNameTokens = names
             .SelectMany(name => NormalizeSemanticNameForInference(name)
                 .Split(new[] { '_' }, StringSplitOptions.RemoveEmptyEntries))
@@ -695,6 +731,25 @@ internal static partial class ProjectGenerator
         }
 
         return false;
+    }
+
+    private static bool TryResolveArrayItemTypeFromReturnType(
+        string? returnType,
+        out string itemType)
+    {
+        itemType = "";
+        var normalized = NormalizeReturnTypeToken(returnType);
+        itemType = normalized switch
+        {
+            "Text[]" or "string[]" => "Text",
+            "Number[]" => "Number",
+            "Date[]" => "Date",
+            "Time[]" => "Time",
+            "Bool[]" => "Bool",
+            "byte[][]" => "byte[]",
+            _ => ""
+        };
+        return itemType.Length > 0;
     }
 
     private static IEnumerable<TaskUpdateDef> EnumerateTaskUpdatesForArrayItemInference(TaskSemantic currentTask)
@@ -1421,6 +1476,13 @@ internal static partial class ProjectGenerator
             return cached;
 
         if (resolvedResource is null &&
+            TryResolveUnmappedRelationalSelectTargetValueInfo(task, target, out var compatibilitySelectInfo))
+        {
+            _targetValueInfoCache[cacheKey] = compatibilitySelectInfo;
+            return compatibilitySelectInfo;
+        }
+
+        if (resolvedResource is null &&
             TryResolveDataViewMemberTargetValueInfo(task, target, out var dataViewInfo))
         {
             _targetValueInfoCache[cacheKey] = dataViewInfo;
@@ -1465,6 +1527,65 @@ internal static partial class ProjectGenerator
         var info = new TargetValueInfo(resource, modelAttrObj, attrObj, targetMember, isDotNet, isArray, isBlob, isNumeric, isBoolean);
         _targetValueInfoCache[cacheKey] = info;
         return info;
+    }
+
+    private static bool TryResolveUnmappedRelationalSelectTargetValueInfo(
+        TaskSemantic task,
+        string target,
+        out TargetValueInfo info)
+    {
+        info = default;
+        if (string.IsNullOrWhiteSpace(target))
+            return false;
+
+        var targetPath = target.Trim();
+        if (targetPath.EndsWith(".Value", StringComparison.Ordinal))
+            targetPath = targetPath[..^".Value".Length];
+
+        var currentTask = task;
+        while (targetPath.StartsWith("_parent.", StringComparison.Ordinal))
+        {
+            if (!currentTask.ParentOrdinal.HasValue ||
+                !_tasksByOrdinal.TryGetValue(currentTask.ParentOrdinal.Value, out var parentTask))
+                return false;
+
+            currentTask = parentTask;
+            targetPath = targetPath["_parent.".Length..];
+        }
+
+        if (targetPath.Contains('.', StringComparison.Ordinal))
+            return false;
+
+        var dataObjects = _dataObjectsByOrdinal.Values.ToArray();
+        var select = currentTask.SelectsSemantic.Items.FirstOrDefault(candidate =>
+            IsUnmappedRelationalSelect(candidate, currentTask, dataObjects) &&
+            string.Equals(
+                ResolveUnmappedRelationalSelectMemberName(candidate),
+                targetPath,
+                StringComparison.Ordinal));
+        if (select is null)
+            return false;
+
+        var returnType = NormalizeReturnTypeToken(
+            ResolveUnmappedRelationalSelectReturnType(select, currentTask, dataObjects));
+        if (string.IsNullOrWhiteSpace(returnType))
+            returnType = "Text";
+        var valueReturnType = GetValueReturnType(returnType);
+        var attrObj = MapReturnTypeToAttrObj(valueReturnType);
+        if (string.IsNullOrWhiteSpace(attrObj))
+            attrObj = "FIELD_ALPHA";
+
+        info = new TargetValueInfo(
+            Resource: null,
+            ModelAttrObj: attrObj,
+            AttrObj: attrObj,
+            TargetMember: targetPath,
+            IsDotNet: false,
+            IsArray: returnType.EndsWith("[]", StringComparison.Ordinal),
+            IsBlob: string.Equals(valueReturnType, "byte[]", StringComparison.Ordinal),
+            IsNumeric: string.Equals(valueReturnType, "Number", StringComparison.Ordinal),
+            IsBoolean: string.Equals(valueReturnType, "Bool", StringComparison.Ordinal));
+        return true;
     }
 
     private static TaskSemantic? ResolveTaskOwnerFromTargetPath(TaskSemantic task, string? targetPath)
@@ -1515,7 +1636,13 @@ internal static partial class ProjectGenerator
         if (!TryResolveDataViewMemberColumn(task, target, out var normalizedTarget, out var column))
             return false;
 
-        var attrObj = ResolveEffectiveDataColumnAttrObj(column);
+        // A member emitted from a referenced model must follow the manifest of
+        // that model. Component-local object ordinals can collide with external
+        // data-object ordinals and therefore are weaker evidence for the CLR
+        // member type.
+        var attrObj = ResolveExternalManifestColumnAttrObj(normalizedTarget);
+        if (string.IsNullOrWhiteSpace(attrObj))
+            attrObj = ResolveEffectiveDataColumnAttrObj(column);
         if (string.IsNullOrWhiteSpace(attrObj))
             return false;
 
@@ -1753,10 +1880,14 @@ internal static partial class ProjectGenerator
 
     private static string? ResolveModelColumnAttrObj(TaskSemantic task, string target)
     {
+        var externalAttrObj = ResolveExternalManifestColumnAttrObj(target);
+        if (!string.IsNullOrWhiteSpace(externalAttrObj))
+            return externalAttrObj;
+
         if (TryResolveDataViewMemberColumn(task, target, out _, out var column))
             return ResolveEffectiveDataColumnAttrObj(column);
 
-        return ResolveExternalManifestColumnAttrObj(target);
+        return null;
     }
 
     private static string? ResolveExternalManifestColumnAttrObj(string target)
@@ -1800,6 +1931,31 @@ internal static partial class ProjectGenerator
                 if (owners.Count == 0)
                     continue;
 
+                // Register the exact emitted CLR member names first. Physical
+                // and database aliases are compatibility evidence and can
+                // collide (for example Campo87/LocalEntrega); they must never
+                // replace the type of the member that actually exists in the
+                // referenced assembly.
+                var emittedMembers = ResolveExternalManifestColumnMemberNames(
+                    manifest,
+                    dataObject);
+                foreach (var column in dataObject.Columns)
+                {
+                    if (!emittedMembers.TryGetValue(column.Id, out var emittedMember))
+                        continue;
+
+                    var attrObj = NormalizeAttrObjKind(column.AttrObj);
+                    if (string.IsNullOrWhiteSpace(attrObj))
+                        attrObj = NormalizeAttrObjKind(column.Attribute ?? "");
+                    if (string.IsNullOrWhiteSpace(attrObj))
+                        continue;
+
+                    foreach (var owner in owners)
+                        result.TryAdd(
+                            BuildDataViewMemberColumnKey(owner, emittedMember),
+                            attrObj);
+                }
+
                 foreach (var column in dataObject.Columns)
                 {
                     var attrObj = NormalizeAttrObjKind(column.AttrObj);
@@ -1817,6 +1973,38 @@ internal static partial class ProjectGenerator
                         result.TryAdd(BuildDataViewMemberColumnKey(owner, member), attrObj);
                 }
             }
+        }
+
+        return result;
+    }
+
+    private static IReadOnlyDictionary<int, string> ResolveExternalManifestColumnMemberNames(
+        ProjectManifest manifest,
+        ProjectManifestDataObject dataObject)
+    {
+        var className = manifest.DataObjectsByIndex.TryGetValue(
+            dataObject.ObjectIndex,
+            out var generatedName)
+            ? generatedName
+            : ToPascalIdentifier(dataObject.Name);
+        var result = new Dictionary<int, string>();
+        var used = new HashSet<string>(StringComparer.Ordinal) { className };
+        foreach (var column in dataObject.Columns.OrderBy(column => column.Id))
+        {
+            var baseName = ToPascalIdentifier(column.Name);
+            var resolved = string.IsNullOrWhiteSpace(baseName) ? "_" : baseName;
+            if (used.Contains(resolved))
+                resolved += "_";
+
+            var suffix = 2;
+            while (used.Contains(resolved))
+            {
+                resolved = $"{baseName}_{suffix}";
+                suffix++;
+            }
+
+            used.Add(resolved);
+            result[column.Id] = resolved;
         }
 
         return result;

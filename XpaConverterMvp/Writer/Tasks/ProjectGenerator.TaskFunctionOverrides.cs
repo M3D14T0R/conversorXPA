@@ -56,6 +56,12 @@ internal static partial class ProjectGenerator
                 if (!string.IsNullOrWhiteSpace(targetExpr))
                     sb.AppendLine($"        {BuildFunctionOverrideParameterAssignment(task, targetExpr, p.ParameterType, p.ParameterName)}");
             }
+            EmitMutableFunctionAssignmentInitializers(
+                sb,
+                fn,
+                task,
+                dataObjects,
+                _allTasks ?? Array.Empty<TaskSemantic>());
             EmitInlineCommentBlock(sb, "        ", fn.Definition.Comment);
             foreach (var r in fn.Remarks)
                 EmitInlineCommentBlock(sb, "        ", r);
@@ -83,6 +89,93 @@ internal static partial class ProjectGenerator
 
         if (emittedAny)
             sb.AppendLine("    #endregion");
+    }
+
+    private static HashSet<string> ResolveMutableFunctionAssignmentTargets(
+        TaskSemantic task,
+        IReadOnlyList<DataObjectDef> dataObjects,
+        IReadOnlyList<TaskSemantic> allTasks)
+    {
+        var targets = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var function in task.FunctionOverridesSemantic)
+        {
+            foreach (var action in function.OrderedActions)
+            {
+                var variable = action.Update?.Variable;
+                if (string.IsNullOrWhiteSpace(variable))
+                    continue;
+
+                var target = ResolveUpdateTargetExpression(
+                    variable,
+                    task,
+                    dataObjects,
+                    allTasks);
+                if (!string.IsNullOrWhiteSpace(target))
+                    targets.Add(target);
+            }
+        }
+
+        return targets;
+    }
+
+    private static void EmitMutableFunctionAssignmentInitializers(
+        StringBuilder sb,
+        FunctionOverrideSemantic function,
+        TaskSemantic task,
+        IReadOnlyList<DataObjectDef> dataObjects,
+        IReadOnlyList<TaskSemantic> allTasks)
+    {
+        var functionLogicUnit = ExtractLogicUnitIndex(function.Definition.XmlTrace);
+        if (!functionLogicUnit.HasValue)
+            return;
+
+        var mutableTargets = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var action in function.OrderedActions)
+        {
+            var variable = action.Update?.Variable;
+            if (string.IsNullOrWhiteSpace(variable))
+                continue;
+
+            var target = ResolveUpdateTargetExpression(
+                variable,
+                task,
+                dataObjects,
+                allTasks);
+            if (!string.IsNullOrWhiteSpace(target))
+                mutableTargets.Add(target);
+        }
+
+        foreach (var select in task.SelectsSemantic.Items)
+        {
+            if (!select.IsFunctionSelect ||
+                select.IsParameter ||
+                !select.AssignmentExpressionId.HasValue ||
+                ExtractLogicUnitIndex(select.XmlTrace) != functionLogicUnit)
+            {
+                continue;
+            }
+
+            var target = ResolveSelectExpression(select, task, dataObjects, "");
+            if (string.IsNullOrWhiteSpace(target) ||
+                !mutableTargets.Contains(target))
+            {
+                continue;
+            }
+
+            var value = ResolveSelectBindValueExpression(
+                select,
+                task,
+                dataObjects,
+                target);
+            value = AdjustBindValueExpressionForTarget(
+                select,
+                target,
+                value,
+                task,
+                dataObjects);
+            if (!string.IsNullOrWhiteSpace(value))
+                sb.AppendLine($"        {target}.Value = {value};");
+        }
     }
 
     private static string BuildFunctionOverrideParameterAssignment(TaskSemantic task, string targetExpr, string parameterType, string parameterName)
