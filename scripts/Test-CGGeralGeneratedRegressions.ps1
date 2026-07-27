@@ -172,10 +172,26 @@ Test-InOrder `
     -First 'btnBConfirmar.BindText' `
     -Second 'btnBConfirmar.Data ='
 
-Test-NotContains `
-    -Name "Forma Materiais NOVO nao esconde rotulos atras das abas" `
+Test-Contains `
+    -Name "Forma Materiais NOVO envia a pseudo-aba para tras dos controles da pagina" `
     -RelativePath "Views\_CadastroDeMateriaisMateriaisNOVO.Designer.cs" `
-    -Literal ".SendToBack();"
+    -Literal "tabGUIAVTabela.SendToBack();"
+
+Test-InOrder `
+    -Name "Forma Materiais NOVO reaplica o z-order da pseudo-aba apos o carregamento" `
+    -RelativePath "Views\_CadastroDeMateriaisMateriaisNOVO.cs" `
+    -First "Shown += (_, _) =>" `
+    -Second "tabGUIAVTabela.SendToBack();"
+
+Test-Contains `
+    -Name "Controle PCP herda a pagina da aba pelo ISN_FATHER" `
+    -RelativePath "Views\_CadastroDeMateriaisMateriaisNOVO.Designer.cs" `
+    -Literal "cboVTipoDePlanejamento.BoundTo = new XPARuntimeCore.Box.UI.ControlBinding(tabGUIAVTabela, 2);"
+
+Test-Contains `
+    -Name "Container de numero de serie herda a pagina da aba pelo ISN_FATHER" `
+    -RelativePath "Views\_CadastroDeMateriaisMateriaisNOVO.Designer.cs" `
+    -Literal "lblExigir_aInforma_o.BoundTo = new XPARuntimeCore.Box.UI.ControlBinding(tabGUIAVTabela, 6);"
 
 Test-NotContains `
     -Name "Celula Descricao da pesquisa de materiais nao recebe Anchor do formulario" `

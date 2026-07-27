@@ -90,6 +90,12 @@ internal static partial class ProjectGenerator
         var sourceEntity = !string.IsNullOrWhiteSpace(primaryMember) && primaryObj > 0 && dataObjectByOrdinal.TryGetValue(primaryObj.Value, out var sourceEntityResolved)
             ? sourceEntityResolved
             : null;
+        var relationConditionSourceColumns = new HashSet<string>(StringComparer.Ordinal);
+        var relationDependencyEntityMembers = modelMembers
+            .Select(member => member.MemberName)
+            .Where(member => !string.IsNullOrWhiteSpace(member))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
         TimeSection(() =>
         {
             var relationsTotalSw = Stopwatch.StartNew();
@@ -152,6 +158,23 @@ internal static partial class ProjectGenerator
                 condExpr = OverrideLinkConditionByReturnHint(t, dataObjects, linkMembers, i, lb, target, condExpr);
                 sw.Stop();
                 overrideConditionMs += sw.ElapsedMilliseconds;
+                if (!string.IsNullOrWhiteSpace(condExpr))
+                {
+                    foreach (var sourceMember in relationDependencyEntityMembers)
+                    {
+                        if (string.Equals(sourceMember, lb.MemberName, StringComparison.Ordinal))
+                            continue;
+
+                        foreach (Match match in Regex.Matches(
+                                     condExpr,
+                                     $@"\b{Regex.Escape(sourceMember)}\.(\w+)",
+                                     RegexOptions.CultureInvariant))
+                        {
+                            if (match.Groups.Count > 1)
+                                relationConditionSourceColumns.Add($"{sourceMember}.{match.Groups[1].Value}");
+                        }
+                    }
+                }
                 var relationTypePrefix = "";
                 if (string.Equals(lb.Link.Mode, "W", StringComparison.OrdinalIgnoreCase))
                     relationTypePrefix = "RelationType.InsertIfNotFound, ";
@@ -328,6 +351,7 @@ internal static partial class ProjectGenerator
         }
 
         var allowedParameterSelectNames = GetAllowedParameterSelectNames(t);
+        var emittedDataViewColumns = new HashSet<string>(StringComparer.Ordinal);
         TimeSection(() =>
         {
             var totalSw = Stopwatch.StartNew();
@@ -400,6 +424,7 @@ internal static partial class ProjectGenerator
                     }
                     else if (!string.IsNullOrWhiteSpace(sel.RealVarName))
                     {
+                        emittedDataViewColumns.Add(refExpr);
                         if (isAdditionalColumn)
                         {
                             sb.AppendLine($"        {addCollection}.Add({refExpr});");
@@ -419,6 +444,7 @@ internal static partial class ProjectGenerator
                     }
                     else if (!suppressBind && !string.IsNullOrWhiteSpace(bindExpr) && (!sel.HasRange || allowBindForRangedVirtual))
                     {
+                        emittedDataViewColumns.Add(refExpr);
                         if (isAdditionalColumn)
                         {
                             sb.AppendLine($"        {addCollection}.Add({refExpr});");
@@ -431,6 +457,7 @@ internal static partial class ProjectGenerator
                     }
                     else
                     {
+                        emittedDataViewColumns.Add(refExpr);
                         sb.AppendLine($"        {addCollection}.Add({refExpr});");
                     }
                     sw.Stop();
@@ -443,6 +470,12 @@ internal static partial class ProjectGenerator
                 $"resolve-resource-ms={resolveResourceMs} resolve-expr-ms={resolveExprMs} " +
                 $"bind-expr-ms={bindExprMs} adjust-bind-ms={adjustBindMs} emit-ms={emitMs}");
         }, "DATAVIEW", className, "emit-selects");
+        foreach (var relationSourceColumn in relationConditionSourceColumns
+                     .Where(column => !emittedDataViewColumns.Contains(column))
+                     .OrderBy(column => column, StringComparer.Ordinal))
+        {
+            sb.AppendLine($"        Columns.Add({relationSourceColumn});");
+        }
 
         if (ResolveBaseClass(t) != "BusinessProcessBase")
         {

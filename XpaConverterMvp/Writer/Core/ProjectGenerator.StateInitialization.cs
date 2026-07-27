@@ -41,6 +41,7 @@ internal static partial class ProjectGenerator
                 System.IO.Path.Combine(request.OutputRoot, currentProjectName + ".csproj"));
         }
         _externalManifestColumnAttrObjIndex = BuildExternalManifestColumnAttrObjIndex();
+        _externalManifestColumnTextLengthIndex = BuildExternalManifestColumnTextLengthIndex();
         var componentFunctionSourceByName = request.Parsed.ComponentFunctions
             .Where(x => !string.IsNullOrWhiteSpace(x.Name) && !string.IsNullOrWhiteSpace(x.ComponentName))
             .GroupBy(x => x.Name, StringComparer.OrdinalIgnoreCase)

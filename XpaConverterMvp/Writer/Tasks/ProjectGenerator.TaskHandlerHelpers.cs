@@ -95,12 +95,29 @@ internal static partial class ProjectGenerator
         };
     }
 
-    private static string ResolveHandlerHandledExpression(TaskHandlerDef h, TaskSemantic task, IReadOnlyList<DataObjectDef> dataObjects)
+    private static string ResolveHandlerHandledExpression(
+        TaskHandlerDef h,
+        TaskSemantic task,
+        IReadOnlyList<DataObjectDef> dataObjects,
+        string? commandName = null)
     {
+        // A task-wide BeforeControlClick is a pre-click hook in XPA. Marking
+        // the Firefly command as handled cancels the control parking that must
+        // happen after the hook (notably entry into a subform). Handlers tied
+        // to a specific control still retain the XPA propagation semantics,
+        // because they commonly replace that control's default click action.
+        if (string.Equals(commandName, "Command.BeforeControlClick", StringComparison.Ordinal) &&
+            string.IsNullOrWhiteSpace(h.Reference))
+        {
+            return "false";
+        }
+
         if (int.TryParse(h.Propagate, out var propagate))
         {
             if (propagate == 78)
                 return "true";
+            if (propagate == 89)
+                return "false";
 
             var expId = Math.Abs(propagate);
             if (expId > 0)

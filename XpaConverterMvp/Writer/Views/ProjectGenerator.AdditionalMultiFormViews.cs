@@ -181,9 +181,7 @@ internal static partial class ProjectGenerator
                 .ToList();
             foreach (var control in controls)
             {
-                if (!control.ControlLayer.HasValue ||
-                    control.ControlLayer.Value <= 0 ||
-                    string.Equals(control.Model, "CTRL_GUI0_TAB", StringComparison.OrdinalIgnoreCase) ||
+                if (string.Equals(control.Model, "CTRL_GUI0_TAB", StringComparison.OrdinalIgnoreCase) ||
                     IsTableColumnViewControl(control) ||
                     tableAttachmentByLeaf.ContainsKey(control.Id) ||
                     columnAttachmentByLeaf.ContainsKey(control.Id) ||
@@ -191,6 +189,20 @@ internal static partial class ProjectGenerator
                 {
                     continue;
                 }
+
+                var effectiveControlLayer = control.ControlLayer;
+                var ancestor = control;
+                var visitedControlIds = new HashSet<int> { control.Id };
+                while ((!effectiveControlLayer.HasValue || effectiveControlLayer.Value <= 0) &&
+                       ancestor.ParentId.HasValue &&
+                       controlById.TryGetValue(ancestor.ParentId.Value, out var parent) &&
+                       visitedControlIds.Add(parent.Id))
+                {
+                    ancestor = parent;
+                    effectiveControlLayer = ancestor.ControlLayer;
+                }
+                if (!effectiveControlLayer.HasValue || effectiveControlLayer.Value <= 0)
+                    continue;
 
                 TaskFormControlDef? containingTab = null;
                 var centerX = control.X + Math.Max(1, control.Width) / 2;
@@ -214,7 +226,7 @@ internal static partial class ProjectGenerator
                 if (containingTab is not null)
                 {
                     tabBindingByControlId[control.Id] =
-                        (containingTab.Id, control.ControlLayer.Value - 1);
+                        (containingTab.Id, effectiveControlLayer.Value - 1);
                 }
             }
 
@@ -317,6 +329,20 @@ internal static partial class ProjectGenerator
             code.AppendLine("        _controller = controller;");
             code.AppendLine("        InitializeComponent();");
             code.AppendLine("        InitializeControllerBindings();");
+            var rootTabControls = controls
+                .Where(control =>
+                    rootControlIds.Contains(control.Id) &&
+                    string.Equals(control.Model, "CTRL_GUI0_TAB", StringComparison.OrdinalIgnoreCase))
+                .Reverse()
+                .ToList();
+            if (rootTabControls.Count > 0)
+            {
+                code.AppendLine("        Shown += (_, _) =>");
+                code.AppendLine("        {");
+                foreach (var tabControl in rootTabControls)
+                    code.AppendLine($"            {Var(tabControl)}.SendToBack();");
+                code.AppendLine("        };");
+            }
             code.AppendLine("    }");
             foreach (var handler in clickHandlers)
             {
@@ -424,8 +450,13 @@ internal static partial class ProjectGenerator
                     c.Model,
                     "CTRL_GUI0_PUSH_BUTTON",
                     StringComparison.OrdinalIgnoreCase);
+                var resolvedPushButtonDesignText = isPushButton
+                    ? ResolvePushButtonDesignText(c, t, tasks)
+                    : "";
                 var pushButtonDesignText = isPushButton
-                    ? (!string.IsNullOrWhiteSpace(c.Text) ? c.Text : ResolvePushButtonDesignText(c, t, tasks))
+                    ? (!string.IsNullOrWhiteSpace(resolvedPushButtonDesignText)
+                        ? resolvedPushButtonDesignText
+                        : c.Text ?? "")
                     : "";
                 var pushButtonUsesStaticNullDisplay =
                     isPushButton &&
@@ -450,8 +481,18 @@ internal static partial class ProjectGenerator
                     locationY = Math.Max(0, c.Y - directlyAttachedTable.Y);
                 }
 
+                var scaledControlWidth = Math.Max(10, ScaleViewX(c.Width));
+                if (columnAttachmentByLeaf.ContainsKey(c.Id))
+                {
+                    scaledControlWidth = ResolveViewGridCellWidth(
+                        c,
+                        t,
+                        tasks,
+                        dataObjects,
+                        scaledControlWidth);
+                }
                 designer.AppendLine($"        {varName}.Location = new Point({ScaleViewX(locationX)}, {ScaleViewY(locationY)});");
-                designer.AppendLine($"        {varName}.Size = new Size({Math.Max(10, ScaleViewX(c.Width))}, {Math.Max(10, ScaleViewY(c.Height))});");
+                designer.AppendLine($"        {varName}.Size = new Size({scaledControlWidth}, {Math.Max(10, ScaleViewY(c.Height))});");
                 designer.AppendLine($"        {varName}.Name = \"{varName}\";");
                 // Grid and GridColumn perform their own row/cell layout.
                 if (!columnAttachmentByLeaf.ContainsKey(c.Id) &&
@@ -549,9 +590,20 @@ internal static partial class ProjectGenerator
                             : ResolveFallbackGridColumnTitle(c);
                     if (!string.IsNullOrWhiteSpace(colText))
                         designer.AppendLine($"        {varName}.Text = {ToCSharpLiteral(colText!)};");
-                    designer.AppendLine($"        {varName}.Width = {Math.Max(10, ScaleViewX(c.Width))};");
+                    var sourceColumnStartX =
+                        c.ParentId.HasValue &&
+                        tableColumnStartXByTableId.TryGetValue(c.ParentId.Value, out var sourceColumnStarts) &&
+                        sourceColumnStarts.TryGetValue(c.Id, out var resolvedColumnStartX)
+                            ? resolvedColumnStartX
+                            : (int?)null;
+                    designer.AppendLine($"        {varName}.Width = {ResolveViewGridColumnWidth(c, columnChildIdsByColumn, controlById, t, tasks, dataObjects, ScaleViewX, sourceColumnStartX)};");
                     if (c.Sortable == true)
                         designer.AppendLine($"        {varName}.AllowSort = true;");
+                }
+                else if (isPushButton)
+                {
+                    if (!string.IsNullOrWhiteSpace(pushButtonDesignText))
+                        designer.AppendLine($"        {varName}.Text = {ToCSharpLiteral(pushButtonDesignText)};");
                 }
                 else if (!string.IsNullOrWhiteSpace(c.Text))
                 {
@@ -559,11 +611,6 @@ internal static partial class ProjectGenerator
                         designer.AppendLine($"        {varName}.Format = {ToCSharpLiteral(c.Text)};");
                     else
                         designer.AppendLine($"        {varName}.Text = {ToCSharpLiteral(c.Text)};");
-                }
-                else if (string.Equals(c.Model, "CTRL_GUI0_PUSH_BUTTON", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (!string.IsNullOrWhiteSpace(pushButtonDesignText))
-                        designer.AppendLine($"        {varName}.Text = {ToCSharpLiteral(pushButtonDesignText)};");
                 }
                 if (string.Equals(c.Model, "CTRL_GUI0_STATIC", StringComparison.OrdinalIgnoreCase) &&
                     c.Text is not null &&
@@ -781,6 +828,10 @@ internal static partial class ProjectGenerator
             {
                 if (controlById.TryGetValue(controlId, out var control))
                     designer.AppendLine($"        Controls.Add({Var(control)});");
+            }
+            foreach (var tabControl in rootTabControls)
+            {
+                designer.AppendLine($"        {Var(tabControl)}.SendToBack();");
             }
             designer.AppendLine($"        Text = {ToCSharpLiteral(selectedViewForm.FormText ?? selectedViewForm.FormName ?? t.Description)};");
             designer.AppendLine("        AutoScaleDimensions = new SizeF(5F, 13F);");

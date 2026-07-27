@@ -83,7 +83,7 @@ internal static partial class ProjectGenerator
                 sb.AppendLine($"        {handlerVar}.Invokes += e =>");
                 sb.AppendLine("        {");
                 EmitHandlerBody(sb, h, t, dataObjects, allTasks, 3);
-                sb.AppendLine($"            e.Handled = {ResolveHandlerHandledExpression(h, t, dataObjects)};");
+                sb.AppendLine($"            e.Handled = {ResolveHandlerHandledExpression(h, t, dataObjects, commandTarget)};");
                 sb.AppendLine("        };");
             }
             else if (handlerKind == 3)
@@ -116,7 +116,7 @@ internal static partial class ProjectGenerator
                 sb.AppendLine($"        {handlerVar}.Invokes += e =>");
                 sb.AppendLine("        {");
                 EmitHandlerBody(sb, h, t, dataObjects, allTasks, 3);
-                sb.AppendLine($"            e.Handled = {ResolveHandlerHandledExpression(h, t, dataObjects)};");
+                sb.AppendLine($"            e.Handled = {ResolveHandlerHandledExpression(h, t, dataObjects, cmd)};");
                 sb.AppendLine("        };");
             }
             else if (handlerKind == 4)

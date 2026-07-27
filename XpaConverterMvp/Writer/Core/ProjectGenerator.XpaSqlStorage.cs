@@ -21,6 +21,19 @@ namespace {{appNamespace}}.Shared;
 /// </summary>
 public sealed class XpaSqlDateStorage : IColumnStorageSrategy<Date>
 {
+    /// <summary>
+    /// XPA SQL forms commonly share an NVL/ISNULL suffix between database
+    /// engines. SQL Server cannot compare a date column with the numeric zero,
+    /// so preserve the source branch while using a typed date fallback.
+    /// </summary>
+    public static Text NormalizeDynamicSqlDateNullFallback(object value)
+    {
+        var text = value?.ToString() ?? "";
+        return string.Equals(text.Trim(), ",0)", StringComparison.OrdinalIgnoreCase)
+            ? (Text)",CONVERT(date,0))"
+            : (Text)text;
+    }
+
     public Date LoadFrom(IValueLoader loader)
     {
         if (loader.IsNull())

@@ -69,12 +69,37 @@ internal static partial class ProjectGenerator
 
     private static List<TaskSemantic> ResolveGeneratedTasks(ProjectSemantic parsed, ProjectGenerationScope scope)
     {
+        var taskIndex = parsed.Tasks.ToDictionary(t => t.Ordinal);
+
         bool ShouldGenerateForFolder(TaskSemantic task)
             => string.IsNullOrWhiteSpace(scope.NormalizedFolderFilter)
                || string.Equals(ResolveEffectiveTaskOutputFolder(task, parsed.Tasks), scope.NormalizedFolderFilter, StringComparison.OrdinalIgnoreCase);
 
         bool ShouldGenerateForTask(TaskSemantic task)
-            => scope.SelectedTaskOrdinals is null || scope.SelectedTaskOrdinals.Contains(task.Ordinal);
+        {
+            if (scope.SelectedTaskOrdinals is not null)
+                return scope.SelectedTaskOrdinals.Contains(task.Ordinal);
+
+            // A range-reduced XML keeps the main program only as semantic
+            // context for application events and resources. Do not emit that
+            // application subtree as part of the isolated executable.
+            if (scope.TaskScopedGeneration)
+            {
+                var current = task;
+                while (true)
+                {
+                    if (current.MainProgram)
+                        return false;
+                    if (!current.ParentOrdinal.HasValue ||
+                        !taskIndex.TryGetValue(current.ParentOrdinal.Value, out current))
+                    {
+                        break;
+                    }
+                }
+            }
+
+            return true;
+        }
 
         var generatedTasks = parsed.Tasks
             .Where(t => ShouldGenerateForTarget(t) && ShouldGenerateForFolder(t) && ShouldGenerateForTask(t))

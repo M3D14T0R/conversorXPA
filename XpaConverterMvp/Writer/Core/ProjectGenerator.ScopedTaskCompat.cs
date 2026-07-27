@@ -51,9 +51,6 @@ internal static partial class ProjectGenerator
         sb.AppendLine();
         sb.AppendLine("internal static class ScopedTaskCompat");
         sb.AppendLine("{");
-        sb.AppendLine("    [System.STAThread]");
-        sb.AppendLine("    internal static void Main() { }");
-        sb.AppendLine();
         sb.AppendLine("    internal static System.Exception CreateMissingTaskException(string taskName)");
         sb.AppendLine("        => new System.NotImplementedException($\"Scoped task probe placeholder: {taskName}\");");
         sb.AppendLine("}");
@@ -61,6 +58,7 @@ internal static partial class ProjectGenerator
         sb.AppendLine("internal sealed class Application : ENV.ApplicationControllerBase");
         sb.AppendLine("{");
         sb.AppendLine("    public static Application Instance { get; } = new();");
+        EmitScopedTaskApplicationRunner(sb, generatedTasks, parsed.Tasks);
         var appTask = parsed.Tasks.FirstOrDefault(t => t.MainProgram) ??
                       parsed.Tasks.FirstOrDefault(t => t.ParentOrdinal is null);
         var emittedCommands = new HashSet<string>(StringComparer.Ordinal);
@@ -157,6 +155,95 @@ internal static partial class ProjectGenerator
 
         WriteGeneratedSourceFile(outputRoot, "ScopedTaskCompat", sb.ToString(), Encoding.UTF8);
     }
+
+    private static void EmitScopedTaskApplicationRunner(
+        StringBuilder sb,
+        IReadOnlyList<TaskSemantic> generatedTasks,
+        IReadOnlyList<TaskSemantic> allTasks)
+    {
+        var programs = generatedTasks
+            .Where(task => task.ParentOrdinal is null && !task.MainProgram)
+            .OrderBy(task => task.TopLevelProgramIndex ?? int.MaxValue)
+            .ThenBy(task => task.Ordinal)
+            .ToList();
+
+        sb.AppendLine("    public static void Run(string startProgram)");
+        sb.AppendLine("    {");
+        if (programs.Count == 0)
+        {
+            sb.AppendLine("        throw new System.InvalidOperationException(\"O recorte nao contem um programa executavel.\");");
+            sb.AppendLine("    }");
+            return;
+        }
+
+        var defaultProgram = ResolveTaskClassName(programs[0], allTasks);
+        sb.AppendLine($"        var requested = string.IsNullOrWhiteSpace(startProgram) ? \"{Escape(defaultProgram)}\" : startProgram.Trim();");
+        sb.AppendLine("        string primaryArgument = null;");
+        sb.AppendLine("        var argumentSeparator = requested.IndexOf('|');");
+        sb.AppendLine("        if (argumentSeparator >= 0)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            primaryArgument = requested.Substring(argumentSeparator + 1);");
+        sb.AppendLine("            requested = requested.Substring(0, argumentSeparator).Trim();");
+        sb.AppendLine("        }");
+        foreach (var program in programs)
+        {
+            var className = ResolveTaskClassName(program, allTasks);
+            var parameters = GetTaskParameters(program);
+            var aliases = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                className
+            };
+            if (program.TopLevelProgramIndex is > 0)
+            {
+                aliases.Add(program.TopLevelProgramIndex.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                aliases.Add($"CG{program.TopLevelProgramIndex.Value:D5}");
+            }
+            if (!string.IsNullOrWhiteSpace(program.PublicName))
+                aliases.Add(program.PublicName.Trim());
+
+            var condition = string.Join(
+                " || ",
+                aliases.Select(alias =>
+                    $"string.Equals(requested, \"{Escape(alias)}\", System.StringComparison.OrdinalIgnoreCase)"));
+            sb.AppendLine($"        if ({condition})");
+            sb.AppendLine("        {");
+            if (parameters.Count == 0)
+            {
+                sb.AppendLine($"            new {className}().Run();");
+            }
+            else
+            {
+                var primaryArgumentExpression = BuildScopedPrimaryArgumentExpression(
+                    parameters[0].ParameterType);
+                sb.AppendLine("            if (primaryArgument == null)");
+                sb.AppendLine($"                new {className}().Run();");
+                sb.AppendLine("            else");
+                sb.AppendLine($"                new {className}().Run({primaryArgumentExpression});");
+            }
+            sb.AppendLine("            return;");
+            sb.AppendLine("        }");
+        }
+
+        var available = string.Join(
+            ", ",
+            programs.Select(program =>
+                program.TopLevelProgramIndex is > 0
+                    ? $"CG{program.TopLevelProgramIndex.Value:D5}"
+                    : ResolveTaskClassName(program, allTasks)));
+        sb.AppendLine(
+            $"        throw new System.ArgumentException(\"Programa '\" + requested + \"' nao existe neste recorte. Disponiveis: {Escape(available)}\");");
+        sb.AppendLine("    }");
+    }
+
+    private static string BuildScopedPrimaryArgumentExpression(string parameterType)
+        => parameterType switch
+        {
+            "NumberParameter" => "XPARuntimeCore.Box.Number.Parse(primaryArgument)",
+            "BoolParameter" => "ENV.UserMethods.Instance.CastToBool(primaryArgument)",
+            "DateParameter" => "ENV.UserMethods.Instance.CastToDate(primaryArgument)",
+            "TimeParameter" => "ENV.UserMethods.Instance.CastToTime(primaryArgument)",
+            _ => "ENV.UserMethods.Instance.CastToText(primaryArgument)"
+        };
 
     private static string ResolveScopedCompatColumnType(string? attrObj)
         => NormalizeAttrObjKind(attrObj) switch

@@ -10,7 +10,9 @@ param(
     [string]$StartAfter = "",
     [string]$StopAfter = "",
     [string[]]$Task = @(),
+    [string[]]$TaskRange = @(),
     [switch]$IncrementalOutput,
+    [switch]$IsolatedTaskProject,
     [switch]$SkipProjectBuild,
     [switch]$PlanOnly,
     [switch]$SkipConverterBuild,
@@ -144,7 +146,9 @@ function Resolve-DotNetReference {
         "$Name.dll"
     }
 
-    foreach ($root in @($PublishedDllDirectory, $RuntimeCoreDirectory)) {
+    # RuntimeCore is the authoritative source for ENV/XPARuntimeCore binaries.
+    # Published project DLLs may contain older copies of those same assemblies.
+    foreach ($root in @($RuntimeCoreDirectory, $PublishedDllDirectory)) {
         $candidate = Find-FileCaseInsensitive -Directory $root -FileName $fileName
         if (-not [string]::IsNullOrWhiteSpace($candidate)) {
             return $candidate
@@ -357,7 +361,7 @@ for ($planIndex = $startIndex; $planIndex -lt $plan.Count; $planIndex++) {
         "--output-type", $entry.OutputType,
         "--runtime-core-ref", "Dll",
         "--runtime-core-dll", $runtimeCoreDll,
-        "--runtime-root", $PublishedDllDirectory,
+        "--runtime-root", $RuntimeCoreDirectory,
         "--no-implicit-component-xml",
         "--full-solution",
         "--parallel-tasks"
@@ -370,8 +374,17 @@ for ($planIndex = $startIndex; $planIndex -lt $plan.Count; $planIndex++) {
             $arguments.Add($taskFilter.Trim())
         }
     }
+    foreach ($taskRangeFilter in $TaskRange) {
+        if (-not [string]::IsNullOrWhiteSpace($taskRangeFilter)) {
+            $arguments.Add("--task-range")
+            $arguments.Add($taskRangeFilter.Trim())
+        }
+    }
     if ($IncrementalOutput) {
         $arguments.Add("--incremental-output")
+    }
+    if ($IsolatedTaskProject) {
+        $arguments.Add("--isolated-task-project")
     }
 
     foreach ($reference in Get-ProjectReferences -Project $project) {
@@ -476,16 +489,19 @@ for ($planIndex = $startIndex; $planIndex -lt $plan.Count; $planIndex++) {
     }
 
     $projectDirectory = Split-Path -Parent $projectFile
-    $manifest = Join-Path $projectDirectory "$project.xpa-manifest.json"
-    $manifestData = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json
-    if (-not [string]::Equals(
-            [string]$manifestData.ComponentName,
-            $project,
-            [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "Manifesto de '$project' possui ComponentName invalido: $($manifestData.ComponentName)"
-    }
-
     if ($entry.OutputType -eq "ClassLibrary") {
+        $manifest = Join-Path $projectDirectory "$project.xpa-manifest.json"
+        if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
+            throw "Manifesto de '$project' nao foi gerado: $manifest"
+        }
+        $manifestData = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json
+        if (-not [string]::Equals(
+                [string]$manifestData.ComponentName,
+                $project,
+                [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Manifesto de '$project' possui ComponentName invalido: $($manifestData.ComponentName)"
+        }
+
         $builtDll = Join-Path $projectDirectory "bin\Release\net472\$project.dll"
         [void][System.Reflection.AssemblyName]::GetAssemblyName($builtDll)
         $backupFolder = Join-Path $backupsDirectory $project

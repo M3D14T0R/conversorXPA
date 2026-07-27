@@ -151,6 +151,7 @@ internal static partial class ProjectGenerator
             ProjectReferenceManifests = source.ProjectReferenceManifests,
             CurrentProjectManifest = source.CurrentProjectManifest,
             ExternalManifestColumnAttrObjIndex = source.ExternalManifestColumnAttrObjIndex,
+            ExternalManifestColumnTextLengthIndex = source.ExternalManifestColumnTextLengthIndex,
             ApplicationResourceBindingMap = source.ApplicationResourceBindingMap,
             TaskCommandMemberMapCache = source.TaskCommandMemberMapCache,
             ViewDotNetResourceByRootOrdinal = source.ViewDotNetResourceByRootOrdinal,
@@ -238,6 +239,7 @@ internal static partial class ProjectGenerator
     private static Dictionary<int, IReadOnlyDictionary<string, DataColumnDef>> _dataViewMemberColumnIndexCache { get => _state.DataViewMemberColumnIndexCache; set => _state.DataViewMemberColumnIndexCache = value; }
     private static IReadOnlyDictionary<string, DataColumnDef>? _dataObjectMemberColumnIndexCache { get => _state.DataObjectMemberColumnIndexCache; set => _state.DataObjectMemberColumnIndexCache = value; }
     private static IReadOnlyDictionary<string, string>? _externalManifestColumnAttrObjIndex { get => _state.ExternalManifestColumnAttrObjIndex; set => _state.ExternalManifestColumnAttrObjIndex = value; }
+    private static IReadOnlyDictionary<string, int>? _externalManifestColumnTextLengthIndex { get => _state.ExternalManifestColumnTextLengthIndex; set => _state.ExternalManifestColumnTextLengthIndex = value; }
     private static Dictionary<string, TaskResourceColumnDef?> _taskResourceForAssignmentCache { get => _state.TaskResourceForAssignmentCache; set => _state.TaskResourceForAssignmentCache = value; }
     private static Dictionary<string, string> _parentBindingExpressionCache { get => _state.ParentBindingExpressionCache; set => _state.ParentBindingExpressionCache = value; }
     private static Dictionary<string, IReadOnlyList<DataColumnDef>> _linkKeyColumnsCache { get => _state.LinkKeyColumnsCache; set => _state.LinkKeyColumnsCache = value; }

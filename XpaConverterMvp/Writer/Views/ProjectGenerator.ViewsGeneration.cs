@@ -146,6 +146,23 @@ internal static partial class ProjectGenerator
             code.AppendLine("        _controller = controller;");
             code.AppendLine("        InitializeComponent();");
             code.AppendLine("        InitializeControllerBindings();");
+            var rootTabControls = controls
+                .Where(control =>
+                    rootControlIds.Contains(control.Id) &&
+                    string.Equals(control.Model, "CTRL_GUI0_TAB", StringComparison.OrdinalIgnoreCase))
+                .Reverse()
+                .ToList();
+            if (rootTabControls.Count > 0)
+            {
+                // Runtime AutoZOrder runs again while the form is loaded. Reapply the
+                // pseudo-container order after that pass so the tab surface cannot
+                // cover its page controls.
+                code.AppendLine("        Shown += (_, _) =>");
+                code.AppendLine("        {");
+                foreach (var tabControl in rootTabControls)
+                    code.AppendLine($"            {Var(tabControl)}.SendToBack();");
+                code.AppendLine("        };");
+            }
             foreach (var s in subformBindings)
             {
                 var control = controls.FirstOrDefault(c => c.Id == s.ControlId);
@@ -309,8 +326,13 @@ internal static partial class ProjectGenerator
                     c.Model,
                     "CTRL_GUI0_PUSH_BUTTON",
                     StringComparison.OrdinalIgnoreCase);
+                var resolvedPushButtonDesignText = isPushButton
+                    ? ResolvePushButtonDesignText(c, t, tasks)
+                    : "";
                 var pushButtonDesignText = isPushButton
-                    ? (!string.IsNullOrWhiteSpace(c.Text) ? c.Text : ResolvePushButtonDesignText(c, t, tasks))
+                    ? (!string.IsNullOrWhiteSpace(resolvedPushButtonDesignText)
+                        ? resolvedPushButtonDesignText
+                        : c.Text ?? "")
                     : "";
                 var pushButtonUsesStaticNullDisplay =
                     isPushButton &&
@@ -342,8 +364,18 @@ internal static partial class ProjectGenerator
                 }
                 else
                 {
+                    var scaledControlWidth = Math.Max(10, ScaleViewX(c.Width));
+                    if (columnAttachmentByLeaf.ContainsKey(c.Id))
+                    {
+                        scaledControlWidth = ResolveViewGridCellWidth(
+                            c,
+                            t,
+                            tasks,
+                            dataObjects,
+                            scaledControlWidth);
+                    }
                     designer.AppendLine($"        {varName}.Location = new Point({ScaleViewX(locationX)}, {ScaleViewY(locationY)});");
-                    designer.AppendLine($"        {varName}.Size = new Size({Math.Max(10, ScaleViewX(c.Width))}, {Math.Max(10, ScaleViewY(c.Height))});");
+                    designer.AppendLine($"        {varName}.Size = new Size({scaledControlWidth}, {Math.Max(10, ScaleViewY(c.Height))});");
                 }
                 designer.AppendLine($"        {varName}.Name = \"{varName}\";");
                 // A GridColumn owns the bounds of its cell controls. Anchoring a
@@ -453,9 +485,20 @@ internal static partial class ProjectGenerator
                             : ResolveFallbackGridColumnTitle(c);
                     if (!string.IsNullOrWhiteSpace(colText))
                         designer.AppendLine($"        {varName}.Text = {ToCSharpLiteral(colText!)};");
-                    designer.AppendLine($"        {varName}.Width = {Math.Max(10, ScaleViewX(c.Width))};");
+                    var sourceColumnStartX =
+                        c.ParentId.HasValue &&
+                        tableColumnStartX.TryGetValue(c.ParentId.Value, out var sourceColumnStarts) &&
+                        sourceColumnStarts.TryGetValue(c.Id, out var resolvedColumnStartX)
+                            ? resolvedColumnStartX
+                            : (int?)null;
+                    designer.AppendLine($"        {varName}.Width = {ResolveViewGridColumnWidth(c, columnChildIdsByColumn, controlById, t, tasks, dataObjects, ScaleViewX, sourceColumnStartX)};");
                     if (c.Sortable == true)
                         designer.AppendLine($"        {varName}.AllowSort = true;");
+                }
+                else if (isPushButton)
+                {
+                    if (!string.IsNullOrWhiteSpace(pushButtonDesignText))
+                        designer.AppendLine($"        {varName}.Text = {ToCSharpLiteral(pushButtonDesignText)};");
                 }
                 else if (!string.IsNullOrWhiteSpace(c.Text))
                 {
@@ -476,11 +519,6 @@ internal static partial class ProjectGenerator
                         }
                         designer.AppendLine($"        {varName}.Text = {ToCSharpLiteral(c.Text)};");
                     }
-                }
-                else if (string.Equals(c.Model, "CTRL_GUI0_PUSH_BUTTON", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (!string.IsNullOrWhiteSpace(pushButtonDesignText))
-                        designer.AppendLine($"        {varName}.Text = {ToCSharpLiteral(pushButtonDesignText)};");
                 }
                 if (string.Equals(c.Model, "CTRL_GUI0_STATIC", StringComparison.OrdinalIgnoreCase) &&
                     c.Text is not null &&
@@ -734,6 +772,16 @@ internal static partial class ProjectGenerator
                     continue;
                 var varName = Var(c);
                 designer.AppendLine($"        Controls.Add({varName});");
+            }
+
+            // XPA tabs are pseudo-containers: their page controls remain children of
+            // the form and overlap the tab body. WinForms adds the tab before those
+            // controls, which leaves its painted surface in front of inactive
+            // controls. Put every root tab behind its page controls after the full
+            // control collection has been assembled.
+            foreach (var tabControl in rootTabControls)
+            {
+                designer.AppendLine($"        {Var(tabControl)}.SendToBack();");
             }
 
             if (!string.IsNullOrWhiteSpace(resolvedFormTitleLiteralCode))

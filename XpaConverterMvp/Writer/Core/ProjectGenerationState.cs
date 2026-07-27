@@ -100,6 +100,7 @@ internal sealed class ProjectGenerationState
     public Dictionary<int, IReadOnlyDictionary<string, DataColumnDef>> DataViewMemberColumnIndexCache { get; set; } = new();
     public IReadOnlyDictionary<string, DataColumnDef>? DataObjectMemberColumnIndexCache { get; set; }
     public IReadOnlyDictionary<string, string>? ExternalManifestColumnAttrObjIndex { get; set; }
+    public IReadOnlyDictionary<string, int>? ExternalManifestColumnTextLengthIndex { get; set; }
     public Dictionary<string, TaskResourceColumnDef?> TaskResourceForAssignmentCache { get; set; } = new(StringComparer.Ordinal);
     public Dictionary<string, string> ParentBindingExpressionCache { get; set; } = new(StringComparer.Ordinal);
     public Dictionary<string, IReadOnlyList<DataColumnDef>> LinkKeyColumnsCache { get; set; } = new(StringComparer.Ordinal);

@@ -14,7 +14,8 @@ internal static partial class ProjectGenerator
         string sourceRoot,
         string appNamespace,
         bool parallelTaskGeneration,
-        bool incrementalOutput)
+        bool incrementalOutput,
+        bool isolatedTaskProject)
     {
         if (!string.IsNullOrWhiteSpace(scope.NormalizedFolderFilter))
             return;
@@ -33,11 +34,25 @@ internal static partial class ProjectGenerator
         if (incrementalOutput && scope.TaskScopedGeneration)
         {
             LogProgress($"Stage: shared assets skipped for incremental task scope -> {appNamespace}");
-            // Program.cs depends only on the application namespace and the
-            // converter's runtime bootstrap contract. Refreshing it is safe
-            // even when the reduced XML does not contain the full project.
-            WriteProgramEntry(outputLayout.OutputRoot, appNamespace);
-            LogProgress($"Stage: program entry refreshed for incremental task scope -> {appNamespace}");
+            // Task emission may acquire new storage compatibility calls between
+            // converter versions. This asset is deterministic and independent
+            // from the complete task graph, so it is safe and necessary to
+            // refresh in both full-project and isolated incremental outputs.
+            WriteSharedXpaSqlStorage(outputLayout.SharedDir, appNamespace);
+            LogProgress($"Stage: SQL storage compatibility refreshed -> {appNamespace}");
+            if (isolatedTaskProject)
+            {
+                if (UsesComponentFunctionCompat(sharedAssetsSource))
+                    WriteComponentFunctionCompatAsset(outputLayout.OutputRoot, appNamespace, sharedAssetsSource);
+                if (UsesExternalProgramCompat(sharedAssetsSource))
+                    WriteExternalProgramCompatAsset(outputLayout.OutputRoot, appNamespace, sharedAssetsSource);
+                LogProgress($"Stage: isolated compatibility assets refreshed -> {appNamespace}");
+            }
+            // Program.cs and ScopedTaskCompat.cs define mutually exclusive
+            // entry points. A task-only refresh does not change application
+            // bootstrap code, so preserve whichever entry point belongs to
+            // the existing full or isolated project.
+            LogProgress($"Stage: program entry preserved for incremental task scope -> {appNamespace}");
             return;
         }
 

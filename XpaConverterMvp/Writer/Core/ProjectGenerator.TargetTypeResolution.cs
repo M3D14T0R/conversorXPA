@@ -1892,8 +1892,37 @@ internal static partial class ProjectGenerator
 
     private static string? ResolveExternalManifestColumnAttrObj(string target)
     {
-        if (string.IsNullOrWhiteSpace(target))
+        if (!TryResolveExternalManifestColumnKey(target, out var key))
             return null;
+
+        var index = _externalManifestColumnAttrObjIndex;
+        if (index is null || index.Count == 0)
+            return null;
+
+        return index.TryGetValue(key, out var attrObj)
+            ? attrObj
+            : null;
+    }
+
+    private static int? ResolveExternalManifestColumnTextLength(string target)
+    {
+        if (!TryResolveExternalManifestColumnKey(target, out var key))
+            return null;
+
+        var index = _externalManifestColumnTextLengthIndex;
+        if (index is null || index.Count == 0)
+            return null;
+
+        return index.TryGetValue(key, out var length) && length > 0
+            ? length
+            : null;
+    }
+
+    private static bool TryResolveExternalManifestColumnKey(string target, out string key)
+    {
+        key = "";
+        if (string.IsNullOrWhiteSpace(target))
+            return false;
 
         var targetPath = target.Trim();
         if (targetPath.EndsWith(".Value", StringComparison.Ordinal))
@@ -1901,20 +1930,15 @@ internal static partial class ProjectGenerator
 
         var segments = targetPath.Split('.', StringSplitOptions.RemoveEmptyEntries);
         if (segments.Length < 2)
-            return null;
+            return false;
 
         var owner = segments[^2];
         var member = segments[^1];
         if (string.IsNullOrWhiteSpace(owner) || string.IsNullOrWhiteSpace(member))
-            return null;
+            return false;
 
-        var index = _externalManifestColumnAttrObjIndex;
-        if (index is null || index.Count == 0)
-            return null;
-
-        return index.TryGetValue(BuildDataViewMemberColumnKey(owner, member), out var attrObj)
-            ? attrObj
-            : null;
+        key = BuildDataViewMemberColumnKey(owner, member);
+        return true;
     }
 
     private static IReadOnlyDictionary<string, string> BuildExternalManifestColumnAttrObjIndex()
@@ -1976,6 +2000,68 @@ internal static partial class ProjectGenerator
         }
 
         return result;
+    }
+
+    private static IReadOnlyDictionary<string, int> BuildExternalManifestColumnTextLengthIndex()
+    {
+        var result = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        if (_projectReferenceManifests.Count == 0)
+            return result;
+
+        foreach (var manifest in _projectReferenceManifests.Values)
+        {
+            foreach (var dataObject in manifest.DataObjectDetails)
+            {
+                var owners = BuildExternalManifestDataObjectOwnerAliases(manifest, dataObject);
+                if (owners.Count == 0)
+                    continue;
+
+                var emittedMembers = ResolveExternalManifestColumnMemberNames(manifest, dataObject);
+                foreach (var column in dataObject.Columns)
+                {
+                    var length = ResolveExternalManifestTextColumnLength(column);
+                    if (!length.HasValue ||
+                        !emittedMembers.TryGetValue(column.Id, out var emittedMember))
+                    {
+                        continue;
+                    }
+
+                    foreach (var owner in owners)
+                        result.TryAdd(
+                            BuildDataViewMemberColumnKey(owner, emittedMember),
+                            length.Value);
+                }
+
+                foreach (var column in dataObject.Columns)
+                {
+                    var length = ResolveExternalManifestTextColumnLength(column);
+                    if (!length.HasValue)
+                        continue;
+
+                    foreach (var owner in owners)
+                    foreach (var member in BuildExternalManifestColumnMemberAliases(column))
+                        result.TryAdd(
+                            BuildDataViewMemberColumnKey(owner, member),
+                            length.Value);
+                }
+            }
+        }
+
+        return result;
+    }
+
+    private static int? ResolveExternalManifestTextColumnLength(ProjectManifestDataColumn column)
+    {
+        var attr = NormalizeAttrObjKind(column.AttrObj);
+        if (!string.Equals(attr, "FIELD_ALPHA", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(attr, "FIELD_UNICODE", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return ResolveTextPictureLength(column.Picture)
+               ?? ResolveTextPictureLength(column.FieldPhysicalPicture)
+               ?? (column.FieldPhysicalSize is > 0 ? column.FieldPhysicalSize : null);
     }
 
     private static IReadOnlyDictionary<int, string> ResolveExternalManifestColumnMemberNames(

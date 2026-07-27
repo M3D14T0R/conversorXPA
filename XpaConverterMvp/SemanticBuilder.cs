@@ -1204,6 +1204,7 @@ internal static class SemanticBuilder
             .ToList();
         if (tabControls.Count > 0)
         {
+            var supportedControlById = selectedSupportedControls.ToDictionary(control => control.Id);
             var tableStructuralControlIds = tableColumnControlIds
                 .Concat(tableAttachmentByLeaf.Keys)
                 .Concat(columnAttachmentByLeaf.Keys)
@@ -1211,14 +1212,26 @@ internal static class SemanticBuilder
 
             foreach (var control in selectedSupportedControls)
             {
-                if (!control.ControlLayer.HasValue ||
-                    control.ControlLayer.Value <= 0 ||
-                    string.Equals(control.Model, "CTRL_GUI0_TAB", StringComparison.OrdinalIgnoreCase) ||
+                if (string.Equals(control.Model, "CTRL_GUI0_TAB", StringComparison.OrdinalIgnoreCase) ||
                     tableStructuralControlIds.Contains(control.Id) ||
                     groupBoxBindingByControlId.ContainsKey(control.Id))
                 {
                     continue;
                 }
+
+                var effectiveControlLayer = control.ControlLayer;
+                var ancestor = control;
+                var visitedControlIds = new HashSet<int> { control.Id };
+                while ((!effectiveControlLayer.HasValue || effectiveControlLayer.Value <= 0) &&
+                       ancestor.ParentId.HasValue &&
+                       supportedControlById.TryGetValue(ancestor.ParentId.Value, out var parent) &&
+                       visitedControlIds.Add(parent.Id))
+                {
+                    ancestor = parent;
+                    effectiveControlLayer = ancestor.ControlLayer;
+                }
+                if (!effectiveControlLayer.HasValue || effectiveControlLayer.Value <= 0)
+                    continue;
 
                 TaskFormControlDef? containingTab = null;
                 var centerX = control.X + Math.Max(1, control.Width) / 2;
@@ -1246,7 +1259,7 @@ internal static class SemanticBuilder
                     // XPA numbers ControlLayer from one. ControlBinding uses the
                     // zero-based selected index exposed by the runtime TabControl.
                     tabBindingByControlId[control.Id] =
-                        (containingTab.Id, control.ControlLayer.Value - 1);
+                        (containingTab.Id, effectiveControlLayer.Value - 1);
                 }
             }
         }

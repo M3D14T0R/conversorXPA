@@ -108,8 +108,14 @@ internal static partial class ProjectGenerator
             if (trimmedValueExpression.StartsWith("() =>", StringComparison.Ordinal))
                 return $"new XPARuntimeCore.Box.UI.Advanced.CheckBoxData({trimmedValueExpression})";
 
-            var booleanValue = XpaExpressionTypeMap.Convert(
+            var checkboxValueExpression = Regex.IsMatch(
                 trimmedValueExpression,
+                @"^_controller\.Exp_\d+$",
+                RegexOptions.CultureInvariant)
+                ? trimmedValueExpression + "()"
+                : trimmedValueExpression;
+            var booleanValue = XpaExpressionTypeMap.Convert(
+                checkboxValueExpression,
                 XpaType.Object,
                 XpaType.Bool);
             return $"new XPARuntimeCore.Box.UI.Advanced.CheckBoxData(() => {booleanValue})";

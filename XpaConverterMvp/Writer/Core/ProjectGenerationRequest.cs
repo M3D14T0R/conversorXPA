@@ -22,5 +22,6 @@ internal sealed class ProjectGenerationRequest
     public bool ForceTaskScopedGeneration { get; init; }
     public bool WithTaskDependencies { get; init; }
     public bool IncrementalOutput { get; init; }
+    public bool IsolatedTaskProject { get; init; }
     public bool ParallelTaskGeneration { get; init; }
 }

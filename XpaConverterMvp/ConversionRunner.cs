@@ -87,7 +87,9 @@ public static class ConversionRunner
             // TextIO layouts against the complete project. A reduced XML is
             // appropriate for an isolated diagnostic project, but it changes
             // those identities and can corrupt an existing full conversion.
-            var taskScopedReduction = partialTaskScope && !useIncrementalOutput;
+            var taskScopedReduction =
+                partialTaskScope &&
+                (!useIncrementalOutput || options.IsolatedTaskProject);
             var taskScopedDependencyReduction = taskScopedReduction && withDependencies;
             var folderScopedReduction = !withDependencies && taskRanges.Count == 0 && !string.IsNullOrWhiteSpace(folderFilter);
             var useImplicitComponentXmlResolution =
@@ -222,6 +224,7 @@ public static class ConversionRunner
                     ForceTaskScopedGeneration = taskRanges.Count > 0,
                     WithTaskDependencies = withDependencies,
                     IncrementalOutput = useIncrementalOutput,
+                    IsolatedTaskProject = options.IsolatedTaskProject,
                     ParallelTaskGeneration = parallelTaskGeneration
                 }));
             }
@@ -256,6 +259,7 @@ public static class ConversionRunner
                     ForceTaskScopedGeneration = taskRanges.Count > 0,
                     WithTaskDependencies = withDependencies,
                     IncrementalOutput = useIncrementalOutput,
+                    IsolatedTaskProject = options.IsolatedTaskProject,
                     ParallelTaskGeneration = parallelTaskGeneration
                 }));
 
@@ -284,6 +288,7 @@ public static class ConversionRunner
                         ForceTaskScopedGeneration = taskRanges.Count > 0,
                         WithTaskDependencies = withDependencies,
                         IncrementalOutput = useIncrementalOutput,
+                        IsolatedTaskProject = options.IsolatedTaskProject,
                         ParallelTaskGeneration = parallelTaskGeneration
                     }));
                 }
@@ -682,6 +687,7 @@ public static class ConversionRunner
         var selectedByRange = 0;
         var selectedByFilter = 0;
         var selectedByDependency = 0;
+        var selectedMainProgram = 0;
         if (!reader.Read())
             return;
 
@@ -691,7 +697,7 @@ public static class ConversionRunner
             {
                 ConversionTelemetry.Log(
                     "SCOPED_REDUCTION",
-                    $"streamingSelection topLevelTotal={topLevelIndex} selectedByRange={selectedByRange} selectedByFilter={selectedByFilter} selectedByDependency={selectedByDependency}");
+                    $"streamingSelection topLevelTotal={topLevelIndex} selectedByRange={selectedByRange} selectedByFilter={selectedByFilter} selectedByDependency={selectedByDependency} selectedMainProgram={selectedMainProgram}");
                 writer.WriteFullEndElement();
                 return;
             }
@@ -704,6 +710,8 @@ public static class ConversionRunner
                     originalTopLevelIndex > 0
                         ? originalTopLevelIndex
                         : topLevelIndex;
+                var isMainProgram =
+                    string.Equals(reader.GetAttribute("MainProgram"), "Y", StringComparison.OrdinalIgnoreCase);
                 if (dependencyTopLevelIndexes is not null)
                 {
                     if (dependencyTopLevelIndexes.Contains(sourceTopLevelIndex))
@@ -717,6 +725,17 @@ public static class ConversionRunner
                     {
                         reader.Skip();
                     }
+                }
+                else if (isMainProgram)
+                {
+                    // Task-scoped projects still need the application task as
+                    // semantic context. It owns application events/resources
+                    // referenced by the selected programs, but the task-range
+                    // filter prevents it from being emitted as a scoped program.
+                    selectedMainProgram++;
+                    CopyScopedTopLevelTask(writer, reader, sourceTopLevelIndex);
+                    if (!reader.Read())
+                        return;
                 }
                 else if (taskRangeSet.Contains(sourceTopLevelIndex))
                 {

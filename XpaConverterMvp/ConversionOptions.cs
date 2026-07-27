@@ -24,6 +24,7 @@ public sealed class ConversionOptions
     public bool FullSolution { get; set; }
     public bool ParallelTaskGeneration { get; set; }
     public bool IncrementalOutput { get; set; }
+    public bool IsolatedTaskProject { get; set; }
 
     public string EnvReferenceMode
     {

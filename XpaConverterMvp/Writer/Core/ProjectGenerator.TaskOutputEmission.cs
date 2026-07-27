@@ -62,6 +62,8 @@ internal static partial class ProjectGenerator
                     LogProgress($"Stage: scoped task compat -> {appNamespace}");
                     WriteScopedTaskCompatAsset(parsed, generatedTasks, outputLayout.OutputRoot, appNamespace);
                 }
+                WriteProgramEntry(outputLayout.OutputRoot, appNamespace);
+                LogProgress($"Stage: scoped executable entry -> {appNamespace}");
             }
         }
 

@@ -42,6 +42,7 @@ internal static partial class ProjectGenerator
             ForceTaskScopedGeneration = false,
             WithTaskDependencies = withTaskDependencies,
             IncrementalOutput = false,
+            IsolatedTaskProject = false,
             ParallelTaskGeneration = false
         });
 
@@ -60,7 +61,8 @@ internal static partial class ProjectGenerator
             request.SourceRoot,
             request.AppNamespace,
             request.ParallelTaskGeneration,
-            request.IncrementalOutput);
+            request.IncrementalOutput,
+            request.IsolatedTaskProject);
         WriteProjectMetadataOutputs(request.Parsed, scope, request.OutputRoot, request.AppNamespace, request.IncrementalOutput);
 
         var generatedTasks = ResolveGeneratedTasks(request.Parsed, scope);

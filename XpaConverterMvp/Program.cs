@@ -7,7 +7,7 @@ internal static class Program
         if (args.Length < 2)
         {
             Console.Error.WriteLine("Usage:");
-            Console.Error.WriteLine("  XpaConverterMvp <path-to-xpa-xml> <output-dir> <namespace> [--output-type <WinExe|ClassLibrary>] [--runtime-core-ref <Project|Dll>] [--runtime-core-dll <path>] [--runtime-root <folder>] [--folder <folder>] [--task <task-name>] [--task-range <start-end>] [--tables-xml <xml>] [--component-xml <xml>] [--project-ref <csproj>] [--project-ref-map <component=csproj>] [--dll-ref-map <component=dll>] [--no-implicit-component-xml] [--with-dependencies] [--full-solution] [--parallel-tasks] [--incremental-output]");
+            Console.Error.WriteLine("  XpaConverterMvp <path-to-xpa-xml> <output-dir> <namespace> [--output-type <WinExe|ClassLibrary>] [--runtime-core-ref <Project|Dll>] [--runtime-core-dll <path>] [--runtime-root <folder>] [--folder <folder>] [--task <task-name>] [--task-range <start-end>] [--tables-xml <xml>] [--component-xml <xml>] [--project-ref <csproj>] [--project-ref-map <component=csproj>] [--dll-ref-map <component=dll>] [--no-implicit-component-xml] [--with-dependencies] [--full-solution] [--parallel-tasks] [--incremental-output] [--isolated-task-project]");
             Console.Error.WriteLine("  Compatibilidade: os aliases antigos --env-ref e --env-dll continuam aceitos.");
             Console.Error.WriteLine("Example:");
             Console.Error.WriteLine("  XpaConverterMvp \"C:\\path\\Northwind.xml\" \"C:\\out\\Generated\" \"Northwind\"");
@@ -132,6 +132,10 @@ internal static class Program
             else if (string.Equals(args[i], "--incremental-output", StringComparison.OrdinalIgnoreCase))
             {
                 options.IncrementalOutput = true;
+            }
+            else if (string.Equals(args[i], "--isolated-task-project", StringComparison.OrdinalIgnoreCase))
+            {
+                options.IsolatedTaskProject = true;
             }
         }
 

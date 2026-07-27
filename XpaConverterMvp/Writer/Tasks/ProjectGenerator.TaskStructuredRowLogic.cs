@@ -811,13 +811,20 @@ internal static partial class ProjectGenerator
         return result;
     }
 
+    private const int MaxStructuredConditionConjunctionDepth = 128;
+
     private static void AddStructuredConditionPart(List<string> result, string part, int depth)
     {
         var unwrapped = UnwrapStructuredConditionPart(part);
         if (unwrapped.Length == 0)
             return;
 
-        if (depth < 8)
+        // XPA logic units can contain many nested IF blocks. Their effective
+        // condition is stored as a left-associated conjunction, so limiting
+        // this decomposition to eight levels leaves old outer conditions in
+        // the emitted action. If one of those conditions depends on a virtual
+        // that an earlier action updates, the action is incorrectly skipped.
+        if (depth < MaxStructuredConditionConjunctionDepth)
         {
             var nested = SplitStructuredConditionConjunctionCore(unwrapped, depth + 1);
             if (nested.Count > 1)
@@ -833,7 +840,7 @@ internal static partial class ProjectGenerator
     private static List<string> SplitStructuredConditionConjunctionCore(string condition, int depth)
     {
         var result = new List<string>();
-        if (string.IsNullOrWhiteSpace(condition) || depth > 8)
+        if (string.IsNullOrWhiteSpace(condition) || depth > MaxStructuredConditionConjunctionDepth)
             return result;
 
         var text = UnwrapStructuredConditionPart(condition);
@@ -860,7 +867,10 @@ internal static partial class ProjectGenerator
 
         var tail = text[start..].Trim();
         if (!string.IsNullOrWhiteSpace(tail))
-            AddStructuredConditionPart(result, tail, split ? depth + 1 : 9);
+            AddStructuredConditionPart(
+                result,
+                tail,
+                split ? depth + 1 : MaxStructuredConditionConjunctionDepth + 1);
         return result;
     }
 
