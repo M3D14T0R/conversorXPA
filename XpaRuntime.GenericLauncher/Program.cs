@@ -2393,13 +2393,13 @@ namespace XpaRuntime.GenericLauncher
             var controllerTraceFile = string.IsNullOrWhiteSpace(
                     configuredControllerTraceFile)
                 ? Path.Combine(workingDirectory, "xpa-controller-trace.log")
-                : ResolvePath(iniDirectory, configuredControllerTraceFile);
+                : ResolvePath(workingDirectory, configuredControllerTraceFile);
             var configuredRuntimeProfilerFile =
                 ini.Get("Diagnostics", "RuntimeProfilerFile");
             var runtimeProfilerFile = string.IsNullOrWhiteSpace(
                     configuredRuntimeProfilerFile)
                 ? string.Empty
-                : ResolvePath(iniDirectory, configuredRuntimeProfilerFile);
+                : ResolvePath(workingDirectory, configuredRuntimeProfilerFile);
             var runtimeProfilerTrace =
                 IsYes(ini.Get("Diagnostics", "RuntimeProfilerTrace"));
 
