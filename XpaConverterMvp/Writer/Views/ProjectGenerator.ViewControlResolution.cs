@@ -141,7 +141,7 @@ internal static partial class ProjectGenerator
         if (string.Equals(c.Model, "CTRL_GUI0_PUSH_BUTTON", StringComparison.OrdinalIgnoreCase))
         {
             if (task is not null && allTasks is not null)
-                return BuildPushButtonDirectDataAssignmentExpression(trimmed, task, allTasks);
+                return BuildPushButtonDirectDataAssignmentExpression(trimmed);
 
             if (trimmed.StartsWith("new XPARuntimeCore.Box.UI.Advanced.ButtonData(", StringComparison.Ordinal) ||
                 trimmed.StartsWith("(XPARuntimeCore.Box.UI.Advanced.ButtonData)", StringComparison.Ordinal))
@@ -225,37 +225,21 @@ internal static partial class ProjectGenerator
     }
 
     private static string BuildPushButtonDirectDataAssignmentExpression(
-        string valueExpression,
-        TaskSemantic task,
-        IReadOnlyList<TaskSemantic> allTasks,
-        string? fallbackText = null)
+        string valueExpression)
     {
         if (string.IsNullOrWhiteSpace(valueExpression))
             return valueExpression;
 
         var trimmed = valueExpression.Trim();
-        var unscoped = trimmed;
-        if (unscoped.StartsWith("_controller.", StringComparison.Ordinal))
-            unscoped = unscoped["_controller.".Length..];
-
         if (trimmed.StartsWith("new XPARuntimeCore.Box.UI.Advanced.ButtonData(", StringComparison.Ordinal) ||
             trimmed.StartsWith("(XPARuntimeCore.Box.UI.Advanced.ButtonData)", StringComparison.Ordinal))
             return trimmed;
 
-        if (!string.IsNullOrWhiteSpace(fallbackText) &&
-            IsTextViewDataExpression(unscoped, task, allTasks))
-        {
-            var fallbackLiteral = ToCSharpLiteral(fallbackText);
-            return
-                "new XPARuntimeCore.Box.UI.Advanced.ButtonData(() => " +
-                $"global::XPARuntimeCore.Box.Text.IsNullOrEmpty({trimmed}.Value) " +
-                $"? (global::XPARuntimeCore.Box.Text){fallbackLiteral} : {trimmed}.Value)";
-        }
-
         // Button.Data is not a scalar binding.  XPA permits columns of
         // several scalar types here and the runtime exposes the corresponding
-        // explicit conversion to ButtonData.  Emit that conversion regardless
-        // of the source scalar type, as the legacy converter did.
+        // conversion to ButtonData. Keep the original column-backed ButtonData:
+        // the runtime uses that column identity to dispatch Expand handlers.
+        // Captions are preserved separately by the BindText fallback.
         return $"(XPARuntimeCore.Box.UI.Advanced.ButtonData){trimmed}";
     }
 
@@ -1004,6 +988,14 @@ internal static partial class ProjectGenerator
                 return resourceByName;
             if (task.ResourcesSemantic.ByLegacyName.TryGetValue(c.DataColumn, out var resourceByLegacy))
                 return resourceByLegacy;
+            if (task.SelectsSemantic.ItemsByName.TryGetValue(c.DataColumn, out var select) &&
+                select is not null &&
+                string.Equals(select.Type, "V", StringComparison.OrdinalIgnoreCase))
+            {
+                var resourceBySelect = ResolveTaskResourceColumn(task, select.ColumnId);
+                if (resourceBySelect is not null)
+                    return resourceBySelect;
+            }
         }
 
         return null;

@@ -96,6 +96,7 @@ internal static partial class ProjectGenerator
             ApplicationSelectMap = source.ApplicationSelectMap,
             ParentSelectMapByTaskOrdinal = source.ParentSelectMapByTaskOrdinal,
             DataSourceTypeByObjectOrdinal = source.DataSourceTypeByObjectOrdinal,
+            ComponentDataSourcesByLiteral = source.ComponentDataSourcesByLiteral,
             DataObjectsByOrdinal = source.DataObjectsByOrdinal,
             AllFieldModels = source.AllFieldModels,
             AllTasks = source.AllTasks,
@@ -294,6 +295,7 @@ internal static partial class ProjectGenerator
     private static string? _runtimeCoreDllPath { get => _state.RuntimeCoreDllPath; set => _state.RuntimeCoreDllPath = value; }
     private static Dictionary<string, string> _componentNamespaces { get => _state.ComponentNamespaces; set => _state.ComponentNamespaces = value; }
     private static Dictionary<string, string> _componentRightLiteralMap { get => _state.ComponentRightLiteralMap; set => _state.ComponentRightLiteralMap = value; }
+    private static Dictionary<string, int> _componentDataSourcesByLiteral { get => _state.ComponentDataSourcesByLiteral; set => _state.ComponentDataSourcesByLiteral = value; }
     private static HashSet<string> _externalMagicComponentNames { get => _state.ExternalMagicComponentNames; set => _state.ExternalMagicComponentNames = value; }
     private static Dictionary<string, string> _projectReferenceMap { get => _state.ProjectReferenceMap; set => _state.ProjectReferenceMap = value; }
     private static Dictionary<string, string> _dllReferenceMap { get => _state.DllReferenceMap; set => _state.DllReferenceMap = value; }

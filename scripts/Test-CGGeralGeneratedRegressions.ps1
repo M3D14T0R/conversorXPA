@@ -123,6 +123,24 @@ function Test-InOrder {
     Add-Result -Name $Name -Passed $passed -Evidence "$($file.Path): '$First' deve preceder '$Second'"
 }
 
+function Test-NoNegativeTabIndexes {
+    param([Parameter(Mandatory)][string]$Name)
+
+    $viewsDirectory = Join-Path $cgGeralDirectory "Views"
+    $invalid = @(
+        Get-ChildItem -LiteralPath $viewsDirectory -Recurse -File -Filter "*.Designer.cs" |
+            Select-String -Pattern '\.TabIndex\s*=\s*-\d+\s*;' |
+            Select-Object -First 5
+    )
+    $evidence = if ($invalid.Count -eq 0) {
+        $viewsDirectory
+    }
+    else {
+        ($invalid | ForEach-Object { "$($_.Path):$($_.LineNumber)" }) -join "; "
+    }
+    Add-Result -Name $Name -Passed ($invalid.Count -eq 0) -Evidence $evidence
+}
+
 Test-NotContains `
     -Name "Update sem WithValue nao gera atribuicao C# vazia no programa 514" `
     -RelativePath "CG00514_AjustaNotasSaida514.cs" `
@@ -173,9 +191,57 @@ Test-InOrder `
     -Second 'btnBConfirmar.Data ='
 
 Test-Contains `
+    -Name "Botao Imprimir do filtro 6464 preserva a identidade da coluna XPA" `
+    -RelativePath "Views\EmissODaOP6464FiltrarGeralByExp.cs" `
+    -Literal "btnBConfirmar.Data = (XPARuntimeCore.Box.UI.Advanced.ButtonData)_controller.B_Confirmar;"
+
+Test-Contains `
+    -Name "Botao Cancelar do filtro 6464 preserva a identidade da coluna XPA" `
+    -RelativePath "Views\EmissODaOP6464FiltrarGeralByExp.cs" `
+    -Literal "btnBCancelar.Data = (XPARuntimeCore.Box.UI.Advanced.ButtonData)_controller.B_Cancelar;"
+
+Test-NotContains `
+    -Name "Filtro 6464 nao substitui botoes XPA por ButtonData calculado" `
+    -RelativePath "Views\EmissODaOP6464FiltrarGeralByExp.cs" `
+    -Literal "new XPARuntimeCore.Box.UI.Advanced.ButtonData(() =>"
+
+Test-Contains `
+    -Name "Fallback SQL de data usa literal tipado aceito pelo SQL Server" `
+    -RelativePath "Shared\XpaSqlStorage.cs" `
+    -Literal "CONVERT(date,'19000101',112)"
+
+Test-NotContains `
+    -Name "Fallback SQL de data nao converte int diretamente para date" `
+    -RelativePath "Shared\XpaSqlStorage.cs" `
+    -Literal "CONVERT(date,0)"
+
+Test-Contains `
+    -Name "Fallback SQL de hora usa meia-noite tipada no SQL Server" `
+    -RelativePath "Shared\XpaSqlStorage.cs" `
+    -Literal "CONVERT(time,'00:00:00')"
+
+Test-Contains `
+    -Name "Verifica Beneficiamento usa compatibilidade central para hora nula" `
+    -RelativePath "CG06353_OrdemDeProduO.cs" `
+    -Literal "ResolveDynamicSqlTimeNullFallbackSuffix"
+
+Test-NotContains `
+    -Name "Verifica Beneficiamento nao compara time com zero numerico" `
+    -RelativePath "CG06353_OrdemDeProduO.cs" `
+    -Literal "hora_final,0)"
+
+Test-NoNegativeTabIndexes `
+    -Name "Forms gerados nao atribuem TabIndex negativo ao WinForms"
+
+Test-Contains `
     -Name "Forma Materiais NOVO envia a pseudo-aba para tras dos controles da pagina" `
     -RelativePath "Views\_CadastroDeMateriaisMateriaisNOVO.Designer.cs" `
     -Literal "tabGUIAVTabela.SendToBack();"
+
+Test-Contains `
+    -Name "Forma Materiais NOVO envia o painel do menu para tras dos rotulos" `
+    -RelativePath "Views\_CadastroDeMateriaisMateriaisNOVO.Designer.cs" `
+    -Literal "lbl9223.SendToBack();"
 
 Test-InOrder `
     -Name "Forma Materiais NOVO reaplica o z-order da pseudo-aba apos o carregamento" `
@@ -308,11 +374,17 @@ Test-NotContains `
 
 if (-not [string]::IsNullOrWhiteSpace($PipelineProjectsDirectory)) {
     $kernelDirectory = Join-Path ([System.IO.Path]::GetFullPath($PipelineProjectsDirectory)) "04-CGKernel\CGKernel"
-    Test-Contains `
-        -Name "CK02149 nao executa a mensagem nativa duplicada" `
-        -RelativePath "CK02149_2149MensagemOk.cs" `
-        -BaseDirectory $kernelDirectory `
-        -Literal "if ((false))"
+    $kernelMessageSource = Join-Path $kernelDirectory "CK02149_2149MensagemOk.cs"
+    if (Test-Path -LiteralPath $kernelMessageSource -PathType Leaf) {
+        Test-Contains `
+            -Name "CK02149 nao executa a mensagem nativa duplicada" `
+            -RelativePath "CK02149_2149MensagemOk.cs" `
+            -BaseDirectory $kernelDirectory `
+            -Literal "if ((false))"
+    }
+    else {
+        Write-Host "[N/A] CK02149 nao foi regenerado nesta execucao final-only; validacao pertence ao pipeline do CGKernel"
+    }
 }
 
 if (-not [string]::IsNullOrWhiteSpace($MagicIni)) {

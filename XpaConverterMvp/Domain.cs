@@ -845,6 +845,7 @@ internal sealed class ParsedXpa
     public List<TaskDef> Tasks { get; } = new();
     public List<RightDef> Rights { get; } = new();
     public List<ComponentRightRefDef> ComponentRightRefs { get; } = new();
+    public Dictionary<string, int> ComponentDataSourcesByLiteral { get; } = new(StringComparer.OrdinalIgnoreCase);
     public List<string> Components { get; } = new();
     public List<ExternalMagicComponentDef> ExternalMagicComponents { get; } = new();
     public List<DotNetComponentReferenceDef> DotNetComponentReferences { get; } = new();
@@ -875,6 +876,7 @@ internal sealed class ProjectSemantic
     public Dictionary<string, string> ApplicationSelectMap { get; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<int, Dictionary<string, string>> ParentSelectMapByTaskOrdinal { get; } = new();
     public Dictionary<string, ComponentRightSemantic> ComponentRightsByLiteral { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, int> ComponentDataSourcesByLiteral { get; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<int, string> DataSourceTypeByObjectOrdinal { get; } = new();
     public HashSet<int> UsedButtonModelObjectIds { get; } = new();
     public bool HasRepositoryProperties { get; set; }

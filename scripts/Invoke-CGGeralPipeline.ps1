@@ -253,7 +253,9 @@ $plan = for ($index = 0; $index -lt $orderedProjects.Count; $index++) {
         Project = $project
         Xml = $catalog[$project]
         XpaDependencies = $xpaDependencies
-        OutputType = if ([string]::Equals($project, $Target, [System.StringComparison]::OrdinalIgnoreCase)) {
+        OutputType = if (
+            [string]::Equals($project, $Target, [System.StringComparison]::OrdinalIgnoreCase) -and
+            [string]::Equals($Target, "CGGeral", [System.StringComparison]::OrdinalIgnoreCase)) {
             "WinExe"
         }
         else {
@@ -446,6 +448,36 @@ for ($planIndex = $startIndex; $planIndex -lt $plan.Count; $planIndex++) {
             -ReportPath $regressionReport
         if ($LASTEXITCODE -ne 0) {
             throw "Testes de regressao do CGGeral falharam. Relatorio: $regressionReport"
+        }
+    }
+
+    if (-not $SkipRegressionTests -and
+        $Task.Count -eq 0 -and
+        [string]::Equals($project, $Target, [System.StringComparison]::OrdinalIgnoreCase) -and
+        [string]::Equals($Target, "CGLFCore", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $regressionScript = Join-Path $PSScriptRoot "Test-CGLFCoreGeneratedRegressions.ps1"
+        $regressionReport = Join-Path $reportsDirectory "CGLFCore-generated-regressions.json"
+        Write-Host "[$sequence/$($plan.Count)] Validando regressoes conhecidas do CGLFCore..."
+        & $regressionScript `
+            -GeneratedProjectDirectory $projectOutput `
+            -ReportPath $regressionReport
+        if ($LASTEXITCODE -ne 0) {
+            throw "Testes de regressao do CGLFCore falharam. Relatorio: $regressionReport"
+        }
+    }
+
+    if (-not $SkipRegressionTests -and
+        $Task.Count -eq 0 -and
+        [string]::Equals($project, $Target, [System.StringComparison]::OrdinalIgnoreCase) -and
+        [string]::Equals($Target, "CGFunctions", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $regressionScript = Join-Path $PSScriptRoot "Test-CGFunctionsGeneratedRegressions.ps1"
+        $regressionReport = Join-Path $reportsDirectory "CGFunctions-generated-regressions.json"
+        Write-Host "[$sequence/$($plan.Count)] Validando regressoes conhecidas do CGFunctions..."
+        & $regressionScript `
+            -GeneratedProjectDirectory $projectOutput `
+            -ReportPath $regressionReport
+        if ($LASTEXITCODE -ne 0) {
+            throw "Testes de regressao do CGFunctions falharam. Relatorio: $regressionReport"
         }
     }
 

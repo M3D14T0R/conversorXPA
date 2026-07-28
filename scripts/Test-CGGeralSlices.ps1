@@ -158,6 +158,8 @@ function Assert-CG06301RuntimeSmoke {
 $available = @(
     "CG00347",
     "CG00341",
+    "CG00343",
+    "CG00344",
     "CG00374",
     "CG02103",
     "CG02109",
@@ -210,6 +212,14 @@ if ($selected -contains "CG00341") {
         -Path (Join-Path $root "Views\_CadastroDeMateriaisMateriaisNOVO.cs") `
         -Pattern 'Shown\s*\+=\s*\(_,\s*_\)\s*=>[\s\S]*tabGUIAVTabela\.SendToBack\(\);'
     Assert-FileMatch `
+        -Name "CG00341 keeps left menu background behind its labels" `
+        -Path $designer `
+        -Pattern 'lbl9223\.SendToBack\(\);'
+    Assert-FileMatch `
+        -Name "CG00341 reapplies left menu background z-order after load" `
+        -Path (Join-Path $root "Views\_CadastroDeMateriaisMateriaisNOVO.cs") `
+        -Pattern 'Shown\s*\+=\s*\(_,\s*_\)\s*=>[\s\S]*lbl9223\.SendToBack\(\);'
+    Assert-FileMatch `
         -Name "CG00341 PCP child inherits tab page" `
         -Path $designer `
         -Pattern 'cboVTipoDePlanejamento\.BoundTo\s*=\s*new XPARuntimeCore\.Box\.UI\.ControlBinding\(tabGUIAVTabela,\s*2\);'
@@ -221,6 +231,33 @@ if ($selected -contains "CG00341") {
         -Name "CG00341 material query included" `
         -Path (Join-Path $root "CG00374_ConsultaMateriais.cs") `
         -Pattern 'class\s+CG00374_ConsultaMateriais'
+}
+
+if ($selected -contains "CG00343") {
+    $root = Get-ProjectRoot "CG00343"
+    Assert-FileMatch `
+        -Name "CG00343 calls typed CGLFCore configuration task" `
+        -Path (Join-Path $root "CG00343_Movimentos_343.cs") `
+        -Pattern 'CGLFCore\.KF00003_CfgTO_V2_BuscaConfigsTO'
+}
+
+if ($selected -contains "CG00344") {
+    $root = Get-ProjectRoot "CG00344"
+    $designer = Join-Path $root "Views\Grupos344GruposVisaoContabil.Designer.cs"
+    $view = Join-Path $root "Views\Grupos344GruposVisaoContabil.cs"
+    Assert-FileMatch `
+        -Name "CG00344 creates the declared MasterUI host" `
+        -Path $designer `
+        -Pattern 'Cigam\.Metro\.UI\.MasterUI\s+dnVTela;'
+    Assert-FileMatch `
+        -Name "CG00344 does not replace MasterUI with a Panel" `
+        -Path $designer `
+        -Pattern 'System\.Windows\.Forms\.Panel\s+dnVTela;' `
+        -Not
+    Assert-FileMatch `
+        -Name "CG00344 assigns the MasterUI host to v_tela" `
+        -Path $view `
+        -Pattern '_controller\.v_tela\s*=\s*dnVTela;'
 }
 
 if ($selected -contains "CG00374") {
@@ -340,6 +377,32 @@ if ($selected -contains "CG06353Flow") {
         -Path (Join-Path $root "CG06353_OrdemDeProduO.cs") `
         -Pattern 'NormalizeDynamicSqlDateNullFallback'
     Assert-FileMatch `
+        -Name "CG06353 SQL Server date fallback uses a typed zero-date literal" `
+        -Path (Join-Path $root "Shared\XpaSqlStorage.cs") `
+        -Pattern 'CONVERT\(date,''19000101'',112\)'
+    Assert-FileMatch `
+        -Name "CG06353 invalid int-to-date conversion is absent" `
+        -Path (Join-Path $root "Shared\XpaSqlStorage.cs") `
+        -Pattern 'CONVERT\(date,0\)' `
+        -Not
+    Assert-FileMatch `
+        -Name "CG06353 SQL Server time fallback uses typed midnight" `
+        -Path (Join-Path $root "Shared\XpaSqlStorage.cs") `
+        -Pattern 'CONVERT\(time,''00:00:00''\)'
+    Assert-FileMatch `
+        -Name "CG06353 time comparison uses a database-specific suffix argument" `
+        -Path (Join-Path $root "CG06353_OrdemDeProduO.cs") `
+        -Pattern ':7mpr\.hora_final:(?<suffix>\d+)\s*=\s*:7mop\.hora_final_mvto_op:\k<suffix>'
+    Assert-FileMatch `
+        -Name "CG06353 raw numeric SQL time fallback is absent" `
+        -Path (Join-Path $root "CG06353_OrdemDeProduO.cs") `
+        -Pattern 'hora_final(?:_mvto_op)?,0\)' `
+        -Not
+    Assert-FileMatch `
+        -Name "CG06353 time suffix is emitted through central SQL compatibility" `
+        -Path (Join-Path $root "CG06353_OrdemDeProduO.cs") `
+        -Pattern 'ResolveDynamicSqlTimeNullFallbackSuffix'
+    Assert-FileMatch `
         -Name "CG06353 raw numeric SQL date fallback removed" `
         -Path (Join-Path $root "CG06353_OrdemDeProduO.cs") `
         -Pattern 'sqlEntity\.AddParameter\(\(\)\s*=>\s*u\.If\([^\r\n]+",0\)"' `
@@ -418,11 +481,54 @@ if ($selected -contains "CG06353Flow") {
         -Path (Join-Path $root "CG06464_EmissODaOP6464.cs") `
         -Pattern 'ExternalProgramCompat\.External_Obj6404' `
         -Not
+    $printFilterView = Join-Path $root "Views\EmissODaOP6464FiltrarGeralByExp.cs"
+    Assert-FileMatch `
+        -Name "CG06464 print button retains its XPA column identity" `
+        -Path $printFilterView `
+        -Pattern 'btnBConfirmar\.Data\s*=\s*\(XPARuntimeCore\.Box\.UI\.Advanced\.ButtonData\)_controller\.B_Confirmar;'
+    Assert-FileMatch `
+        -Name "CG06464 cancel button retains its XPA column identity" `
+        -Path $printFilterView `
+        -Pattern 'btnBCancelar\.Data\s*=\s*\(XPARuntimeCore\.Box\.UI\.Advanced\.ButtonData\)_controller\.B_Cancelar;'
+    Assert-FileMatch `
+        -Name "CG06464 print filter buttons do not lose column identity to caption lambdas" `
+        -Path $printFilterView `
+        -Pattern 'ButtonData\(\(\)\s*=>[\s\S]{0,200}?_controller\.B_(Voltar|Avancar|Confirmar|AlterarModelo|Cancelar)' `
+        -Not
     Assert-FileMatch `
         -Name "CG06353 print call resolved" `
         -Path (Join-Path $root "CG06353_OrdemDeProduO.cs") `
         -Pattern 'ExternalProgramCompat\.External_Obj6464' `
         -Not
+    $availabilityView = Join-Path $root "Views\DisponibilidadeMaterialDisponibilidadeByExp.Designer.cs"
+    Assert-FileMatch `
+        -Name "CG06393 availability view is included in the integrated slice" `
+        -Path $availabilityView `
+        -Pattern 'partial class DisponibilidadeMaterialDisponibilidadeByExp'
+    Assert-FileMatch `
+        -Name "CG06393 availability view does not emit invalid negative TabIndex" `
+        -Path $availabilityView `
+        -Pattern '\.TabIndex\s*=\s*-\d+' `
+        -Not
+    $kernelVisualizer = Join-Path `
+        (Split-Path -Parent $SlicesRoot) `
+        "projects\04-CGKernel\CGKernel\Views\_2237ModelosRelatoriosVisualizaRelatRio.cs"
+    Assert-FileMatch `
+        -Name "CGKernel report viewer button retains its XPA column identity" `
+        -Path $kernelVisualizer `
+        -Pattern 'btnBVisualizarRelatorio\.Data\s*=\s*\(XPARuntimeCore\.Box\.UI\.Advanced\.ButtonData\)_controller\.B_VisualizarRelatorio;'
+    Assert-FileMatch `
+        -Name "CGKernel report viewer does not replace the button column with a caption lambda" `
+        -Path $kernelVisualizer `
+        -Pattern 'btnBVisualizarRelatorio\.Data\s*=\s*new\s+XPARuntimeCore\.Box\.UI\.Advanced\.ButtonData' `
+        -Not
+    $kernelReportController = Join-Path `
+        (Split-Path -Parent $SlicesRoot) `
+        "projects\04-CGKernel\CGKernel\CK02237_2237ModelosRelatorios.cs"
+    Assert-FileMatch `
+        -Name "CGKernel report viewer keeps automatic visualization flow" `
+        -Path $kernelReportController `
+        -Pattern 'protected override void OnStart\(\)[\s\S]{0,300}?Raise\(Command\.GoToNextControl\);[\s\S]{0,120}?Raise\(Command\.Expand\);'
     $kbPutParser = "D:\Projetos_CSharp\XPARuntimeCore\ENV\Utilities\KBPutParser.cs"
     Assert-FileMatch `
         -Name "Runtime maps legacy modify command" `

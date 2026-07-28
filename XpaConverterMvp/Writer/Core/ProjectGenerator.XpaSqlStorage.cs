@@ -23,15 +23,30 @@ public sealed class XpaSqlDateStorage : IColumnStorageSrategy<Date>
 {
     /// <summary>
     /// XPA SQL forms commonly share an NVL/ISNULL suffix between database
-    /// engines. SQL Server cannot compare a date column with the numeric zero,
-    /// so preserve the source branch while using a typed date fallback.
+    /// engines. SQL Server cannot compare a date column with the numeric zero
+    /// and cannot convert an int directly to date. Preserve the source branch
+    /// while using the SQL Server zero-date equivalent as a typed literal.
     /// </summary>
     public static Text NormalizeDynamicSqlDateNullFallback(object value)
     {
         var text = value?.ToString() ?? "";
         return string.Equals(text.Trim(), ",0)", StringComparison.OrdinalIgnoreCase)
-            ? (Text)",CONVERT(date,0))"
+            ? (Text)",CONVERT(date,'19000101',112))"
             : (Text)text;
+    }
+
+    /// <summary>
+    /// Produces the null suffix for an XPA time column according to the
+    /// database-specific null function already selected by the SQL form.
+    /// SQL Server time columns require a typed midnight value; the legacy
+    /// numeric zero remains unchanged for the non-SQL Server branch.
+    /// </summary>
+    public static Text ResolveDynamicSqlTimeNullFallbackSuffix(object nullFunctionPrefix)
+    {
+        var prefix = nullFunctionPrefix?.ToString()?.Trim() ?? "";
+        return prefix.StartsWith("isnull(", StringComparison.OrdinalIgnoreCase)
+            ? (Text)",CONVERT(time,'00:00:00'))"
+            : (Text)",0)";
     }
 
     public Date LoadFrom(IValueLoader loader)

@@ -18,6 +18,8 @@ $slicesRoot = Join-Path $PipelineRunDirectory "slices"
 $definitions = @(
     [pscustomobject]@{ Name = "CG00347"; Ranges = @("347"); StartProgram = "CG00347"; TraceTargets = "CG00347" },
     [pscustomobject]@{ Name = "CG00341"; Ranges = @("341", "374"); StartProgram = "CG00341"; TraceTargets = "CG00341;CG00374" },
+    [pscustomobject]@{ Name = "CG00343"; Ranges = @("343"); StartProgram = "CG00343"; TraceTargets = "CG00343;CGLFCore.KF00013" },
+    [pscustomobject]@{ Name = "CG00344"; Ranges = @("344"); StartProgram = "CG00344"; TraceTargets = "CG00344" },
     [pscustomobject]@{ Name = "CG00374"; Ranges = @("374"); StartProgram = "CG00374"; TraceTargets = "CG00374" },
     [pscustomobject]@{ Name = "CG02103"; Ranges = @("2103", "2114", "3377"); StartProgram = "CG02103"; TraceTargets = "CG02103;CG02114;CG03377" },
     [pscustomobject]@{ Name = "CG02109"; Ranges = @("2109"); StartProgram = "CG02109"; TraceTargets = "CG02109" },
@@ -25,9 +27,9 @@ $definitions = @(
     [pscustomobject]@{ Name = "CG06388"; Ranges = @("6388"); StartProgram = "CG06388"; TraceTargets = "CG06388" },
     [pscustomobject]@{
         Name = "CG06353Flow"
-        Ranges = @("374", "2103", "2109", "2114", "3377", "6301", "6353", "6365", "6385", "6388", "6391", "6395", "6401", "6404", "6417", "6435", "6446", "6464")
+        Ranges = @("374", "2103", "2109", "2114", "3377", "6301", "6353", "6365", "6385", "6388", "6391", "6393", "6395", "6401", "6404", "6417", "6435", "6446", "6464")
         StartProgram = "CG06353|990001"
-        TraceTargets = "CG06353;CG06365;CG06385;CG06388;CG06391;CG06401;CG06404;CG06301;CG06395;CG06417;CG06435;CG06446;CG06464;CG02109;CG02103;CG00374"
+        TraceTargets = "CG06353;CG06365;CG06385;CG06388;CG06391;CG06393;CG06401;CG06404;CG06301;CG06395;CG06417;CG06435;CG06446;CG06464;CG02109;CG02103;CG00374"
     }
 )
 

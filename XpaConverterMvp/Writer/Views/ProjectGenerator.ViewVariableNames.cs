@@ -126,6 +126,8 @@ internal static partial class ProjectGenerator
             "CTRL_BROWSER_COMBOBOX" => "cbo",
             "CTRL_GUI0_PUSH_BUTTON" => "btn",
             "CTRL_GUI0_SUBFORM" => "SubForm",
+            "CTRL_GUI0_DOTNET" => "dn",
+            "CTRL_GUI0_BROWSER" => "web",
             "CTRL_GUI0_CHECKBOX" => "chk",
             "CTRL_RICH_CLIENT_CHECKBOX" => "chk",
             "CTRL_GUI0_TAB" => "tab",

@@ -82,6 +82,15 @@ internal static partial class ProjectGenerator
             var columnChildIdsByColumn = t.View.ColumnChildIdsByColumn.ToDictionary(x => x.Key, x => x.Value);
             var tableChildIdsByTable = t.View.TableChildIdsByTable.ToDictionary(x => x.Key, x => x.Value);
             var rootControlIds = t.View.RootControlIds.ToList();
+            var rootBackgroundControls = controls
+                .Where(control =>
+                    rootControlIds.Contains(control.Id) &&
+                    string.Equals(control.Model, "CTRL_GUI0_STATIC", StringComparison.OrdinalIgnoreCase) &&
+                    string.IsNullOrWhiteSpace(control.Text) &&
+                    string.IsNullOrWhiteSpace(control.DataColumn) &&
+                    !control.DataExpressionId.HasValue &&
+                    control.PropertyExpressionIds.Count == 0)
+                .ToList();
             var groupBoxBindingByControlId = t.View.GroupBoxBindingByControlId.ToDictionary(x => x.Key, x => x.Value);
             var tabBindingByControlId = t.View.TabBindingByControlId.ToDictionary(x => x.Key, x => x.Value);
             var tableColumnStartX = t.View.TableColumnStartXByTableId.ToDictionary(
@@ -152,13 +161,15 @@ internal static partial class ProjectGenerator
                     string.Equals(control.Model, "CTRL_GUI0_TAB", StringComparison.OrdinalIgnoreCase))
                 .Reverse()
                 .ToList();
-            if (rootTabControls.Count > 0)
+            if (rootTabControls.Count > 0 || rootBackgroundControls.Count > 0)
             {
                 // Runtime AutoZOrder runs again while the form is loaded. Reapply the
-                // pseudo-container order after that pass so the tab surface cannot
-                // cover its page controls.
+                // XPA painter order after that pass so decorative background labels
+                // and tab surfaces cannot cover the controls drawn over them.
                 code.AppendLine("        Shown += (_, _) =>");
                 code.AppendLine("        {");
+                foreach (var backgroundControl in rootBackgroundControls)
+                    code.AppendLine($"            {Var(backgroundControl)}.SendToBack();");
                 foreach (var tabControl in rootTabControls)
                     code.AppendLine($"            {Var(tabControl)}.SendToBack();");
                 code.AppendLine("        };");
@@ -365,6 +376,7 @@ internal static partial class ProjectGenerator
                 else
                 {
                     var scaledControlWidth = Math.Max(10, ScaleViewX(c.Width));
+                    var scaledControlHeight = Math.Max(10, ScaleViewY(c.Height));
                     if (columnAttachmentByLeaf.ContainsKey(c.Id))
                     {
                         scaledControlWidth = ResolveViewGridCellWidth(
@@ -373,9 +385,23 @@ internal static partial class ProjectGenerator
                             tasks,
                             dataObjects,
                             scaledControlWidth);
+                        if (columnAttachmentByLeaf.TryGetValue(c.Id, out var heightParentColumnId) &&
+                            controlById.TryGetValue(heightParentColumnId, out var heightParentColumn) &&
+                            heightParentColumn.ParentId.HasValue &&
+                            controlById.TryGetValue(heightParentColumn.ParentId.Value, out var heightParentTable) &&
+                            heightParentTable.RowHeight.HasValue)
+                        {
+                            var availableHeight =
+                                ScaleViewY(heightParentTable.RowHeight.Value) -
+                                ScaleViewY(locationY) -
+                                1;
+                            scaledControlHeight = Math.Max(
+                                1,
+                                Math.Min(scaledControlHeight, availableHeight));
+                        }
                     }
                     designer.AppendLine($"        {varName}.Location = new Point({ScaleViewX(locationX)}, {ScaleViewY(locationY)});");
-                    designer.AppendLine($"        {varName}.Size = new Size({scaledControlWidth}, {Math.Max(10, ScaleViewY(c.Height))});");
+                    designer.AppendLine($"        {varName}.Size = new Size({scaledControlWidth}, {scaledControlHeight});");
                 }
                 designer.AppendLine($"        {varName}.Name = \"{varName}\";");
                 // A GridColumn owns the bounds of its cell controls. Anchoring a
@@ -386,9 +412,7 @@ internal static partial class ProjectGenerator
                 {
                     EmitViewControlPlacement(designer, c, varName);
                 }
-                var tabIndex = c.TabOrder ?? c.TabbingOrder;
-                if (tabIndex.HasValue)
-                    designer.AppendLine($"        {varName}.TabIndex = {tabIndex.Value};");
+                EmitViewTabIndex(designer, varName, c.TabOrder ?? c.TabbingOrder);
                 if (c.VisibleValue == false)
                     designer.AppendLine($"        {varName}.Visible = false;");
                 if (c.EnabledValue == false)
@@ -397,6 +421,8 @@ internal static partial class ProjectGenerator
                     designer.AppendLine($"        {varName}.Enabled = false;");
                 if (!string.IsNullOrWhiteSpace(c.ControlName) && !IsTableColumnViewControl(c))
                     designer.AppendLine($"        {varName}.Tag = {ToCSharpLiteral(c.ControlName)};");
+                if (IsViewImageControl(c) && !string.IsNullOrWhiteSpace(c.DefaultImageFile))
+                    designer.AppendLine($"        {varName}.ImageLocation = {ToCSharpLiteral(c.DefaultImageFile)};");
                 if (c.ColorSchemeId.HasValue && !isNativeWinFormsControl)
                     AppendRuntimeControllerBindingStatement(controllerBindingStatements, $"{varName}.ColorScheme = ColorSchemes.Find({c.ColorSchemeId.Value});");
                 if (string.Equals(c.Model, "CTRL_GUI0_PUSH_BUTTON", StringComparison.OrdinalIgnoreCase))
@@ -595,10 +621,7 @@ internal static partial class ProjectGenerator
                 {
                     var controllerDataExpr = ScopeViewDataExpressionToController(dataExpr, t, dataObjects);
                     var buttonDataExpr = BuildPushButtonDirectDataAssignmentExpression(
-                        controllerDataExpr,
-                        t,
-                        tasks,
-                        pushButtonDesignText);
+                        controllerDataExpr);
                     designer.AppendLine($"        {varName}.RaiseChangeOnClick = true;");
                     AppendRuntimeControllerBindingStatement(controllerBindingStatements, $"{varName}.Data = {buttonDataExpr};");
                     didBindData = true;
@@ -773,6 +796,12 @@ internal static partial class ProjectGenerator
                 var varName = Var(c);
                 designer.AppendLine($"        Controls.Add({varName});");
             }
+
+            // Blank static controls are commonly used by XPA as colored panels.
+            // WinForms gives controls added earlier the higher z-order, which makes
+            // those panels cover labels that follow them in the XPA definition.
+            foreach (var backgroundControl in rootBackgroundControls)
+                designer.AppendLine($"        {Var(backgroundControl)}.SendToBack();");
 
             // XPA tabs are pseudo-containers: their page controls remain children of
             // the form and overlap the tab body. WinForms adds the tab before those
@@ -953,6 +982,17 @@ internal static partial class ProjectGenerator
             if (!string.IsNullOrWhiteSpace(viewClass))
                 yield return viewClass;
         }
+    }
+
+    private static void EmitViewTabIndex(
+        StringBuilder designer,
+        string controlVariable,
+        int? xpaTabIndex)
+    {
+        // XPA uses negative values as internal/sentinel tab orders. WinForms
+        // rejects them at runtime, so leave the control at its valid default.
+        if (xpaTabIndex is >= 0)
+            designer.AppendLine($"        {controlVariable}.TabIndex = {xpaTabIndex.Value};");
     }
 
     private static string ResolveFallbackGridColumnTitle(TaskFormControlDef control)

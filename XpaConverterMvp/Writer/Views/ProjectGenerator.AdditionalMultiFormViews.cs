@@ -239,6 +239,15 @@ internal static partial class ProjectGenerator
                 .ThenBy(control => control.Id)
                 .Select(control => control.Id)
                 .ToList();
+            var rootBackgroundControls = controls
+                .Where(control =>
+                    rootControlIds.Contains(control.Id) &&
+                    string.Equals(control.Model, "CTRL_GUI0_STATIC", StringComparison.OrdinalIgnoreCase) &&
+                    string.IsNullOrWhiteSpace(control.Text) &&
+                    string.IsNullOrWhiteSpace(control.DataColumn) &&
+                    !control.DataExpressionId.HasValue &&
+                    control.PropertyExpressionIds.Count == 0)
+                .ToList();
             var controllerBindingStatements = new List<string>();
             var selectMap = BuildSelectNameToExpressionMap(t, dataObjects);
             var clickHandlers = controls
@@ -335,10 +344,12 @@ internal static partial class ProjectGenerator
                     string.Equals(control.Model, "CTRL_GUI0_TAB", StringComparison.OrdinalIgnoreCase))
                 .Reverse()
                 .ToList();
-            if (rootTabControls.Count > 0)
+            if (rootTabControls.Count > 0 || rootBackgroundControls.Count > 0)
             {
                 code.AppendLine("        Shown += (_, _) =>");
                 code.AppendLine("        {");
+                foreach (var backgroundControl in rootBackgroundControls)
+                    code.AppendLine($"            {Var(backgroundControl)}.SendToBack();");
                 foreach (var tabControl in rootTabControls)
                     code.AppendLine($"            {Var(tabControl)}.SendToBack();");
                 code.AppendLine("        };");
@@ -482,6 +493,7 @@ internal static partial class ProjectGenerator
                 }
 
                 var scaledControlWidth = Math.Max(10, ScaleViewX(c.Width));
+                var scaledControlHeight = Math.Max(10, ScaleViewY(c.Height));
                 if (columnAttachmentByLeaf.ContainsKey(c.Id))
                 {
                     scaledControlWidth = ResolveViewGridCellWidth(
@@ -490,9 +502,23 @@ internal static partial class ProjectGenerator
                         tasks,
                         dataObjects,
                         scaledControlWidth);
+                    if (columnAttachmentByLeaf.TryGetValue(c.Id, out var heightParentColumnId) &&
+                        controlById.TryGetValue(heightParentColumnId, out var heightParentColumn) &&
+                        heightParentColumn.ParentId.HasValue &&
+                        controlById.TryGetValue(heightParentColumn.ParentId.Value, out var heightParentTable) &&
+                        heightParentTable.RowHeight.HasValue)
+                    {
+                        var availableHeight =
+                            ScaleViewY(heightParentTable.RowHeight.Value) -
+                            ScaleViewY(locationY) -
+                            1;
+                        scaledControlHeight = Math.Max(
+                            1,
+                            Math.Min(scaledControlHeight, availableHeight));
+                    }
                 }
                 designer.AppendLine($"        {varName}.Location = new Point({ScaleViewX(locationX)}, {ScaleViewY(locationY)});");
-                designer.AppendLine($"        {varName}.Size = new Size({scaledControlWidth}, {Math.Max(10, ScaleViewY(c.Height))});");
+                designer.AppendLine($"        {varName}.Size = new Size({scaledControlWidth}, {scaledControlHeight});");
                 designer.AppendLine($"        {varName}.Name = \"{varName}\";");
                 // Grid and GridColumn perform their own row/cell layout.
                 if (!columnAttachmentByLeaf.ContainsKey(c.Id) &&
@@ -500,9 +526,7 @@ internal static partial class ProjectGenerator
                 {
                     EmitViewControlPlacement(designer, c, varName);
                 }
-                var tabIndex = c.TabOrder ?? c.TabbingOrder;
-                if (tabIndex.HasValue)
-                    designer.AppendLine($"        {varName}.TabIndex = {tabIndex.Value};");
+                EmitViewTabIndex(designer, varName, c.TabOrder ?? c.TabbingOrder);
                 if (c.VisibleValue == false)
                     designer.AppendLine($"        {varName}.Visible = false;");
                 if (c.EnabledValue == false)
@@ -511,6 +535,8 @@ internal static partial class ProjectGenerator
                     designer.AppendLine($"        {varName}.Enabled = false;");
                 if (!string.IsNullOrWhiteSpace(c.ControlName) && !IsTableColumnViewControl(c))
                     designer.AppendLine($"        {varName}.Tag = {ToCSharpLiteral(c.ControlName)};");
+                if (IsViewImageControl(c) && !string.IsNullOrWhiteSpace(c.DefaultImageFile))
+                    designer.AppendLine($"        {varName}.ImageLocation = {ToCSharpLiteral(c.DefaultImageFile)};");
                 if (c.ColorSchemeId.HasValue && !isNativeWinFormsControl)
                     AppendRuntimeControllerBindingStatement(
                         controllerBindingStatements,
@@ -679,10 +705,7 @@ internal static partial class ProjectGenerator
                     if (isPushButton)
                     {
                         dataBindingExpr = BuildPushButtonDirectDataAssignmentExpression(
-                            directControllerExpression,
-                            t,
-                            tasks,
-                            pushButtonDesignText);
+                            directControllerExpression);
                     }
                     else if (IsViewCheckBoxControl(c))
                     {
@@ -828,6 +851,10 @@ internal static partial class ProjectGenerator
             {
                 if (controlById.TryGetValue(controlId, out var control))
                     designer.AppendLine($"        Controls.Add({Var(control)});");
+            }
+            foreach (var backgroundControl in rootBackgroundControls)
+            {
+                designer.AppendLine($"        {Var(backgroundControl)}.SendToBack();");
             }
             foreach (var tabControl in rootTabControls)
             {

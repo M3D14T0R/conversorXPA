@@ -107,6 +107,7 @@ internal static class XpaParser
             ParseContextRepositories(ctx, parsed, ref modelOrdinal, ref controlButtonObj, ref dataObjectOrdinal);
 
         InjectExternalManifestDataObjects(contexts, parsed, projectReferenceMap, ref dataObjectOrdinal);
+        BuildComponentDataSourceLiteralMap(contexts, parsed);
 
         var taskOrdinal = 0;
         var topLevelProgramIndex = 0;
@@ -119,6 +120,73 @@ internal static class XpaParser
 
         return parsed;
     }
+
+    private static void BuildComponentDataSourceLiteralMap(
+        IReadOnlyList<ParseContext> contexts,
+        ParsedXpa parsed)
+    {
+        foreach (var context in contexts)
+        {
+            var sourceComponent = context.IsMain ? "" : context.Name;
+
+            foreach (var local in context.DataObjectLocalToGlobal)
+            {
+                parsed.ComponentDataSourcesByLiteral[
+                    BuildComponentDataSourceLiteralKey(sourceComponent, local.Key, 0)] = local.Value;
+            }
+
+            foreach (var component in context.ReferencedComponentMetadataCache)
+            {
+                var targetContext = contexts.FirstOrDefault(candidate =>
+                    string.Equals(
+                        candidate.Name,
+                        component.Value.Name,
+                        StringComparison.OrdinalIgnoreCase));
+                if (targetContext is null)
+                    continue;
+
+                foreach (var dataObject in component.Value.DataObjectById)
+                {
+                    if (!targetContext.DataObjectPublicToGlobal.TryGetValue(
+                            dataObject.Value,
+                            out var globalOrdinal))
+                    {
+                        continue;
+                    }
+
+                    parsed.ComponentDataSourcesByLiteral[
+                        BuildComponentDataSourceLiteralKey(
+                            sourceComponent,
+                            dataObject.Key,
+                            component.Key)] = globalOrdinal;
+                }
+
+                for (var index = 0; index < component.Value.DataObjectsByOrder.Count; index++)
+                {
+                    var publicName = component.Value.DataObjectsByOrder[index];
+                    if (!targetContext.DataObjectPublicToGlobal.TryGetValue(
+                            publicName,
+                            out var globalOrdinal))
+                    {
+                        continue;
+                    }
+
+                    parsed.ComponentDataSourcesByLiteral.TryAdd(
+                        BuildComponentDataSourceLiteralKey(
+                            sourceComponent,
+                            index + 1,
+                            component.Key),
+                        globalOrdinal);
+                }
+            }
+        }
+    }
+
+    private static string BuildComponentDataSourceLiteralKey(
+        string? sourceComponent,
+        int objectId,
+        int componentId)
+        => $"{sourceComponent?.Trim() ?? ""}|{objectId},{componentId}";
 
     private static void CacheReferencedComponentMetadata(ParseContext context, XDocument document)
     {
@@ -1917,8 +1985,17 @@ internal static class XpaParser
                 var columnTitle = XmlHelpers.NormalizeText(cp.Element("ColumnTitle")?.Attribute("valUnicode")?.Value);
                 var sortable = ParseBool(cp.Element("Sortable")?.Attribute("val")?.Value);
                 var data = cp.Element("Data");
-                var dataColumn = data?.Attribute("Column")?.Value;
-                var dataExp = ParseInt(data?.Attribute("Exp")?.Value);
+                var dotNetObject = cp.Element("DotnetObject");
+                // XPA stores the resource hosted by a CTRL_GUI0_DOTNET in
+                // DotnetObject/@Column, not necessarily in Data/@Column. Treat
+                // both as the control's resource binding so the generated view
+                // creates the declared CLR control and assigns it back to the
+                // task resource before Task Prefix/OnStart runs.
+                var dataColumn = data?.Attribute("Column")?.Value
+                                 ?? dotNetObject?.Attribute("Column")?.Value;
+                var dataExp = ParseInt(
+                    data?.Attribute("Exp")?.Value
+                    ?? dotNetObject?.Attribute("Exp")?.Value);
                 var selectProgram = cp.Element("SelectProgram");
                 var selectProgramObj = ParseInt(selectProgram?.Attribute("obj")?.Value);
                 var selectProgramComponentId = ParseInt(selectProgram?.Attribute("comp")?.Value);

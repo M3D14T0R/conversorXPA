@@ -68,6 +68,8 @@ internal static class SemanticBuilder
         semantic.ExternalMagicComponents.AddRange(parsed.ExternalMagicComponents);
         semantic.DotNetComponentReferences.AddRange(parsed.DotNetComponentReferences);
         semantic.ComponentFunctions.AddRange(parsed.ComponentFunctions);
+        foreach (var dataSourceLiteral in parsed.ComponentDataSourcesByLiteral)
+            semantic.ComponentDataSourcesByLiteral[dataSourceLiteral.Key] = dataSourceLiteral.Value;
         semantic.Menus.AddRange(parsed.Menus);
         for (var i = 0; i < parsed.Tasks.Count; i++)
         {
@@ -3394,6 +3396,16 @@ internal static class SemanticBuilder
             var byName = task.ResourceColumns.FirstOrDefault(r => string.Equals(r.Name, c.DataColumn, StringComparison.OrdinalIgnoreCase));
             if (byName is not null)
                 return byName;
+
+            var select = task.Selects.FirstOrDefault(s =>
+                string.Equals(s.Name, c.DataColumn, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(s.Type, "V", StringComparison.OrdinalIgnoreCase));
+            if (select is not null)
+            {
+                var bySelect = task.ResourceColumns.FirstOrDefault(r => r.Id == select.ColumnId);
+                if (bySelect is not null)
+                    return bySelect;
+            }
         }
 
         return null;

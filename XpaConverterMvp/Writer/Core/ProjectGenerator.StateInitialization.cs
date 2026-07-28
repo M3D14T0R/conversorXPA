@@ -73,6 +73,9 @@ internal static partial class ProjectGenerator
                 return $"global::{ns}.Roles.{kv.Value.RoleMemberName}";
             },
             StringComparer.OrdinalIgnoreCase);
+        _componentDataSourcesByLiteral = new Dictionary<string, int>(
+            request.Parsed.ComponentDataSourcesByLiteral,
+            StringComparer.OrdinalIgnoreCase);
         _applicationSelectMap = new Dictionary<string, string>(request.Parsed.ApplicationSelectMap, StringComparer.OrdinalIgnoreCase);
         _parentSelectMapByTaskOrdinal = request.Parsed.ParentSelectMapByTaskOrdinal.ToDictionary(
             kv => kv.Key,

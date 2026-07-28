@@ -44,10 +44,15 @@ internal static partial class ProjectGenerator
             return;
 
         var dataSourceName = ToPascalIdentifier(task.SqlForm.DatabaseName ?? "DynamicSql");
-        sb.AppendLine($"        var sqlEntity = new DynamicSQLEntity(Shared.DataSources.{dataSourceName}, {ToCSharpLiteral(task.SqlForm.Statement)});");
+        var timeNullFallbackRewrite = RewriteSqlFormTimeNullFallbacks(
+            task.SqlForm.Statement,
+            dataObjects,
+            task.SqlForm.InputArguments.Count);
+        sb.AppendLine($"        var sqlEntity = new DynamicSQLEntity(Shared.DataSources.{dataSourceName}, {ToCSharpLiteral(timeNullFallbackRewrite.Statement)});");
         var dateNullFallbackArguments = ResolveSqlFormDateNullFallbackArguments(
             task.SqlForm.Statement,
             dataObjects);
+        var rawInputExpressions = new List<string>(task.SqlForm.InputArguments.Count);
         for (var argumentIndex = 0; argumentIndex < task.SqlForm.InputArguments.Count; argumentIndex++)
         {
             var argument = task.SqlForm.InputArguments[argumentIndex];
@@ -61,9 +66,17 @@ internal static partial class ProjectGenerator
                     $"task={task.Ordinal} argument={argumentIndex + 1} exp={argument.ExpressionId?.ToString() ?? ""} var={argument.Variable ?? ""}");
                 expr = "u.Null()";
             }
+            rawInputExpressions.Add(expr);
             if (dateNullFallbackArguments.Contains(argumentIndex + 1))
                 expr = $"Shared.XpaSqlDateStorage.NormalizeDynamicSqlDateNullFallback({expr})";
             sb.AppendLine($"        sqlEntity.AddParameter(() => {expr});");
+        }
+        foreach (var prefixArgumentIndex in timeNullFallbackRewrite.PrefixArgumentIndexes)
+        {
+            var prefixExpression = rawInputExpressions[prefixArgumentIndex - 1];
+            sb.AppendLine(
+                "        sqlEntity.AddParameter(() => " +
+                $"Shared.XpaSqlDateStorage.ResolveDynamicSqlTimeNullFallbackSuffix({prefixExpression}));");
         }
 
         foreach (var outputVar in task.SqlForm.OutputVariables)
@@ -74,6 +87,63 @@ internal static partial class ProjectGenerator
         }
 
         sb.AppendLine("        From = sqlEntity;");
+    }
+
+    private static (string Statement, IReadOnlyList<int> PrefixArgumentIndexes)
+        RewriteSqlFormTimeNullFallbacks(
+            string statement,
+            IReadOnlyList<DataObjectDef> dataObjects,
+            int inputArgumentCount)
+    {
+        var timePhysicalColumns = dataObjects
+            .SelectMany(dataObject => dataObject.Columns)
+            .Where(column => string.Equals(
+                NormalizeAttrObjKind(column.AttrObj),
+                "FIELD_TIME",
+                StringComparison.OrdinalIgnoreCase))
+            .SelectMany(column => new[]
+            {
+                column.DbColumnName,
+                column.FieldPhysicalName,
+                column.Name
+            })
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Select(name => name!.Trim())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (timePhysicalColumns.Count == 0)
+            return (statement, Array.Empty<int>());
+
+        var syntheticArgumentByPrefix = new Dictionary<int, int>();
+        var prefixArgumentIndexes = new List<int>();
+        var rewritten = Regex.Replace(
+            statement,
+            @":(?<prefix>\d+)(?<qualified>(?:[A-Za-z_][A-Za-z0-9_]*\.)?(?<column>[A-Za-z_][A-Za-z0-9_]*))\s*,\s*0\)",
+            match =>
+            {
+                if (!timePhysicalColumns.Contains(match.Groups["column"].Value) ||
+                    !int.TryParse(match.Groups["prefix"].Value, out var prefixArgumentIndex) ||
+                    prefixArgumentIndex <= 0 ||
+                    prefixArgumentIndex > inputArgumentCount)
+                {
+                    return match.Value;
+                }
+
+                if (!syntheticArgumentByPrefix.TryGetValue(prefixArgumentIndex, out var syntheticArgumentIndex))
+                {
+                    syntheticArgumentIndex = inputArgumentCount + syntheticArgumentByPrefix.Count + 1;
+                    syntheticArgumentByPrefix.Add(prefixArgumentIndex, syntheticArgumentIndex);
+                    prefixArgumentIndexes.Add(prefixArgumentIndex);
+                }
+
+                return
+                    $":{prefixArgumentIndex}" +
+                    $"{match.Groups["qualified"].Value}" +
+                    $":{syntheticArgumentIndex}";
+            },
+            RegexOptions.CultureInvariant);
+
+        return (rewritten, prefixArgumentIndexes);
     }
 
     private static HashSet<int> ResolveSqlFormDateNullFallbackArguments(

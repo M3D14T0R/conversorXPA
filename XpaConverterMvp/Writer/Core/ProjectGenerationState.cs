@@ -17,6 +17,7 @@ internal sealed class ProjectGenerationState
     public Dictionary<string, string> ApplicationSelectMap { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<int, Dictionary<string, string>> ParentSelectMapByTaskOrdinal { get; set; } = new();
     public Dictionary<int, string> DataSourceTypeByObjectOrdinal { get; set; } = new();
+    public Dictionary<string, int> ComponentDataSourcesByLiteral { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<int, DataObjectDef> DataObjectsByOrdinal { get; set; } = new();
     public IReadOnlyList<FieldModelDef> AllFieldModels { get; set; } = Array.Empty<FieldModelDef>();
     public IReadOnlyList<TaskSemantic> AllTasks { get; set; } = Array.Empty<TaskSemantic>();

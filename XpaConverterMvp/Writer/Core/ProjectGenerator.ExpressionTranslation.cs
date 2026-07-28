@@ -404,10 +404,8 @@ internal static partial class ProjectGenerator
         if (!string.Equals(suffix, "DSOURCE", StringComparison.OrdinalIgnoreCase))
             return null;
 
-        var commaIndex = literalValue.IndexOf(',');
-        var objectToken = commaIndex >= 0
-            ? literalValue[..commaIndex]
-            : literalValue;
+        var literalParts = literalValue.Split(',');
+        var objectToken = literalParts[0];
         if (!int.TryParse(
                 objectToken.Trim(),
                 NumberStyles.Integer,
@@ -416,6 +414,21 @@ internal static partial class ProjectGenerator
         {
             return null;
         }
+
+        var componentId = 0;
+        if (literalParts.Length > 1)
+        {
+            _ = int.TryParse(
+                literalParts[1].Trim(),
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out componentId);
+        }
+
+        var sourceComponent = task.SourceComponent?.Trim() ?? "";
+        var literalKey = $"{sourceComponent}|{objectOrdinal},{componentId}";
+        if (_componentDataSourcesByLiteral.TryGetValue(literalKey, out var resolvedOrdinal))
+            objectOrdinal = resolvedOrdinal;
 
         var dataObject = ResolveDataObjectByOrdinal(dataObjects, objectOrdinal);
         if (dataObject is null)
