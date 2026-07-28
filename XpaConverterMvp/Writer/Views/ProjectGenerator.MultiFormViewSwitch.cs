@@ -8,8 +8,16 @@ namespace XpaConverterMvp;
 
 internal static partial class ProjectGenerator
 {
-    private static bool TryEmitMultiFormViewSwitch(StringBuilder sb, TaskSemantic t, IReadOnlyList<DataObjectDef> dataObjects, IReadOnlyList<TaskSemantic> allTasks)
+    private static bool TryEmitMultiFormViewSwitch(
+        StringBuilder sb,
+        TaskSemantic t,
+        IReadOnlyList<DataObjectDef> dataObjects,
+        IReadOnlyList<TaskSemantic> allTasks,
+        string indentation = "        ")
     {
+        if (!t.View.ShouldGenerate)
+            return false;
+
         var guiForms = t.FormEntries
             .Where(fe => string.Equals(fe.Model, "FORM_GUI0", StringComparison.OrdinalIgnoreCase) && fe.Form is not null)
             .OrderBy(fe => fe.Index)
@@ -22,13 +30,9 @@ internal static partial class ProjectGenerator
         var variantClasses = guiForms
             .Select(fe => ResolveMultiFormViewClassName(t, fe, allTasks))
             .ToList();
-        var displayIndices = Regex.Matches(displayExpr.Syntax ?? "", "['\"](?<formId>\\d+)['\"]FORM", RegexOptions.IgnoreCase)
-            .Cast<Match>()
-            .Select(m => int.Parse(m.Groups["formId"].Value))
-            .Distinct()
+        var displayIndices = guiForms
+            .Select(fe => fe.ReferenceIndex)
             .ToList();
-        if (displayIndices.Count != guiForms.Count)
-            displayIndices = guiForms.Select(fe => fe.Index).ToList();
         var match = Regex.Match(displayExpr.Syntax ?? "", @"^'?(?<start>\d+)'?\s*FORM\s*-\s*1\s*\+\s*(?<selector>[A-Z]+)\s*$", RegexOptions.IgnoreCase);
         string? displaySwitchExpr = null;
         if (match.Success)
@@ -43,21 +47,21 @@ internal static partial class ProjectGenerator
         if (string.IsNullOrWhiteSpace(displaySwitchExpr))
             return false;
 
-        sb.AppendLine($"        switch ((int)({displaySwitchExpr}))");
-        sb.AppendLine("        {");
-        sb.AppendLine("            default:");
-        sb.AppendLine($"                View = () => new Views.{variantClasses[0]}(this);");
-        sb.AppendLine($"                SetMainDisplayIndex({displayIndices[0]});");
-        sb.AppendLine("                break;");
+        sb.AppendLine($"{indentation}switch ((int)({displaySwitchExpr}))");
+        sb.AppendLine($"{indentation}{{");
+        sb.AppendLine($"{indentation}    default:");
+        sb.AppendLine($"{indentation}        View = () => new Views.{variantClasses[0]}(this);");
+        sb.AppendLine($"{indentation}        SetMainDisplayIndex({displayIndices[0]});");
+        sb.AppendLine($"{indentation}        break;");
         for (var i = 1; i < guiForms.Count; i++)
         {
             var displayIndex = displayIndices[i];
-            sb.AppendLine($"            case {displayIndex}:");
-            sb.AppendLine($"                View = () => new Views.{variantClasses[i]}(this);");
-            sb.AppendLine($"                SetMainDisplayIndex({displayIndex});");
-            sb.AppendLine("                break;");
+            sb.AppendLine($"{indentation}    case {displayIndex}:");
+            sb.AppendLine($"{indentation}        View = () => new Views.{variantClasses[i]}(this);");
+            sb.AppendLine($"{indentation}        SetMainDisplayIndex({displayIndex});");
+            sb.AppendLine($"{indentation}        break;");
         }
-        sb.AppendLine("        }");
+        sb.AppendLine($"{indentation}}}");
         return true;
     }
 }

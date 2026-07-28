@@ -10,8 +10,9 @@ internal static partial class ProjectGenerator
         // references to every FORM_GUI0 variant.  TextIO suppression applies only
         // to the ordinary single-view fallback; suppressing a multi-form task here
         // leaves those emitted view type references without matching classes.
-        return HasMultiFormViewSwitchCandidate(t) ||
-               (t.View.ShouldGenerate && !ShouldSuppressViewForBusinessProcessTextIo(t));
+        return t.View.ShouldGenerate &&
+               (HasMultiFormViewSwitchCandidate(t) ||
+                !ShouldSuppressViewForBusinessProcessTextIo(t));
     }
 
     private static bool HasMultiFormViewSwitchCandidate(TaskSemantic t)

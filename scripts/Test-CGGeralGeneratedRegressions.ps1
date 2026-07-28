@@ -372,6 +372,36 @@ Test-NotContains `
     -RelativePath "CG00717_GerenciarMatrizComissoes_717.cs" `
     -Literal "ChamaEngenharia"
 
+Test-NotContains `
+    -Name "6388 batch com OpenTaskWindow=N nao materializa a tela da task raiz" `
+    -RelativePath "CG06388_ExplodeEngenha_GeraOP.cs" `
+    -Literal "View = () => new Views.PesquisaEngenhariaView(this);"
+
+Test-Contains `
+    -Name "6388 preserva a expressao dinamica de CloseTaskWindow" `
+    -RelativePath "CG06388_ExplodeEngenha_GeraOP.cs" `
+    -Literal 'BindKeepViewVisibleAfterExit(() => !((_parent.P_Acao == "T") || ((_parent.P_Acao == "C") && (!((_parent.P_NaoAbrirTela))))));'
+
+Test-Contains `
+    -Name "6388 preserva a expressao dinamica de OpenTaskWindow" `
+    -RelativePath "CG06388_ExplodeEngenha_GeraOP.cs" `
+    -Literal 'if ((_parent.P_Acao == "T") || ((_parent.P_Acao == "C") && (!((_parent.P_NaoAbrirTela)))))'
+
+Test-Contains `
+    -Name "6388 usa a referencia global 5 do Main Display" `
+    -RelativePath "CG06388_ExplodeEngenha_GeraOP.cs" `
+    -Literal "case 5:"
+
+Test-Contains `
+    -Name "6388 registra no runtime o Main Display global selecionado" `
+    -RelativePath "CG06388_ExplodeEngenha_GeraOP.cs" `
+    -Literal "SetMainDisplayIndex(5);"
+
+Test-NotContains `
+    -Name "6401 batch com OpenTaskWindow=N nao materializa forms de criacao de talao" `
+    -RelativePath "CG06401_CriaTalao.cs" `
+    -Literal "View = () => new Views.CriaTalao"
+
 if (-not [string]::IsNullOrWhiteSpace($PipelineProjectsDirectory)) {
     $kernelDirectory = Join-Path ([System.IO.Path]::GetFullPath($PipelineProjectsDirectory)) "04-CGKernel\CGKernel"
     $kernelMessageSource = Join-Path $kernelDirectory "CK02149_2149MensagemOk.cs"

@@ -421,7 +421,9 @@ internal static class SemanticBuilder
             task.AllowDelete,
             task.AllowEvents,
             task.OpenTaskWindow,
+            task.OpenTaskWindowExpressionId,
             task.CloseTaskWindow,
+            task.CloseTaskWindowExpressionId,
             task.AllowPrintingData,
             task.AllowCreateExpression,
             task.SqlWhere,
@@ -2367,7 +2369,9 @@ internal static class SemanticBuilder
     {
         if (task.IsEmptyTask)
             return false;
-        if (string.Equals(task.TaskType, "B", StringComparison.OrdinalIgnoreCase) && !task.OpenTaskWindow)
+        if (string.Equals(task.TaskType, "B", StringComparison.OrdinalIgnoreCase) &&
+            !task.OpenTaskWindow &&
+            !task.OpenTaskWindowExpressionId.HasValue)
             return false;
         var form = task.FormEntries
             .Where(fe => string.Equals(fe.Model, "FORM_GUI0", StringComparison.OrdinalIgnoreCase))

@@ -162,7 +162,9 @@ internal sealed record TaskDef(
     bool? AllowDelete,
     bool AllowEvents,
     bool OpenTaskWindow,
+    int? OpenTaskWindowExpressionId,
     bool CloseTaskWindow,
+    int? CloseTaskWindowExpressionId,
     bool AllowPrintingData,
     string? AllowCreateExpression,
     TaskSqlWhereDef? SqlWhere,
@@ -275,6 +277,7 @@ internal sealed record TaskSortSegmentDef(
 
 internal sealed record TaskFormEntryDef(
     int Index,
+    int ReferenceIndex,
     int? ClassIndex,
     string Model,
     TaskFormDef Form
@@ -942,7 +945,9 @@ internal sealed record TaskSemantic(
     bool? AllowDelete,
     bool AllowEvents,
     bool OpenTaskWindow,
+    int? OpenTaskWindowExpressionId,
     bool CloseTaskWindow,
+    int? CloseTaskWindowExpressionId,
     bool AllowPrintingData,
     string? AllowCreateExpression,
     TaskSqlWhereDef? SqlWhere,

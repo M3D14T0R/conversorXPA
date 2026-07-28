@@ -1254,6 +1254,7 @@ internal static class XpaParser
                 if (programsDepth >= 0 && reader.LocalName == "Task" && reader.Depth == programsDepth + 1)
                 {
                     localOrdinal++;
+                    var formReferenceIndex = 0;
                     using var subtree = reader.ReadSubtree();
                     subtree.MoveToContent();
                     var originalTopLevelIndex = ParseInt(subtree.GetAttribute("_xpa_converter_original_top_level_index"));
@@ -1263,7 +1264,17 @@ internal static class XpaParser
                         topLevelProgramIndex + (originalTopLevelIndex.HasValue ? 0 : 1),
                         globalTopLevelIndex);
                     ctx.ProgramLocalTopLevelToGlobal[localTopLevelIndex] = globalTopLevelIndex;
-                    ParseTaskNodeStreaming(ctx, contexts, subtree, parsed, ref ordinal, globalTopLevelIndex, localTopLevelIndex, null, null);
+                    ParseTaskNodeStreaming(
+                        ctx,
+                        contexts,
+                        subtree,
+                        parsed,
+                        ref ordinal,
+                        ref formReferenceIndex,
+                        globalTopLevelIndex,
+                        localTopLevelIndex,
+                        null,
+                        null);
                 }
             }
             else if (reader.NodeType == XmlNodeType.EndElement)
@@ -1287,6 +1298,7 @@ internal static class XpaParser
         XmlReader reader,
         ParsedXpa parsed,
         ref int ordinal,
+        ref int formReferenceIndex,
         int? topLevelProgramIndex,
         int? topLevelProgramIndexLocal,
         int? parentOrdinal,
@@ -1331,6 +1343,7 @@ internal static class XpaParser
                         childReader,
                         parsed,
                         ref ordinal,
+                        ref formReferenceIndex,
                         topLevelProgramIndex,
                         topLevelProgramIndexLocal,
                         currentOrdinal,
@@ -1341,6 +1354,16 @@ internal static class XpaParser
                 using var sectionReader = reader.ReadSubtree();
                 sectionReader.MoveToContent();
                 var section = XElement.Load(sectionReader, LoadOptions.PreserveWhitespace | LoadOptions.SetLineInfo);
+                if (section.Name.LocalName == "TaskForms")
+                {
+                    foreach (var formEntry in section.Elements("FormEntry"))
+                    {
+                        formReferenceIndex++;
+                        formEntry.SetAttributeValue(
+                            "_xpa_converter_form_reference_index",
+                            formReferenceIndex);
+                    }
+                }
                 task.Add(section);
                 if (section.Name.LocalName == "Header" && topLevelProgramIndex.HasValue)
                 {
@@ -1432,8 +1455,13 @@ internal static class XpaParser
         var selectionTable = XmlHelpers.Attr(taskProps?.Element("SelectionTable") ?? new XElement("x"), "val") == "Y";
         var allowEmptyDataview = ParseBool(taskProps?.Element("AllowEmptyDataview")?.Attribute("val")?.Value);
         var preloadView = ParseBool(taskProps?.Element("PreloadView")?.Attribute("val")?.Value);
-        var openTaskWindow = XmlHelpers.Attr(t.Element("Information")?.Element("WIN")?.Element("OpenTaskWindow") ?? new XElement("x"), "val") != "N";
-        var closeTaskWindow = XmlHelpers.Attr(t.Element("Information")?.Element("WIN")?.Element("CloseTaskWindow") ?? new XElement("x"), "val") != "N";
+        var win = t.Element("Information")?.Element("WIN");
+        var openTaskWindowNode = win?.Element("OpenTaskWindow");
+        var closeTaskWindowNode = win?.Element("CloseTaskWindow");
+        var openTaskWindow = XmlHelpers.Attr(openTaskWindowNode ?? new XElement("x"), "val") != "N";
+        var openTaskWindowExpressionId = ParseInt(openTaskWindowNode?.Attribute("Exp")?.Value);
+        var closeTaskWindow = XmlHelpers.Attr(closeTaskWindowNode ?? new XElement("x"), "val") != "N";
+        var closeTaskWindowExpressionId = ParseInt(closeTaskWindowNode?.Attribute("Exp")?.Value);
         var sideWin = t.Element("Information")?.Element("SIDE_WIN");
         var allowEvents = XmlHelpers.Attr(sideWin?.Element("AllowEvents") ?? new XElement("x"), "val") == "Y";
         var allowOptions = ParseBool(sideWin?.Element("AllowOptions")?.Attribute("val")?.Value);
@@ -1528,7 +1556,9 @@ internal static class XpaParser
             AllowDelete: allowDelete,
             AllowEvents: allowEvents,
             OpenTaskWindow: openTaskWindow,
+            OpenTaskWindowExpressionId: openTaskWindowExpressionId,
             CloseTaskWindow: closeTaskWindow,
+            CloseTaskWindowExpressionId: closeTaskWindowExpressionId,
             AllowPrintingData: allowPrintingData,
             AllowCreateExpression: allowCreateExp,
             SqlWhere: sqlWhere,
@@ -2186,7 +2216,8 @@ internal static class XpaParser
 
             var form = new TaskFormDef(width, height, formX, formY, formName, formText, formTextExpressionId, xExpressionId, yExpressionId, formColorSchemeId, formFontSchemeId, pulldownMenuObj, systemMenu, minimizeButton, maximizeButton, formUnits, verticalFactor, horizontalFactor, windowType, startupMode, startupPosition, persistentFormState, placementValue, placementTop, placementBottom, placementLeft, placementRight, titleBar, controls, mergeFileName, mergeFileNameExpressionId, mergeTags);
             var classIndex = ParseInt(formEntry.Attribute("CLSS")?.Value);
-            result.Add(new TaskFormEntryDef(i + 1, classIndex, formModel, form));
+            var referenceIndex = ParseInt(formEntry.Attribute("_xpa_converter_form_reference_index")?.Value) ?? (i + 1);
+            result.Add(new TaskFormEntryDef(i + 1, referenceIndex, classIndex, formModel, form));
         }
 
         return result;

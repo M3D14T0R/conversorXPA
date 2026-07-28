@@ -153,8 +153,18 @@ internal static partial class ProjectGenerator
                 }
             }
         }
-        if (!t.CloseTaskWindow)
+        if (t.CloseTaskWindowExpressionId.HasValue)
+        {
+            var closeTaskWindowCondition = ResolveOnLoadExpression(
+                t.CloseTaskWindowExpressionId.Value,
+                CreateBooleanConditionEmissionContext());
+            if (!string.IsNullOrWhiteSpace(closeTaskWindowCondition))
+                sb.AppendLine($"        BindKeepViewVisibleAfterExit(() => !({closeTaskWindowCondition}));");
+        }
+        else if (!t.CloseTaskWindow)
+        {
             sb.AppendLine("        KeepViewVisibleAfterExit = true;");
+        }
         EmitAllowUserAbortIfNeeded();
 
         if (baseClass != "BusinessProcessBase" &&
@@ -167,13 +177,34 @@ internal static partial class ProjectGenerator
             sb.AppendLine($"        BindAllowInsert(() => {expCode});");
         }
 
-        if (TryEmitMultiFormViewSwitch(sb, t, dataObjects, allTasks))
+        void EmitView(string indentation)
         {
+            if (TryEmitMultiFormViewSwitch(sb, t, dataObjects, allTasks, indentation))
+                return;
+
+            if (t.View.ShouldGenerate && !ShouldSuppressViewForBusinessProcessTextIo(t))
+            {
+                var viewClass = ResolveViewClassName(t, allTasks);
+                sb.AppendLine($"{indentation}View = () => new Views.{viewClass}(this);");
+            }
         }
-        else if (t.View.ShouldGenerate && !ShouldSuppressViewForBusinessProcessTextIo(t))
+
+        if (baseClass == "BusinessProcessBase" && t.OpenTaskWindowExpressionId.HasValue)
         {
-            var viewClass = ResolveViewClassName(t, allTasks);
-            sb.AppendLine($"        View = () => new Views.{viewClass}(this);");
+            var openTaskWindowCondition = ResolveOnLoadExpression(
+                t.OpenTaskWindowExpressionId.Value,
+                CreateBooleanConditionEmissionContext());
+            if (!string.IsNullOrWhiteSpace(openTaskWindowCondition))
+            {
+                sb.AppendLine($"        if ({openTaskWindowCondition})");
+                sb.AppendLine("        {");
+                EmitView("            ");
+                sb.AppendLine("        }");
+            }
+        }
+        else
+        {
+            EmitView("        ");
         }
         if (DeclaresPrintStream(t))
         {

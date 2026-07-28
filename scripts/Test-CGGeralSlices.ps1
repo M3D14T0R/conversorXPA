@@ -368,6 +368,23 @@ if ($selected -contains "CG06388") {
         -Name "CG06388 relation source dependency selected" `
         -Path $explosionFile `
         -Pattern 'Columns\.Add\(ENGENHARIA\.UnidadeNegocio\);'
+    Assert-FileMatch `
+        -Name "CG06388 root batch respects OpenTaskWindow=N" `
+        -Path $explosionFile `
+        -Pattern 'View\s*=\s*\(\)\s*=>\s*new Views\.PesquisaEngenhariaView\(this\);' `
+        -Not
+    Assert-FileMatch `
+        -Name "CG06388 dynamic OpenTaskWindow expression emitted" `
+        -Path $explosionFile `
+        -Pattern 'if\s*\(\(_parent\.P_Acao\s*==\s*"T"\)\s*\|\|[\s\S]{0,180}?_parent\.P_NaoAbrirTela'
+    Assert-FileMatch `
+        -Name "CG06388 dynamic CloseTaskWindow expression emitted" `
+        -Path $explosionFile `
+        -Pattern 'BindKeepViewVisibleAfterExit\(\(\)\s*=>\s*!\(\(_parent\.P_Acao\s*==\s*"T"\)'
+    Assert-FileMatch `
+        -Name "CG06388 Main Display preserves global form reference 5" `
+        -Path $explosionFile `
+        -Pattern 'case\s+5:[\s\S]{0,400}?SetMainDisplayIndex\(5\);'
 }
 
 if ($selected -contains "CG06353Flow") {
