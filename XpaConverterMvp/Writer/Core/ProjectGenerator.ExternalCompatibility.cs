@@ -28,7 +28,8 @@ internal static partial class ProjectGenerator
         return syntax.IndexOf("Cigam.Utils.Upgrade.Mail.", StringComparison.OrdinalIgnoreCase) >= 0
             || syntax.IndexOf("Cigam.WebServices.Apis.Upgrade.", StringComparison.OrdinalIgnoreCase) >= 0
             || syntax.IndexOf("Cigam.Utils.BarCode.QRCode.", StringComparison.OrdinalIgnoreCase) >= 0
-            || syntax.IndexOf("DNCAST", StringComparison.OrdinalIgnoreCase) >= 0;
+            || syntax.IndexOf("DNCAST", StringComparison.OrdinalIgnoreCase) >= 0
+            || syntax.IndexOf("DNSET", StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     private static bool UsesComponentFunctionCompat(ProjectSemantic parsed)
@@ -845,6 +846,20 @@ internal static partial class ProjectGenerator
         sb.AppendLine("        if (value is T typed)");
         sb.AppendLine("            return typed;");
         sb.AppendLine("        return (T)ConvertArgument(value, typeof(T));");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    internal static object SetIfNotNull(object receiver, Func<object> setter)");
+        sb.AppendLine("    {");
+        sb.AppendLine("        if (receiver is null)");
+        sb.AppendLine("            return null;");
+        sb.AppendLine("        return setter();");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    internal static void InvokeIfNotNull(object receiver, Action action)");
+        sb.AppendLine("    {");
+        sb.AppendLine("        if (receiver is null)");
+        sb.AppendLine("            return;");
+        sb.AppendLine("        action();");
         sb.AppendLine("    }");
         sb.AppendLine();
         sb.AppendLine("    static bool TryCreateReal(string typeName, object[] args, out object instance)");

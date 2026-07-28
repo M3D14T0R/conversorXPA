@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace XpaConverterMvp;
 
@@ -923,13 +924,43 @@ internal static partial class ProjectGenerator
         string appNamespace)
     {
         var outputRoot = Directory.GetParent(viewsDir)?.FullName ?? viewsDir;
+        var placeholderPath = Path.Combine(viewsDir, "RangeStubViews.cs");
+        var existingCode = File.Exists(placeholderPath)
+            ? File.ReadAllText(placeholderPath)
+            : "";
+        var existingPlaceholders = new HashSet<string>(
+            Regex.Matches(existingCode, @"\bclass\s+([A-Za-z_][A-Za-z0-9_]*)\b")
+                .Cast<Match>()
+                .Select(match => match.Groups[1].Value),
+            StringComparer.Ordinal);
+        var generatedViewClasses = new HashSet<string>(StringComparer.Ordinal);
+        var generatedSourceFiles = Directory
+            .EnumerateFiles(outputRoot, "*.cs", SearchOption.AllDirectories)
+            .Where(path =>
+                path.IndexOf($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase) < 0 &&
+                path.IndexOf($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase) < 0)
+            .ToArray();
+
+        foreach (var path in generatedSourceFiles.Where(path =>
+                     path.IndexOf($"{Path.DirectorySeparatorChar}Views{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                     !string.Equals(Path.GetFileName(path), "RangeStubViews.cs", StringComparison.OrdinalIgnoreCase)))
+        {
+            foreach (Match match in Regex.Matches(
+                         File.ReadAllText(path),
+                         @"\bclass\s+([A-Za-z_][A-Za-z0-9_]*)\b"))
+            {
+                generatedViewClasses.Add(match.Groups[1].Value);
+            }
+        }
+
         var placeholders = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var task in tasks.Where(t => !t.MainProgram))
         {
             foreach (var viewClass in EnumerateExpectedScopedViewClasses(task, tasks))
             {
                 if (string.IsNullOrWhiteSpace(viewClass) ||
-                    DoesGeneratedViewClassFileExist(outputRoot, viewClass))
+                    generatedViewClasses.Contains(viewClass) ||
+                    existingPlaceholders.Contains(viewClass))
                 {
                     continue;
                 }
@@ -938,19 +969,38 @@ internal static partial class ProjectGenerator
             }
         }
 
-        var placeholderPath = Path.Combine(viewsDir, "RangeStubViews.cs");
-        if (placeholders.Count == 0)
+        foreach (var path in generatedSourceFiles.Where(path =>
+                     path.IndexOf($"{Path.DirectorySeparatorChar}Views{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase) < 0))
         {
-            if (File.Exists(placeholderPath))
-                File.Delete(placeholderPath);
-            return;
+            foreach (Match match in Regex.Matches(
+                         File.ReadAllText(path),
+                         @"\bnew\s+(?:global::[A-Za-z_][A-Za-z0-9_]*\.)?Views\.([A-Za-z_][A-Za-z0-9_]*)\s*\("))
+            {
+                var viewClass = match.Groups[1].Value;
+                if (!generatedViewClasses.Contains(viewClass) &&
+                    !existingPlaceholders.Contains(viewClass))
+                {
+                    placeholders.TryAdd(viewClass, "object");
+                }
+            }
         }
 
+        if (placeholders.Count == 0)
+            return;
+
         var code = new StringBuilder();
-        code.AppendLine($"using {appNamespace}.Shared.Theme;");
-        code.AppendLine();
-        code.AppendLine($"namespace {appNamespace}.Views;");
-        code.AppendLine();
+        if (!string.IsNullOrWhiteSpace(existingCode))
+        {
+            code.AppendLine(existingCode.TrimEnd());
+            code.AppendLine();
+        }
+        else
+        {
+            code.AppendLine($"using {appNamespace}.Shared.Theme;");
+            code.AppendLine();
+            code.AppendLine($"namespace {appNamespace}.Views;");
+            code.AppendLine();
+        }
         foreach (var placeholder in placeholders.OrderBy(x => x.Key, StringComparer.Ordinal))
         {
             code.AppendLine($"public class {placeholder.Key} : ENV.UI.Form");

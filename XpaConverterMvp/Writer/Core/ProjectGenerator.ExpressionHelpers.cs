@@ -119,7 +119,14 @@ private static string BuildEvaluateStatement(EmittedExpression expression, TaskS
 
     var statementExpr = StripRedundantOuterParentheses(exprCode.Trim());
     if (IsCSharpInvocationStatementExpression(statementExpr))
+    {
+        if (!string.IsNullOrWhiteSpace(expression.NullGuardReceiverCode))
+        {
+            return
+                $"ExternalTypeCompat.InvokeIfNotNull({expression.NullGuardReceiverCode}, () => {statementExpr});";
+        }
         return $"{statementExpr};";
+    }
 
     return TryGetWholeCSharpStringLiteral(statementExpr, out var literal)
         ? $"CalcExpression({literal});"

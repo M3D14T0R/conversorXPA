@@ -30,9 +30,10 @@ internal static partial class ProjectGenerator
         var variantClasses = guiForms
             .Select(fe => ResolveMultiFormViewClassName(t, fe, allTasks))
             .ToList();
-        var displayIndices = guiForms
-            .Select(fe => fe.ReferenceIndex)
-            .ToList();
+        var expressionFormIndices = ResolveDisplayExpressionFormIndices(displayExpr.Syntax);
+        var displayIndices = expressionFormIndices.Count == guiForms.Count
+            ? expressionFormIndices
+            : guiForms.Select(fe => fe.ReferenceIndex).ToList();
         var match = Regex.Match(displayExpr.Syntax ?? "", @"^'?(?<start>\d+)'?\s*FORM\s*-\s*1\s*\+\s*(?<selector>[A-Z]+)\s*$", RegexOptions.IgnoreCase);
         string? displaySwitchExpr = null;
         if (match.Success)
@@ -63,6 +64,37 @@ internal static partial class ProjectGenerator
         }
         sb.AppendLine($"{indentation}}}");
         return true;
+    }
+
+    private static List<int> ResolveDisplayExpressionFormIndices(string? syntax)
+    {
+        var result = new List<int>();
+
+        void CollectBranch(string branch)
+        {
+            var value = StripRedundantOuterParentheses(branch?.Trim() ?? "");
+            if (TryParseFunctionCall(value, out var functionName, out var arguments) &&
+                IsTopLevelCall(functionName, "IF") &&
+                arguments.Count == 3)
+            {
+                CollectBranch(arguments[1]);
+                CollectBranch(arguments[2]);
+                return;
+            }
+
+            var match = Regex.Match(
+                value,
+                @"^['""]?(?<formId>\d+)['""]?(?:\s*FORM)?$",
+                RegexOptions.IgnoreCase);
+            if (match.Success && int.TryParse(match.Groups["formId"].Value, out var formId))
+                result.Add(formId);
+        }
+
+        CollectBranch(syntax ?? "");
+        return result
+            .Distinct()
+            .OrderBy(formId => formId)
+            .ToList();
     }
 }
 

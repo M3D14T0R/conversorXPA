@@ -516,11 +516,15 @@ internal static partial class ProjectGenerator
             TryResolveSimpleSourceReturnTypeFromResourcePath(task, binding, out returnType);
 
         var type = XpaExpressionTypeMap.FromReturnType(returnType);
+        var isDotNetResource =
+            resolvedResource is not null &&
+            IsDotNetTaskResource(resolvedResource);
         return new XpaTypedExpression(
             binding,
             string.IsNullOrWhiteSpace(returnType) ? "object" : returnType,
             type == XpaType.Unknown ? XpaType.Object : type,
-            BindingCode: binding);
+            BindingCode: binding,
+            NullGuardReceiverCode: isDotNetResource ? binding : null);
     }
 
     private static XpaTypedExpression? ResolveTypedXpaFunction(
@@ -545,8 +549,17 @@ internal static partial class ProjectGenerator
 
         if (normalizedFunction == "DNSET" && arguments.Count == 2)
         {
+            var assignment = $"{arguments[0].Code} = {arguments[1].Code}";
+            if (!string.IsNullOrWhiteSpace(arguments[0].NullGuardReceiverCode))
+            {
+                return new XpaTypedExpression(
+                    $"ExternalTypeCompat.SetIfNotNull({arguments[0].NullGuardReceiverCode}, () => (object)({assignment}))",
+                    "object",
+                    XpaType.Object);
+            }
+
             return new XpaTypedExpression(
-                $"{arguments[0].Code} = {arguments[1].Code}",
+                assignment,
                 "object",
                 XpaType.Object);
         }

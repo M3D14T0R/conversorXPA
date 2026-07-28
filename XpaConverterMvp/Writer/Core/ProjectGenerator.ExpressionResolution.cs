@@ -54,7 +54,8 @@ internal static partial class ProjectGenerator
         string ExpectedReturnType = "",
         string EvidenceKind = "",
         string EvidenceSourceKey = "",
-        string FailureReason = "")
+        string FailureReason = "",
+        string NullGuardReceiverCode = "")
     {
         internal string PreferredReturnType => HasEffectiveType ? EffectiveReturnType : IntrinsicReturnType;
         internal bool HasSourceReturnType => !string.IsNullOrWhiteSpace(SourceReturnType);
@@ -66,7 +67,8 @@ internal static partial class ProjectGenerator
         string SourceReturnType,
         string SourceSyntax = "",
         int ExpressionOrdinal = 0,
-        string EvidenceKind = "")
+        string EvidenceKind = "",
+        string NullGuardReceiverCode = "")
     {
         internal bool HasSourceReturnType => !string.IsNullOrWhiteSpace(SourceReturnType);
         internal bool HasSourceSyntax => !string.IsNullOrWhiteSpace(SourceSyntax);
@@ -205,7 +207,8 @@ internal static partial class ProjectGenerator
         string? sourceReturnType = null,
         bool usedFallbackInference = false,
         bool canEmitAsStatement = false,
-        string evidenceKind = "")
+        string evidenceKind = "",
+        string nullGuardReceiverCode = "")
     {
         var intrinsicReturnType = NormalizeReturnTypeToken(sourceReturnType ?? "");
         if (string.IsNullOrWhiteSpace(intrinsicReturnType))
@@ -231,7 +234,8 @@ internal static partial class ProjectGenerator
             expr?.Ordinal ?? 0,
             context.SinkKind.ToString(),
             expectedReturnType,
-            evidenceKind);
+            evidenceKind,
+            NullGuardReceiverCode: nullGuardReceiverCode);
     }
 
     private static string ResolveInitialKeyExpressionCode(
@@ -299,19 +303,22 @@ internal static partial class ProjectGenerator
             dataObjects,
             context,
             translated.SourceReturnType,
-            evidenceKind: string.IsNullOrWhiteSpace(translated.EvidenceKind) ? "source-translated" : translated.EvidenceKind);
+            evidenceKind: string.IsNullOrWhiteSpace(translated.EvidenceKind) ? "source-translated" : translated.EvidenceKind,
+            nullGuardReceiverCode: translated.NullGuardReceiverCode);
 
     private static SourceTranslatedExpression CreateSourceTranslatedExpression(
         ExpressionEntrySemantic expr,
         string code,
         string sourceReturnType,
-        string evidenceKind)
+        string evidenceKind,
+        string nullGuardReceiverCode = "")
         => new(
             code,
             NormalizeReturnTypeToken(sourceReturnType),
             ResolveExpressionEntrySourceSyntax(expr),
             expr.Ordinal,
-            evidenceKind);
+            evidenceKind,
+            nullGuardReceiverCode);
 
     private static string ResolveRawExpressionEntryCode(
         ExpressionEntrySemantic expr,
@@ -477,7 +484,12 @@ internal static partial class ProjectGenerator
             translated = centrallyTyped.Code;
             if (!string.IsNullOrWhiteSpace(centrallyTyped.ReturnType))
                 sourceReturnType = centrallyTyped.ReturnType;
-            return CreateSourceTranslatedExpression(expr, translated, sourceReturnType, "central-typed-expression");
+            return CreateSourceTranslatedExpression(
+                expr,
+                translated,
+                sourceReturnType,
+                "central-typed-expression",
+                centrallyTyped.NullGuardReceiverCode ?? "");
         }
 
         var sourceFunctionExpectedReturnType = !string.IsNullOrWhiteSpace(expressionAttributeReturnType)
@@ -794,6 +806,7 @@ internal static partial class ProjectGenerator
         var sourceReturnType = ResolveSourceReturnTypeForExpressionEntry(expr, task, dataObjects);
         string code;
         string blobObjectReturnType;
+        string nullGuardReceiverCode = "";
         if (TryResolveBlobObjectViewBindingExpression(expr, task, dataObjects, context, sourceReturnType, out var blobObjectCode, out blobObjectReturnType))
         {
             code = blobObjectCode;
@@ -804,6 +817,7 @@ internal static partial class ProjectGenerator
             if (string.IsNullOrWhiteSpace(sourceReturnType))
                 sourceReturnType = sourceTranslated.SourceReturnType;
             code = sourceTranslated.Code;
+            nullGuardReceiverCode = sourceTranslated.NullGuardReceiverCode;
         }
         var intrinsicReturnType = !string.IsNullOrWhiteSpace(sourceReturnType)
             ? sourceReturnType
@@ -827,7 +841,8 @@ internal static partial class ProjectGenerator
             expr?.Ordinal ?? 0,
             context.SinkKind.ToString(),
             ResolveReturnTypeForExpectedContext(context.Expected),
-            string.IsNullOrWhiteSpace(blobObjectReturnType) ? "source-expression" : "blob-object-view");
+            string.IsNullOrWhiteSpace(blobObjectReturnType) ? "source-expression" : "blob-object-view",
+            NullGuardReceiverCode: nullGuardReceiverCode);
 
         _typedExpressionEntryCodeCache[cacheKey] = typed;
         if (typed.HasIntrinsicType)
@@ -961,7 +976,8 @@ internal static partial class ProjectGenerator
             ExpressionOrdinal: expr.Ordinal,
             SinkKind: context.SinkKind.ToString(),
             ExpectedReturnType: expectedReturnType,
-            EvidenceKind: "expected-dominant");
+            EvidenceKind: "expected-dominant",
+            NullGuardReceiverCode: translated.NullGuardReceiverCode);
         return true;
     }
 
@@ -1027,7 +1043,10 @@ internal static partial class ProjectGenerator
         {
             Code = emitted.Code,
             SourceReturnType = emitted.HasSourceReturnType ? emitted.SourceReturnType : translated.SourceReturnType,
-            EvidenceKind = string.IsNullOrWhiteSpace(emitted.EvidenceKind) ? translated.EvidenceKind : emitted.EvidenceKind
+            EvidenceKind = string.IsNullOrWhiteSpace(emitted.EvidenceKind) ? translated.EvidenceKind : emitted.EvidenceKind,
+            NullGuardReceiverCode = string.IsNullOrWhiteSpace(emitted.NullGuardReceiverCode)
+                ? translated.NullGuardReceiverCode
+                : emitted.NullGuardReceiverCode
         };
     }
 
@@ -1068,7 +1087,8 @@ internal static partial class ProjectGenerator
             dataObjects,
             context,
             translated.SourceReturnType,
-            evidenceKind: string.IsNullOrWhiteSpace(translated.EvidenceKind) ? "source-translated-context" : translated.EvidenceKind) with
+            evidenceKind: string.IsNullOrWhiteSpace(translated.EvidenceKind) ? "source-translated-context" : translated.EvidenceKind,
+            nullGuardReceiverCode: translated.NullGuardReceiverCode) with
         {
             EffectiveReturnType = expectedReturnType,
             EffectiveXpaType = XpaExpressionTypeMap.FromReturnType(expectedReturnType),

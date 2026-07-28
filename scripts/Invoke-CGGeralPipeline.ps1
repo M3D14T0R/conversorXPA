@@ -11,6 +11,7 @@ param(
     [string]$StopAfter = "",
     [string[]]$Task = @(),
     [string[]]$TaskRange = @(),
+    [switch]$WithDependencies,
     [switch]$IncrementalOutput,
     [switch]$IsolatedTaskProject,
     [switch]$SkipProjectBuild,
@@ -381,6 +382,9 @@ for ($planIndex = $startIndex; $planIndex -lt $plan.Count; $planIndex++) {
             $arguments.Add("--task-range")
             $arguments.Add($taskRangeFilter.Trim())
         }
+    }
+    if ($WithDependencies) {
+        $arguments.Add("--with-dependencies")
     }
     if ($IncrementalOutput) {
         $arguments.Add("--incremental-output")

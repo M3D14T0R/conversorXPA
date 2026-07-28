@@ -493,17 +493,33 @@ internal static class XpaTypedExpressionEmitter
                 var qualifiedName = $"{target.Code}.{member}";
                 if (_current.Kind == TokenKind.OpenParenthesis)
                 {
+                    var nullGuardReceiverCode = target.NullGuardReceiverCode;
                     target = ParseFunction(qualifiedName);
+                    if (!string.IsNullOrWhiteSpace(nullGuardReceiverCode))
+                    {
+                        target = target with
+                        {
+                            NullGuardReceiverCode =
+                                target.NullGuardReceiverCode ??
+                                nullGuardReceiverCode
+                        };
+                    }
                     continue;
                 }
 
                 // DotNet is an XPA namespace marker, not a C# identifier. Keep
                 // the complete qualified path intact until we know whether its
                 // terminal node is a type constructor, static call or member.
-                target = qualifiedName.StartsWith("DotNet.", StringComparison.Ordinal)
+                var resolvedMember = qualifiedName.StartsWith("DotNet.", StringComparison.Ordinal)
                     ? new XpaTypedExpression(qualifiedName, "object", XpaType.Object)
                     : _context.ResolveSymbol(qualifiedName) ??
                       new XpaTypedExpression(qualifiedName, "object", XpaType.Object);
+                target = resolvedMember with
+                {
+                    NullGuardReceiverCode =
+                        target.NullGuardReceiverCode ??
+                        resolvedMember.NullGuardReceiverCode
+                };
             }
 
             if (target.Code.StartsWith("DotNet.", StringComparison.Ordinal))

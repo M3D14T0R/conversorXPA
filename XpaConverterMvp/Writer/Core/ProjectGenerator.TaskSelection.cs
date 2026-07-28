@@ -8,12 +8,17 @@ internal static partial class ProjectGenerator
     private static HashSet<int> ResolveRequestedTaskOrdinals(
         IReadOnlyList<TaskSemantic> allTasks,
         IReadOnlyList<string> requestedTaskNames,
+        IReadOnlyList<TopLevelTaskRange> requestedTaskRanges,
         bool withDependencies)
     {
         var selected = new HashSet<int>();
         var tasksByOrdinal = allTasks.ToDictionary(t => t.Ordinal);
         var seedMatches = allTasks
-            .Where(t => requestedTaskNames.Any(name => TaskMatchesRequestedFilter(t, name)))
+            .Where(t =>
+                requestedTaskNames.Any(name => TaskMatchesRequestedFilter(t, name)) ||
+                (!t.ParentOrdinal.HasValue &&
+                 t.TopLevelProgramIndex.HasValue &&
+                 requestedTaskRanges.Any(range => range.Contains(t.TopLevelProgramIndex.Value))))
             .ToList();
         var seedTasks = seedMatches
             .Where(t => !t.ParentOrdinal.HasValue)
@@ -60,6 +65,22 @@ internal static partial class ProjectGenerator
                 binding.TargetTaskOrdinal.HasValue &&
                 tasksByOrdinal.TryGetValue(binding.TargetTaskOrdinal.Value, out var subformTask))
                 yield return subformTask;
+        }
+
+        if (task.Form?.Controls is not null)
+        {
+            foreach (var control in task.Form.Controls)
+            {
+                if (!control.SelectProgramObj.HasValue ||
+                    control.SelectProgramComponentId.GetValueOrDefault() > 0)
+                    continue;
+
+                var selectProgramTask = allTasks.FirstOrDefault(candidate =>
+                    !candidate.ParentOrdinal.HasValue &&
+                    candidate.TopLevelProgramIndex == control.SelectProgramObj.Value);
+                if (selectProgramTask is not null)
+                    yield return selectProgramTask;
+            }
         }
 
         foreach (var call in EnumerateTaskCalls(task))

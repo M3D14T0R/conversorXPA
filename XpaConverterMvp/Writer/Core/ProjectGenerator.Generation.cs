@@ -39,6 +39,7 @@ internal static partial class ProjectGenerator
             EnvDllPath = envDllPath,
             FolderFilter = folderFilter,
             TaskFilters = taskFilters,
+            TaskRanges = Array.Empty<TopLevelTaskRange>(),
             ForceTaskScopedGeneration = false,
             WithTaskDependencies = withTaskDependencies,
             IncrementalOutput = false,
@@ -50,7 +51,13 @@ internal static partial class ProjectGenerator
     {
         InitializeGenerationState(request);
         var sharedAssetsSource = request.SharedAssetsSemantic ?? request.Parsed;
-        var scope = ResolveGenerationScope(request.Parsed, request.FolderFilter, request.TaskFilters, request.WithTaskDependencies, request.ForceTaskScopedGeneration);
+        var scope = ResolveGenerationScope(
+            request.Parsed,
+            request.FolderFilter,
+            request.TaskFilters,
+            request.TaskRanges,
+            request.WithTaskDependencies,
+            request.ForceTaskScopedGeneration);
         var outputLayout = new ProjectOutputLayout(request.OutputRoot);
 
         PrepareProjectOutputs(

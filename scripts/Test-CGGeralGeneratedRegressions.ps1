@@ -103,6 +103,24 @@ function Test-NotContains {
     Add-Result -Name $Name -Passed (-not $found) -Evidence "$($file.Path): nao deve conter '$Literal'"
 }
 
+function Test-Match {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$RelativePath,
+        [Parameter(Mandatory)][string]$Pattern,
+        [string]$BaseDirectory = $cgGeralDirectory
+    )
+
+    $file = Read-GeneratedFile -RelativePath $RelativePath -BaseDirectory $BaseDirectory
+    if ($null -eq $file) {
+        Add-Result -Name $Name -Passed $false -Evidence "Arquivo ausente: $RelativePath"
+        return
+    }
+
+    $found = [System.Text.RegularExpressions.Regex]::IsMatch($file.Text, $Pattern)
+    Add-Result -Name $Name -Passed $found -Evidence "$($file.Path): esperado padrao '$Pattern'"
+}
+
 function Test-InOrder {
     param(
         [Parameter(Mandatory)][string]$Name,
@@ -199,6 +217,26 @@ Test-Contains `
     -Name "Botao Cancelar do filtro 6464 preserva a identidade da coluna XPA" `
     -RelativePath "Views\EmissODaOP6464FiltrarGeralByExp.cs" `
     -Literal "btnBCancelar.Data = (XPARuntimeCore.Box.UI.Advanced.ButtonData)_controller.B_Cancelar;"
+
+Test-Contains `
+    -Name "DNSet do 344 tolera controle .NET ausente na variante sem MasterUI" `
+    -RelativePath "CG00344_Grupos344.cs" `
+    -Literal "ExternalTypeCompat.SetIfNotNull(v_tela, () => (object)(v_tela.metroPanelBarraLateral.Visible = false))"
+
+Test-Contains `
+    -Name "Compatibilidade DNSet gera helper central de atribuicao nula" `
+    -RelativePath "ExternalTypeCompat.cs" `
+    -Literal "internal static object SetIfNotNull(object receiver, Func<object> setter)"
+
+Test-Contains `
+    -Name "Chamadas do PesquisaFacil toleram o recurso .NET ausente no FORM 2" `
+    -RelativePath "CG00344_Grupos344.cs" `
+    -Literal 'ExternalTypeCompat.InvokeIfNotNull(v_pesquisaFacil, () => v_pesquisaFacil.AddDisplayMember("Cd_grupo"))'
+
+Test-Contains `
+    -Name "Compatibilidade de recurso .NET gera helper central para chamadas" `
+    -RelativePath "ExternalTypeCompat.cs" `
+    -Literal "internal static void InvokeIfNotNull(object receiver, Action action)"
 
 Test-NotContains `
     -Name "Filtro 6464 nao substitui botoes XPA por ButtonData calculado" `
@@ -366,6 +404,31 @@ foreach ($invalidNestedTask in @(
         -RelativePath "CG02075_Empresas_2075.cs" `
         -Literal $invalidNestedTask
 }
+
+Test-Match `
+    -Name "CG00344 FORM 2 registra o formulario completo" `
+    -RelativePath "CG00344_Grupos344.cs" `
+    -Pattern 'default:[\s\S]{0,300}?new Views\.GruposView\(this\);[\s\S]{0,120}?SetMainDisplayIndex\(2\);'
+
+Test-Match `
+    -Name "CG00344 FORM 3 registra a visao contabil" `
+    -RelativePath "CG00344_Grupos344.cs" `
+    -Pattern 'case\s+3:[\s\S]{0,300}?new Views\.Grupos344GruposVisaoContabil\(this\);[\s\S]{0,120}?SetMainDisplayIndex\(3\);'
+
+Test-Match `
+    -Name "CG02075 FORM 3 registra o cadastro completo novo" `
+    -RelativePath "CG02075_Empresas_2075.cs" `
+    -Pattern 'default:[\s\S]{0,300}?new Views\.Empresas_2075Empresa\(this\);[\s\S]{0,120}?SetMainDisplayIndex\(3\);'
+
+Test-Match `
+    -Name "CG02075 FORM 4 registra o cadastro simplificado" `
+    -RelativePath "CG02075_Empresas_2075.cs" `
+    -Pattern 'case\s+4:[\s\S]{0,300}?new Views\.Empresas_2075CadastroSimplificadoEmpresaPessoa\(this\);[\s\S]{0,120}?SetMainDisplayIndex\(4\);'
+
+Test-Match `
+    -Name "CG02075 FORM 5 registra a interface antiga" `
+    -RelativePath "CG02075_Empresas_2075.cs" `
+    -Pattern 'case\s+5:[\s\S]{0,300}?new Views\.Empresas_2075EmpresaInterfaceAntiga\(this\);[\s\S]{0,120}?SetMainDisplayIndex\(5\);'
 
 Test-NotContains `
     -Name "Subform de CG00717 nao vincula task interna ChamaEngenharia de outro programa" `

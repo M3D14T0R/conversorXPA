@@ -89,7 +89,7 @@ public static class ConversionRunner
             // those identities and can corrupt an existing full conversion.
             var taskScopedReduction =
                 partialTaskScope &&
-                (!useIncrementalOutput || options.IsolatedTaskProject);
+                !useIncrementalOutput;
             var taskScopedDependencyReduction = taskScopedReduction && withDependencies;
             var folderScopedReduction = !withDependencies && taskRanges.Count == 0 && !string.IsNullOrWhiteSpace(folderFilter);
             var useImplicitComponentXmlResolution =
@@ -220,7 +220,8 @@ public static class ConversionRunner
                     EnvReferenceMode = options.RuntimeCoreReferenceMode,
                     EnvDllPath = options.RuntimeCoreDllPath,
                     FolderFilter = folderFilter,
-                    TaskFilters = taskRanges.Count == 0 ? taskFilters : Array.Empty<string>(),
+                    TaskFilters = taskFilters,
+                    TaskRanges = taskRanges,
                     ForceTaskScopedGeneration = taskRanges.Count > 0,
                     WithTaskDependencies = withDependencies,
                     IncrementalOutput = useIncrementalOutput,
@@ -255,7 +256,8 @@ public static class ConversionRunner
                     EnvReferenceMode = options.RuntimeCoreReferenceMode,
                     EnvDllPath = options.RuntimeCoreDllPath,
                     FolderFilter = folderFilter,
-                    TaskFilters = taskRanges.Count == 0 ? taskFilters : Array.Empty<string>(),
+                    TaskFilters = taskFilters,
+                    TaskRanges = taskRanges,
                     ForceTaskScopedGeneration = taskRanges.Count > 0,
                     WithTaskDependencies = withDependencies,
                     IncrementalOutput = useIncrementalOutput,
@@ -284,7 +286,8 @@ public static class ConversionRunner
                         EnvReferenceMode = options.RuntimeCoreReferenceMode,
                         EnvDllPath = options.RuntimeCoreDllPath,
                         FolderFilter = folderFilter,
-                        TaskFilters = taskRanges.Count == 0 ? taskFilters : Array.Empty<string>(),
+                        TaskFilters = taskFilters,
+                        TaskRanges = taskRanges,
                         ForceTaskScopedGeneration = taskRanges.Count > 0,
                         WithTaskDependencies = withDependencies,
                         IncrementalOutput = useIncrementalOutput,

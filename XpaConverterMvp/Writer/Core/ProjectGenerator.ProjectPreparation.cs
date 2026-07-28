@@ -40,6 +40,11 @@ internal static partial class ProjectGenerator
             // refresh in both full-project and isolated incremental outputs.
             WriteSharedXpaSqlStorage(outputLayout.SharedDir, appNamespace);
             LogProgress($"Stage: SQL storage compatibility refreshed -> {appNamespace}");
+            if (UsesExternalTypeCompat(sharedAssetsSource))
+            {
+                WriteExternalTypeCompatAsset(outputLayout.OutputRoot, appNamespace);
+                LogProgress($"Stage: external type compatibility refreshed -> {appNamespace}");
+            }
             if (isolatedTaskProject)
             {
                 if (UsesComponentFunctionCompat(sharedAssetsSource))

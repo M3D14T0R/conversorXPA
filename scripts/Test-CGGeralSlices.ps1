@@ -161,6 +161,7 @@ $available = @(
     "CG00343",
     "CG00344",
     "CG00374",
+    "CG02075",
     "CG02103",
     "CG02109",
     "CG06301",
@@ -239,12 +240,25 @@ if ($selected -contains "CG00343") {
         -Name "CG00343 calls typed CGLFCore configuration task" `
         -Path (Join-Path $root "CG00343_Movimentos_343.cs") `
         -Pattern 'CGLFCore\.KF00003_CfgTO_V2_BuscaConfigsTO'
+    Assert-FileMatch `
+        -Name "CG00343 launcher supplies the CIGAM Wiki base URL" `
+        -Path (Join-Path $SlicesRoot "CG00343\XpaRuntime.GenericLauncher.CG00343.ini") `
+        -Pattern '(?m)^CFG_3179=https://www\.cigam\.com\.br/wiki/index\.php$'
 }
 
 if ($selected -contains "CG00344") {
     $root = Get-ProjectRoot "CG00344"
+    $controller = Join-Path $root "CG00344_Grupos344.cs"
     $designer = Join-Path $root "Views\Grupos344GruposVisaoContabil.Designer.cs"
     $view = Join-Path $root "Views\Grupos344GruposVisaoContabil.cs"
+    Assert-FileMatch `
+        -Name "CG00344 FORM 2 selects the complete groups form" `
+        -Path $controller `
+        -Pattern 'default:[\s\S]{0,300}?new Views\.GruposView\(this\);[\s\S]{0,120}?SetMainDisplayIndex\(2\);'
+    Assert-FileMatch `
+        -Name "CG00344 FORM 3 selects the accounting view" `
+        -Path $controller `
+        -Pattern 'case\s+3:[\s\S]{0,300}?new Views\.Grupos344GruposVisaoContabil\(this\);[\s\S]{0,120}?SetMainDisplayIndex\(3\);'
     Assert-FileMatch `
         -Name "CG00344 creates the declared MasterUI host" `
         -Path $designer `
@@ -258,6 +272,43 @@ if ($selected -contains "CG00344") {
         -Name "CG00344 assigns the MasterUI host to v_tela" `
         -Path $view `
         -Pattern '_controller\.v_tela\s*=\s*dnVTela;'
+    Assert-FileMatch `
+        -Name "CG00344 DNSet tolerates the absent MasterUI in FORM 2" `
+        -Path $controller `
+        -Pattern 'ExternalTypeCompat\.SetIfNotNull\(v_tela,\s*\(\)\s*=>\s*\(object\)\(v_tela\.metroPanelBarraLateral\.Visible\s*=\s*false\)\)'
+    Assert-FileMatch `
+        -Name "CG00344 emits the centralized null-safe DNSet helper" `
+        -Path (Join-Path $root "ExternalTypeCompat.cs") `
+        -Pattern 'internal static object SetIfNotNull\(object receiver,\s*Func<object> setter\)'
+    Assert-FileMatch `
+        -Name "CG00344 direct PesquisaFacil calls tolerate the resource absent in FORM 2" `
+        -Path $controller `
+        -Pattern 'ExternalTypeCompat\.InvokeIfNotNull\(v_pesquisaFacil,\s*\(\)\s*=>\s*v_pesquisaFacil\.AddDisplayMember\("Cd_grupo"\)\)'
+    Assert-FileMatch `
+        -Name "CG00344 emits the centralized null-safe invocation helper" `
+        -Path (Join-Path $root "ExternalTypeCompat.cs") `
+        -Pattern 'internal static void InvokeIfNotNull\(object receiver,\s*Action action\)'
+    Assert-FileMatch `
+        -Name "CG00344 includes its group-search SelectProgram dependency" `
+        -Path (Join-Path $root "CG00376_PesquisaDeGrupos376.cs") `
+        -Pattern 'class\s+CG00376_PesquisaDeGrupos376'
+}
+
+if ($selected -contains "CG02075") {
+    $root = Get-ProjectRoot "CG02075"
+    $controller = Join-Path $root "CG02075_Empresas_2075.cs"
+    Assert-FileMatch `
+        -Name "CG02075 FORM 3 selects the new complete company form" `
+        -Path $controller `
+        -Pattern 'default:[\s\S]{0,300}?new Views\.Empresas_2075Empresa\(this\);[\s\S]{0,120}?SetMainDisplayIndex\(3\);'
+    Assert-FileMatch `
+        -Name "CG02075 FORM 4 selects the simplified company form" `
+        -Path $controller `
+        -Pattern 'case\s+4:[\s\S]{0,300}?new Views\.Empresas_2075CadastroSimplificadoEmpresaPessoa\(this\);[\s\S]{0,120}?SetMainDisplayIndex\(4\);'
+    Assert-FileMatch `
+        -Name "CG02075 FORM 5 selects the legacy company form" `
+        -Path $controller `
+        -Pattern 'case\s+5:[\s\S]{0,300}?new Views\.Empresas_2075EmpresaInterfaceAntiga\(this\);[\s\S]{0,120}?SetMainDisplayIndex\(5\);'
 }
 
 if ($selected -contains "CG00374") {

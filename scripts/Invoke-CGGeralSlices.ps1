@@ -19,8 +19,9 @@ $definitions = @(
     [pscustomobject]@{ Name = "CG00347"; Ranges = @("347"); StartProgram = "CG00347"; TraceTargets = "CG00347" },
     [pscustomobject]@{ Name = "CG00341"; Ranges = @("341", "374"); StartProgram = "CG00341"; TraceTargets = "CG00341;CG00374" },
     [pscustomobject]@{ Name = "CG00343"; Ranges = @("343"); StartProgram = "CG00343"; TraceTargets = "CG00343;CGLFCore.KF00013" },
-    [pscustomobject]@{ Name = "CG00344"; Ranges = @("344"); StartProgram = "CG00344"; TraceTargets = "CG00344" },
+    [pscustomobject]@{ Name = "CG00344"; Ranges = @("344", "376"); StartProgram = "CG00344"; TraceTargets = "CG00344;CG00376" },
     [pscustomobject]@{ Name = "CG00374"; Ranges = @("374"); StartProgram = "CG00374"; TraceTargets = "CG00374" },
+    [pscustomobject]@{ Name = "CG02075"; Ranges = @("2075"); StartProgram = "CG02075"; TraceTargets = "CG02075;CG02269" },
     [pscustomobject]@{ Name = "CG02103"; Ranges = @("2103", "2114", "3377"); StartProgram = "CG02103"; TraceTargets = "CG02103;CG02114;CG03377" },
     [pscustomobject]@{ Name = "CG02109"; Ranges = @("2109"); StartProgram = "CG02109"; TraceTargets = "CG02109" },
     [pscustomobject]@{ Name = "CG06301"; Ranges = @("374", "6301"); StartProgram = "CG06301|ZPROD001"; TraceTargets = "CG06301;CG00374" },
@@ -99,6 +100,7 @@ Administrator=Y
 [Parameters]
 VERIFICOU_LICENCA=SIM
 VER_COMP_ESET=69
+CFG_3179=https://www.cigam.com.br/wiki/index.php
 CFG_549=02
 BANCO_DADOS=02
 

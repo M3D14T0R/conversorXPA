@@ -10,6 +10,7 @@ internal static partial class ProjectGenerator
         ProjectSemantic parsed,
         string? folderFilter,
         IReadOnlyList<string>? taskFilters,
+        IReadOnlyList<TopLevelTaskRange>? taskRanges,
         bool withTaskDependencies,
         bool forceTaskScopedGeneration)
     {
@@ -20,10 +21,20 @@ internal static partial class ProjectGenerator
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
         var hasTaskFilters = normalizedTaskFilters.Count > 0;
-        var taskScopedGeneration = forceTaskScopedGeneration || hasTaskFilters;
-        var explicitTaskMatches = hasTaskFilters
+        var normalizedTaskRanges = (taskRanges ?? Array.Empty<TopLevelTaskRange>())
+            .Where(range => range.Start > 0 && range.End >= range.Start)
+            .Distinct()
+            .ToList();
+        var hasTaskRanges = normalizedTaskRanges.Count > 0;
+        var hasTaskSelection = hasTaskFilters || hasTaskRanges;
+        var taskScopedGeneration = forceTaskScopedGeneration || hasTaskSelection;
+        var explicitTaskMatches = hasTaskSelection
             ? parsed.Tasks
-                .Where(t => normalizedTaskFilters.Any(name => TaskMatchesRequestedFilter(t, name)))
+                .Where(t =>
+                    normalizedTaskFilters.Any(name => TaskMatchesRequestedFilter(t, name)) ||
+                    (!t.ParentOrdinal.HasValue &&
+                     t.TopLevelProgramIndex.HasValue &&
+                     normalizedTaskRanges.Any(range => range.Contains(t.TopLevelProgramIndex.Value))))
                 .ToList()
             : new List<TaskSemantic>();
         var explicitTaskSeeds = explicitTaskMatches
@@ -31,11 +42,15 @@ internal static partial class ProjectGenerator
             .ToList();
         if (explicitTaskSeeds.Count == 0)
             explicitTaskSeeds = explicitTaskMatches;
-        var explicitlyRequestedTaskOrdinals = hasTaskFilters
+        var explicitlyRequestedTaskOrdinals = hasTaskSelection
             ? explicitTaskSeeds.Select(t => t.Ordinal).ToHashSet()
             : null;
-        var selectedTaskOrdinals = hasTaskFilters
-            ? ResolveRequestedTaskOrdinals(parsed.Tasks, normalizedTaskFilters, withTaskDependencies)
+        var selectedTaskOrdinals = hasTaskSelection
+            ? ResolveRequestedTaskOrdinals(
+                parsed.Tasks,
+                normalizedTaskFilters,
+                normalizedTaskRanges,
+                withTaskDependencies)
             : null;
 
         if (hasTaskFilters && (explicitlyRequestedTaskOrdinals?.Count ?? 0) == 0)

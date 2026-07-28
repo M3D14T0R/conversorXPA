@@ -22,7 +22,8 @@ internal readonly record struct XpaTypedExpression(
     string ReturnType,
     XpaType Type,
     string? LiteralValue = null,
-    string? BindingCode = null);
+    string? BindingCode = null,
+    string? NullGuardReceiverCode = null);
 
 internal readonly record struct XpaExpressionDestination(
     string ReturnType,

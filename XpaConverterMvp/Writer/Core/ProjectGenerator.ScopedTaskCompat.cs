@@ -264,6 +264,26 @@ internal static partial class ProjectGenerator
         var result = new Dictionary<int, TaskSemantic>();
         foreach (var task in generatedTasks)
         {
+            if (task.Form?.Controls is not null)
+            {
+                foreach (var control in task.Form.Controls)
+                {
+                    if (!control.SelectProgramObj.HasValue ||
+                        control.SelectProgramComponentId.GetValueOrDefault() > 0)
+                        continue;
+
+                    var selectProgramTask = allTasks.FirstOrDefault(candidate =>
+                        !candidate.ParentOrdinal.HasValue &&
+                        candidate.TopLevelProgramIndex == control.SelectProgramObj.Value);
+                    if (selectProgramTask is null ||
+                        generatedOrdinals.Contains(selectProgramTask.Ordinal) ||
+                        !ShouldGenerateForTarget(selectProgramTask))
+                        continue;
+
+                    result[selectProgramTask.Ordinal] = selectProgramTask;
+                }
+            }
+
             foreach (var call in EnumerateTaskCalls(task))
             {
                 var targetTask = ResolveTaskByCall(task, call, allTasks);

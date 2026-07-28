@@ -19,6 +19,7 @@ internal sealed class ProjectGenerationRequest
     public string? EnvDllPath { get; init; }
     public string? FolderFilter { get; init; }
     public IReadOnlyList<string>? TaskFilters { get; init; }
+    public IReadOnlyList<TopLevelTaskRange>? TaskRanges { get; init; }
     public bool ForceTaskScopedGeneration { get; init; }
     public bool WithTaskDependencies { get; init; }
     public bool IncrementalOutput { get; init; }
