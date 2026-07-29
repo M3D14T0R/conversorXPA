@@ -80,7 +80,7 @@ internal static partial class ProjectGenerator
             appNamespace,
             mainTaskForTarget,
             includeApplicationView: !scope.TaskScopedGeneration,
-            includeMissingScopedViewPlaceholders: true);
+            includeMissingScopedViewPlaceholders: scope.TaskScopedGeneration);
         if (scope.TaskScopedGeneration)
         {
             if (incrementalOutput &&

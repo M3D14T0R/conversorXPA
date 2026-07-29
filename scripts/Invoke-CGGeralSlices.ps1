@@ -24,6 +24,7 @@ $definitions = @(
     [pscustomobject]@{ Name = "CG02075"; Ranges = @("2075"); StartProgram = "CG02075"; TraceTargets = "CG02075;CG02269" },
     [pscustomobject]@{ Name = "CG02103"; Ranges = @("2103", "2114", "3377"); StartProgram = "CG02103"; TraceTargets = "CG02103;CG02114;CG03377" },
     [pscustomobject]@{ Name = "CG02109"; Ranges = @("2109"); StartProgram = "CG02109"; TraceTargets = "CG02109" },
+    [pscustomobject]@{ Name = "CG02123"; Ranges = @("2114", "2123"); StartProgram = "CG02123"; TraceTargets = "CG02123;CG02114" },
     [pscustomobject]@{ Name = "CG06301"; Ranges = @("374", "6301"); StartProgram = "CG06301|ZPROD001"; TraceTargets = "CG06301;CG00374" },
     [pscustomobject]@{ Name = "CG06388"; Ranges = @("6388"); StartProgram = "CG06388"; TraceTargets = "CG06388" },
     [pscustomobject]@{

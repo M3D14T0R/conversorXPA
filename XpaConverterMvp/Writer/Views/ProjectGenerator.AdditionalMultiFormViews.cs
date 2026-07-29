@@ -508,10 +508,13 @@ internal static partial class ProjectGenerator
                         controlById.TryGetValue(heightParentColumn.ParentId.Value, out var heightParentTable) &&
                         heightParentTable.RowHeight.HasValue)
                     {
+                        // The grid paints its horizontal separator inside the
+                        // row edge. Keep the live WinForms editor clear of that
+                        // pixel so its border cannot cover the separator.
                         var availableHeight =
                             ScaleViewY(heightParentTable.RowHeight.Value) -
                             ScaleViewY(locationY) -
-                            1;
+                            2;
                         scaledControlHeight = Math.Max(
                             1,
                             Math.Min(scaledControlHeight, availableHeight));

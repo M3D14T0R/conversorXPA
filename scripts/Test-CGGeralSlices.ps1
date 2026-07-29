@@ -164,6 +164,7 @@ $available = @(
     "CG02075",
     "CG02103",
     "CG02109",
+    "CG02123",
     "CG06301",
     "CG06388",
     "CG06353Flow"
@@ -373,6 +374,24 @@ if ($selected -contains "CG02109") {
         -Name "CG02109 complete company code cell width" `
         -Path $designer `
         -Pattern 'txtEmpresa\.Size\s*=\s*new Size\(([5-9][0-9]|[1-9][0-9]{2,}),'
+}
+
+if ($selected -contains "CG02123") {
+    $root = Get-ProjectRoot "CG02123"
+    $divisionSelectorDesigner =
+        Join-Path $root "Views\_ConsultaDivisaoEmpresa2114DivisEs.Designer.cs"
+    Assert-FileMatch `
+        -Name "CG02123 division DataView" `
+        -Path (Join-Path $root "CG02123_Divisao_2123.cs") `
+        -Pattern 'From\s*=\s*DIVISAO\s*;'
+    Assert-FileMatch `
+        -Name "CG02123 division selector included" `
+        -Path (Join-Path $root "CG02114_ConsultaDivisaoEmpresa2114.cs") `
+        -Pattern 'class\s+CG02114_ConsultaDivisaoEmpresa2114'
+    Assert-FileMatch `
+        -Name "CG02114 active grid editor stays clear of row separator" `
+        -Path $divisionSelectorDesigner `
+        -Pattern 'txtDescricaoDivisao\.Size\s*=\s*new Size\(195,\s*16\);'
 }
 
 if ($selected -contains "CG06301") {

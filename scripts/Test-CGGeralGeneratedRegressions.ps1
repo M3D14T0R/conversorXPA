@@ -159,6 +159,12 @@ function Test-NoNegativeTabIndexes {
     Add-Result -Name $Name -Passed ($invalid.Count -eq 0) -Evidence $evidence
 }
 
+$rangeStubViewsPath = Join-Path $cgGeralDirectory "Views\RangeStubViews.cs"
+Add-Result `
+    -Name "Conversao completa nao emite stubs exclusivos de recortes" `
+    -Passed (-not (Test-Path -LiteralPath $rangeStubViewsPath -PathType Leaf)) `
+    -Evidence $rangeStubViewsPath
+
 Test-NotContains `
     -Name "Update sem WithValue nao gera atribuicao C# vazia no programa 514" `
     -RelativePath "CG00514_AjustaNotasSaida514.cs" `
@@ -270,6 +276,11 @@ Test-NotContains `
 
 Test-NoNegativeTabIndexes `
     -Name "Forms gerados nao atribuem TabIndex negativo ao WinForms"
+
+Test-Contains `
+    -Name "Editor ativo da grade de Divisoes respeita a linha de 21 pixels" `
+    -RelativePath "Views\_ConsultaDivisaoEmpresa2114DivisEs.Designer.cs" `
+    -Literal "txtDescricaoDivisao.Size = new Size(195, 16);"
 
 Test-Contains `
     -Name "Forma Materiais NOVO envia a pseudo-aba para tras dos controles da pagina" `
